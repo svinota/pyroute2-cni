@@ -43,6 +43,7 @@ class AddressPool:
         self.max = (1 << self.bits) - 1
         self.allocated = set()
         self.name = name
+        self.gateway = self.inet_ntoa(self.min)
 
     def inet_ntoa(self, addr):
         return socket.inet_ntoa(self.prefix + struct.pack('>H', addr))
@@ -139,15 +140,16 @@ async def setup_container_network(fd, req, sock_stream, pool):
     '''
     Run network setup in the CNI_NETNS
     '''
-    print(" !>> ", fd, req, sock_stream)
-    if not isinstance(req['cni'], dict) or 'prevResult' not in req['cni']:
+    if not isinstance(req['cni'], dict):
         return cni_response(
             sock_stream,
             {'cniVersion': req['cni']['cniVersion']}
         )
 
-    data = req['cni']['prevResult']
-    data['cniVersion'] = req['cni']['cniVersion']
+    # data = req['cni']['prevResult']
+    data = {
+        'cniVersion': req['cni']['cniVersion'],
+    }
     if req['env'].get('CNI_COMMAND', None) != 'ADD':
         return cni_response(sock_stream, data)
 
@@ -164,6 +166,16 @@ async def setup_container_network(fd, req, sock_stream, pool):
         bridge, = await ipr_main.poll(
             ipr_main.link, 'dump', ifname=PR2_BRIDGE, timeout=5
         )
+        if not len([x async for x in await ipr_main.addr(
+            'dump',
+            family=socket.AF_INET,
+            index=bridge['index'],
+        )]):
+            await ipr_main.addr(
+                'add',
+                index=bridge['index'],
+                address=f'{pool.gateway}/{pool.bits}',
+            )
         if not await ipr_main.link_lookup(ifname=PR2_VXLAN_IF):
             await ipr_main.link(
                 'add',
@@ -181,7 +193,7 @@ async def setup_container_network(fd, req, sock_stream, pool):
             ifname=vp0,
             state='up',
             peer={
-                'ifname': 'eth1',
+                'ifname': 'eth0',
                 'net_ns_fd': fd,
             },
         )
@@ -193,15 +205,39 @@ async def setup_container_network(fd, req, sock_stream, pool):
         )
         await ipr_main.link('set', index=port['index'], master=bridge['index'])
 
+    address = f'{pool.allocate()}/{pool.bits}'
     async with AsyncIPRoute(netns=fd) as ipr:
-        eth1, = await ipr.link('get', ifname='eth1')
-        await ipr.link('set', index=eth1['index'], state='up')
+        eth0, = await ipr.link('get', ifname='eth0')
+        await ipr.link('set', index=eth0['index'], state='up')
         await ipr.addr(
             'add',
-            index=eth1['index'],
-            address=f'{pool.allocate()}/{pool.bits}',
+            index=eth0['index'],
+            address=address,
+        )
+        await ipr.route(
+            'add',
+            gateway=pool.gateway,
         )
 
+    data['interfaces'] = [
+        {
+            'name': 'eth0',
+            'mac': eth0.get('address'),
+            'sandbox': req['env']['CNI_NETNS'],
+        },
+    ]
+    data['ips'] = [
+        {
+            'address': address,
+            'interface': 0,
+            'gateway': pool.gateway,
+        },
+    ]
+    data['routes'] = [
+        {
+            'dst': '0.0.0.0/0',
+        },
+    ]
     os.close(fd)
     logging.info(f'>>> {data}')
     return cni_response(sock_stream, data)
@@ -256,7 +292,6 @@ async def run_cni_interface(pool):
         pool,
     )
 
-
 async def main():
     global SERVICE_TYPE
 
@@ -282,7 +317,7 @@ async def main():
         [SERVICE_TYPE],
         handlers=[mdns_service_update_handler],
     )
-    pool = AddressPool('172.18', 'H', name)
+    pool = AddressPool('10.244', 'H', name)
     server = Plan9ServerSocket(address=(service_ipaddr, P9_PORT))
     inode_get_allocated = server.filesystem.create('get_allocated')
     inode_allocate = server.filesystem.create('allocate')
