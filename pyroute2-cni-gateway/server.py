@@ -1,7 +1,6 @@
 import asyncio
-import json
 from typing import Optional
-from dataclasses import dataclass
+
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 
@@ -26,15 +25,12 @@ class CNIRequest(BaseModel):
     env: dict[str, str] | None = None
 
 
-
 class CNIProtocol(asyncio.Protocol):
 
     transport: asyncio.Transport
 
     def __init__(
-        self,
-        on_con_lost: asyncio.Future,
-        registry: dict[str, CNIRequest]
+        self, on_con_lost: asyncio.Future, registry: dict[str, CNIRequest]
     ):
         self.on_con_lost = on_con_lost
         self.registry = registry
@@ -53,7 +49,8 @@ class CNIProtocol(asyncio.Protocol):
         print(" >>> ", request)
         return self.transport.write(data)
 
-    def connection_made(self, transport: asyncio.Transport):
+    # do not annotate
+    def connection_made(self, transport):
         self.transport = transport
 
 
@@ -64,12 +61,12 @@ class CNIServer:
     def __init__(
         self,
         path: str,
-        use_event_loop: Optional[asyncio.AbstractEventLoop] = None
+        use_event_loop: Optional[asyncio.AbstractEventLoop] = None,
     ):
         self.event_loop = use_event_loop or asyncio.get_event_loop()
         self.connection_lost = self.event_loop.create_future()
         self.path = path
-        self.registry = {}
+        self.registry: dict[str, CNIRequest] = {}
 
     async def setup_endpoint(self):
         self.endpoint = await self.event_loop.create_unix_server(

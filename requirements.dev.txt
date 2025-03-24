@@ -1,0 +1,11 @@
+build
+twine
+flake8
+eventlet
+pytest
+pytest-asyncio
+pytest-timeout
+pre-commit
+mypy
+pydantic
+pydantic-settings

@@ -1,1 +1,3 @@
 pyroute2-cni-plugin/pyroute2-cni-plugin
+*.pyc
+*.swp

@@ -1,0 +1,65 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: pyroute2-cni
+  namespace: pyroute2-cni
+  labels:
+    tier: node
+    app: pyroute2-cni
+    k8s-app: pyroute2-cni
+spec:
+  selector:
+    matchLabels:
+      app: pyroute2-cni
+  template:
+    metadata:
+      labels:
+        tier: node
+        app: pyroute2-cni
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: kubernetes.io/os
+                operator: In
+                values:
+                - linux
+      hostNetwork: true
+      hostPID: true
+      priorityClassName: system-node-critical
+      tolerations:
+      - operator: Exists
+        effect: NoSchedule
+      containers:
+      - name: pyroute2-cni
+        image: ghcr.io/svinota/pyroute2-cni:v0.0.50
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "100Mi"
+        securityContext:
+          privileged: true
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        volumeMounts:
+        - name: host-root
+          mountPath: /host
+        - name: pyroute2-run
+          mountPath: /var/run/pyroute2
+      volumes:
+      - name: host-root
+        hostPath:
+          path: /
+      - name: pyroute2-run
+        hostPath:
+          path: /var/run/pyroute2
+          type: DirectoryOrCreate
