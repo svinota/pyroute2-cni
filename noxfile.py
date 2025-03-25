@@ -1,17 +1,14 @@
-import copy
 import getpass
 import json
 import os
-import subprocess
 import sys
 
 import nox
 
 nox.options.envdir = f'./.nox-{getpass.getuser()}'
 nox.options.reuse_existing_virtualenvs = False
-nox.options.sessions = [
-    'linter',
-]
+nox.options.sessions = ['linter']
+
 
 def load_global_config():
     if sys.argv[-2] == '--' and len(sys.argv[-1]):

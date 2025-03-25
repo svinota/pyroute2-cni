@@ -7,5 +7,6 @@ pytest-asyncio
 pytest-timeout
 pre-commit
 mypy
+pyroute2==0.9.1rc1
 pydantic
 pydantic-settings

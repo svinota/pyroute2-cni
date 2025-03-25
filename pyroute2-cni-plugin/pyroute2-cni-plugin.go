@@ -13,12 +13,13 @@ import (
 )
 
 const socketPathMain = "/var/run/pyroute2/main"
-const socketPathResponse = "/var/run/pyroute2/response"
+const socketPathServer = "/var/run/pyroute2/response"
 const lockFile = "/var/run/pyroute2/plugin-lock"
 
 type RequestPayload struct {
 	CNI map[string]interface{} `json:"cni"`
 	Env map[string]string      `json:"env"`
+	Rid string                 `json:"rid"`
 }
 
 type PluginResponse struct {
@@ -29,16 +30,60 @@ type PluginResponse struct {
 	} `json:"ips"`
 }
 
-func forwardRequestToServer(input []byte, nameSpaceFD int) ([]byte, error) {
+func forwardRequestToServer(input RequestPayload, nameSpaceFD int) ([]byte, error) {
+	// 8<------------------------------------------------------------------
+	// get request id
+	streamSock, err := net.Dial("unix", socketPathServer)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to UNIX socket: %v", err)
+	}
+	defer streamSock.Close()
+
+	// pack the request
+	data := map[string]map[string]string{"cni": {"cniVersion": "0.3.1"}}
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode JSON: %v", err)
+	}
+
+	// send the request
+	_, err = streamSock.Write(jsonData)
+	if err != nil {
+		return nil, fmt.Errorf("failed to send init request: %v", err)
+	}
+
+	// recv the response
+	buffer := make([]byte, 4096)
+	n, err := streamSock.Read(buffer)
+	if err != nil {
+		return nil, fmt.Errorf("failed to recv init response: %v", err)
+	}
+	fmt.Fprintf(os.Stderr, "recv init: %s\n", buffer[:n])
+
+	// parse the response
+	var response map[string]string
+	err = json.Unmarshal(buffer[:n], &response)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse init response: %v", err)
+	}
+
+	// get request id
+	rid, exists := response["rid"]
+	if !exists {
+		return nil, fmt.Errorf("failed to get rid: %v", err)
+	}
+
+	// 8<------------------------------------------------------------------
+	// send the fd
 	sock, err := net.Dial("unixgram", socketPathMain)
 	if err != nil {
-		return nil, fmt.Errorf("failed to connect to UNIX socket: %w", err)
+		return nil, fmt.Errorf("failed to connect to UNIX socket: %v", err)
 	}
 	defer sock.Close()
 
 	unixSock, err := sock.(*net.UnixConn).File()
 	if err != nil {
-		return nil, fmt.Errorf("failed to get raw socket descriptor: %w", err)
+		return nil, fmt.Errorf("failed to get raw socket descriptor: %v", err)
 	}
 	defer unixSock.Close()
 
@@ -47,20 +92,32 @@ func forwardRequestToServer(input []byte, nameSpaceFD int) ([]byte, error) {
 		rights = syscall.UnixRights(nameSpaceFD)
 	}
 
-	err = unix.Sendmsg(int(unixSock.Fd()), input, rights, nil, 0)
+	data_fd := map[string]string{"rid": rid}
+	jsonData, err = json.Marshal(data_fd)
+	err = unix.Sendmsg(int(unixSock.Fd()), jsonData, rights, nil, 0)
 	if err != nil {
 		return nil, fmt.Errorf("failed to send message: %w", err)
 	}
+
+
 	// 8<------------------------------------------------------------------
 
-	streamSock, err := net.Dial("unix", socketPathResponse)
+	// add request id and encode payload
+	input.Rid = rid
+	payloadBytes, err := json.MarshalIndent(input, "", "  ")
 	if err != nil {
-		return nil, fmt.Errorf("failed to connect to UNIX socket: %w", err)
+		fmt.Fprintf(os.Stderr, "failed to serialize payload: %v\n", err)
+		os.Exit(1)
 	}
-	defer streamSock.Close()
 
-	buffer := make([]byte, 4096)
-	n, err := streamSock.Read(buffer)
+	// send the request
+	_, err = streamSock.Write(payloadBytes)
+	if err != nil {
+		return nil, fmt.Errorf("failed to send init request: %v", err)
+	}
+
+	// get the response
+	n, err = streamSock.Read(buffer)
 	if err != nil {
 		return nil, fmt.Errorf("failed to receive response: %w", err)
 	}
@@ -123,14 +180,8 @@ func main() {
 		Env: env,
 	}
 
-	payloadBytes, err := json.MarshalIndent(payload, "", "  ")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to serialize payload: %v\n", err)
-		os.Exit(1)
-	}
-
 	// responseBody, err := sendToHTTPServer(payloadBytes)
-	responseBody, err := forwardRequestToServer(payloadBytes, nameSpaceFD)
+	responseBody, err := forwardRequestToServer(payload, nameSpaceFD)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to send to HTTP server: %v\n", err)
 		os.Exit(1)
