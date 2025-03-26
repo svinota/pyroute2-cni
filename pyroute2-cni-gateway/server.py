@@ -9,15 +9,16 @@ import uuid
 from typing import Any, Optional
 
 from pydantic import BaseModel, ConfigDict, PrivateAttr, ValidationError
-from pyroute2 import AsyncIPRoute
+from pyroute2 import AsyncIPRoute, Plan9ServerSocket
 from pyroute2.common import uifname
 
-HOST_IF = 'enp7s0'
+HOST_IF = 'enp1s0'
 SOCKET_PATH_STREAM = '/var/run/pyroute2/response'
 SOCKET_PATH_DGRAM = '/var/run/pyroute2/main'
 PR2_BRIDGE = 'pr2-bridge'
 PR2_VXLAN_IF = 'pr2-vxlan147'
 PR2_VXLAN = 147
+P9_PORT = 8149
 
 logging.basicConfig(level=logging.INFO)
 
@@ -296,10 +297,27 @@ async def run_fd_receiver(registry: dict[str, CNIRequest]) -> None:
 
 async def main() -> None:
     registry: dict[str, CNIRequest] = {}
+
+    async with AsyncIPRoute() as ipr:
+        async for route in await ipr.get_default_routes():
+            service_ipaddr = route.get('prefsrc')
+            break
+
     await run_fd_receiver(registry)
-    server = CNIServer(SOCKET_PATH_STREAM, registry)
-    await server.setup_endpoint()
-    await asyncio.sleep(600)
+    cni_server = CNIServer(SOCKET_PATH_STREAM, registry)
+    await cni_server.setup_endpoint()
+
+    p9_server = Plan9ServerSocket(address=(service_ipaddr, P9_PORT))
+    inode_registry = p9_server.filesystem.create('registry')
+    inode_registry.register_function(
+        lambda: registry,
+        loader=lambda x: {},
+        dumper=lambda x: json.dumps(
+            {k: v.model_dump() for k, v in x.items()}
+        ).encode('utf-8'),
+    )
+    p9_task = await p9_server.async_run()
+    await p9_task
 
 
 if __name__ == '__main__':
