@@ -27,14 +27,13 @@ spec:
                 values:
                 - linux
       hostNetwork: true
-      hostPID: true
       priorityClassName: system-node-critical
       tolerations:
       - operator: Exists
         effect: NoSchedule
       containers:
       - name: pyroute2-cni
-        image: ghcr.io/svinota/pyroute2-cni:v0.0.50
+        image: ghcr.io/svinota/pyroute2-cni:v0.0.66
         resources:
           requests:
             cpu: "100m"
