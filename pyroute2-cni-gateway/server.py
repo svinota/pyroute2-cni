@@ -11,6 +11,8 @@ from typing import Any, Optional
 from pydantic import BaseModel, ConfigDict, PrivateAttr, ValidationError
 from pyroute2 import AsyncIPRoute, Plan9ServerSocket
 from pyroute2.common import uifname
+from pyroute2.nftables.expressions import genex, ipv4addr, masq
+from pyroute2.nftables.main import AsyncNFTables
 
 HOST_IF = 'enp1s0'
 SOCKET_PATH_STREAM = '/var/run/pyroute2/response'
@@ -18,6 +20,7 @@ SOCKET_PATH_DGRAM = '/var/run/pyroute2/main'
 PR2_BRIDGE = 'pr2-bridge'
 PR2_VXLAN_IF = 'pr2-vxlan147'
 PR2_VXLAN = 147
+PR2_MAGIC = 'pyroute2-cni nat 0x42'
 P9_PORT = 8149
 
 logging.basicConfig(level=logging.INFO)
@@ -175,6 +178,67 @@ def cni_response(transport, data):
     return transport.write(json.dumps(data).encode('utf-8'))
 
 
+def oif(index):
+    ret = []
+    ret.append(genex('meta', {'key': 5, 'dreg': 1}))
+    ret.append(
+        genex(
+            'cmp',
+            {
+                'sreg': 1,
+                'op': 0,
+                'data': {
+                    'attrs': [['NFTA_DATA_VALUE', struct.pack('I', index)]]
+                },
+            },
+        )
+    )
+    return ret
+
+
+async def reconcile_system_firewall(pool: AddressPool, host_link: int) -> None:
+    async with AsyncNFTables() as nft_main:
+        # reconcile table
+        async for table in await nft_main.get_tables():
+            if table.get('name') == 'nat':
+                break
+        else:
+            await nft_main.table('add', name='nat')
+
+        # reconcile chain
+        async for chain in await nft_main.get_chains():
+            if chain.get('name') == 'POSTROUTING':
+                break
+        else:
+            await nft_main.chain(
+                'add',
+                table='nat',
+                name='POSTROUTING',
+                hook='postrouting',
+                type='nat',
+                policy=1,
+            )
+
+        # reconcile rule
+        async for rule in await nft_main.get_rules():
+            if rule.get('userdata') == PR2_MAGIC:
+                break
+        else:
+            await nft_main.rule(
+                'add',
+                table='nat',
+                chain='POSTROUTING',
+                expressions=(
+                    ipv4addr(src='10.244.0.0/16'),
+                    ipv4addr(dst='10.0.0.0/8', op=1),
+                    ipv4addr(dst='224.0.0.0/4', op=1),
+                    oif(index=host_link),
+                    masq(),
+                ),
+                userdata=PR2_MAGIC,
+            )
+
+
 async def setup_container_network(
     transport: asyncio.BaseTransport,
     data: dict[str, Any],
@@ -190,6 +254,7 @@ async def setup_container_network(
     vp0 = uifname()
 
     async with AsyncIPRoute() as ipr_main:
+        host_link = tuple(await ipr_main.link_lookup(ifname=HOST_IF))[0]
         if not await ipr_main.link_lookup(ifname=PR2_BRIDGE):
             await ipr_main.link(
                 'add', ifname=PR2_BRIDGE, kind='bridge', state='up'
@@ -217,7 +282,7 @@ async def setup_container_network(
                 kind='vxlan',
                 state='up',
                 master=bridge['index'],
-                vxlan_link=await ipr_main.link_lookup(ifname=HOST_IF),
+                vxlan_link=host_link,
                 vxlan_id=PR2_VXLAN,
                 vxlan_group='239.1.1.1',
             )
@@ -232,6 +297,8 @@ async def setup_container_network(
             ipr_main.link, 'dump', ifname=vp0, timeout=5
         )
         await ipr_main.link('set', index=port['index'], master=bridge['index'])
+
+    await reconcile_system_firewall(pool, host_link)
 
     address = f'{pool.allocate()}/{pool.bits}'
     async with AsyncIPRoute(netns=request.netns) as ipr:
