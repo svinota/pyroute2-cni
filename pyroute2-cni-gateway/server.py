@@ -231,6 +231,8 @@ async def reconcile_system_firewall(pool: AddressPool, host_link: int) -> None:
                 expressions=(
                     ipv4addr(src='10.244.0.0/16'),
                     ipv4addr(dst='10.0.0.0/8', op=1),
+                    ipv4addr(dst='192.168.0.0/16', op=1),
+                    ipv4addr(dst='172.16.0.0/20', op=1),
                     ipv4addr(dst='224.0.0.0/4', op=1),
                     oif(index=host_link),
                     masq(),
