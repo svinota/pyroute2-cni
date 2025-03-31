@@ -13,6 +13,7 @@ from pyroute2 import AsyncIPRoute, Plan9ServerSocket
 from pyroute2.common import uifname
 from pyroute2.nftables.expressions import genex, ipv4addr, masq
 from pyroute2.nftables.main import AsyncNFTables
+from pyroute2.netlink.nfnetlink.nftsocket import Cmp, Meta, Regs
 
 HOST_IF = 'enp1s0'
 SOCKET_PATH_STREAM = '/var/run/pyroute2/response'
@@ -180,13 +181,13 @@ def cni_response(transport, data):
 
 def oif(index):
     ret = []
-    ret.append(genex('meta', {'key': 5, 'dreg': 1}))
+    ret.append(genex('meta', {'key': Meta.NFT_META_OIF, 'dreg': Regs.NFT_REG_1}))
     ret.append(
         genex(
             'cmp',
             {
-                'sreg': 1,
-                'op': 0,
+                'sreg': Regs.NFT_REG_1,
+                'op': Cmp.NFT_CMP_EQ,
                 'data': {
                     'attrs': [['NFTA_DATA_VALUE', struct.pack('I', index)]]
                 },
@@ -230,11 +231,7 @@ async def reconcile_system_firewall(pool: AddressPool, host_link: int) -> None:
                 chain='POSTROUTING',
                 expressions=(
                     ipv4addr(src='10.244.0.0/16'),
-                    ipv4addr(dst='10.0.0.0/8', op=1),
-                    ipv4addr(dst='192.168.0.0/16', op=1),
-                    ipv4addr(dst='172.16.0.0/20', op=1),
-                    ipv4addr(dst='224.0.0.0/4', op=1),
-                    oif(index=host_link),
+                    ipv4addr(dst='10.244.0.0/16', op=Cmp.NFT_CMP_NEQ),
                     masq(),
                 ),
                 userdata=PR2_MAGIC,
@@ -264,19 +261,22 @@ async def setup_container_network(
         (bridge,) = await ipr_main.poll(
             ipr_main.link, 'dump', ifname=PR2_BRIDGE, timeout=5
         )
-        if not len(
-            [
+        bridge_addr = [
                 x
                 async for x in await ipr_main.addr(
                     'dump', family=socket.AF_INET, index=bridge['index']
                 )
             ]
-        ):
+        if len(bridge_addr):
+            gateway = bridge_addr[0].get('address')
+        else:
+            gateway = pool.allocate()
             await ipr_main.addr(
                 'add',
                 index=bridge['index'],
-                address=f'{pool.gateway}/{pool.bits}',
+                address=f'{gateway}/{pool.bits}',
             )
+
         if not await ipr_main.link_lookup(ifname=PR2_VXLAN_IF):
             await ipr_main.link(
                 'add',
@@ -307,7 +307,7 @@ async def setup_container_network(
         (eth0,) = await ipr.link('get', ifname='eth0')
         await ipr.link('set', index=eth0['index'], state='up')
         await ipr.addr('add', index=eth0['index'], address=address)
-        await ipr.route('add', gateway=pool.gateway)
+        await ipr.route('add', gateway=gateway)
 
     data['interfaces'] = [
         {
