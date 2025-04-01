@@ -2,20 +2,17 @@ FROM python:3.12-alpine
 
 WORKDIR /app
 
-# tools
-RUN apk add git
-RUN apk add vim
-RUN apk add containerd-ctr
-
 # python modules
+RUN apk add git
 COPY requirements.txt .
+COPY dist/* .
 RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install *whl
 
 # assets
 COPY image/* .
 
 # the engine
-COPY pyroute2-cni-gateway/server.py .
-COPY pyroute2-cni-plugin/pyroute2-cni-plugin .
+COPY pyroute2_plugin/pyroute2-cni-plugin .
 
-CMD [ "/app/start.sh" ]
+CMD [ "/usr/local/bin/pyroute2-cni" ]

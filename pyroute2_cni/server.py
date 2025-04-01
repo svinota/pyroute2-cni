@@ -270,7 +270,7 @@ async def setup_container_network(
         if len(bridge_addr):
             gateway = bridge_addr[0].get('address')
         else:
-            gateway = pool.allocate()
+            gateway = pool.gateway  # pool.allocate()
             await ipr_main.addr(
                 'add',
                 index=bridge['index'],
@@ -389,5 +389,9 @@ async def main() -> None:
     await p9_task
 
 
-if __name__ == '__main__':
+def run():
     asyncio.run(main())
+
+
+if __name__ == '__main__':
+    run()
