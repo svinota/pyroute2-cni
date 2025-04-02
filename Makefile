@@ -24,6 +24,25 @@ clean:
 	rm -rf *egg-info
 	rm -rf __pycache__
 
-.PHONY: dist
-dist: clean
+.PHONY: image-clean
+image-clean:
+	for i in `podman images | awk '/pyroute2-cni/ {print($$1":"$$2)}'`; do podman rmi $$i; done
+
+.PHONY: version
+version:
+	echo `cat VERSION | awk -F . '{print($$1"."$$2"."$$3 + 1)}'` >VERSION
+
+.PHONY: build
+build: clean version
+	make -C pyroute2_plugin
 	$(call nox,-e build)
+	podman build -t ghcr.io/svinota/pyroute2-cni:`cat VERSION` .
+	podman push ghcr.io/svinota/pyroute2-cni:`cat VERSION`
+
+
+.PHONY: deploy
+deploy: build
+	kubectl -n pyroute2-cni \
+		patch daemonset pyroute2-cni \
+		--type='json' \
+		-p='[{"op": "replace", "path": "/spec/template/spec/containers/0/image", "value": "ghcr.io/svinota/pyroute2-cni:'$$(cat VERSION)'"}]'
