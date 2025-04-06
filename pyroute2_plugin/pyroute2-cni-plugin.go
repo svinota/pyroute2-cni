@@ -12,8 +12,8 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const socketPathMain = "/var/run/pyroute2/main"
-const socketPathServer = "/var/run/pyroute2/response"
+const socketPathMain = "/var/run/pyroute2/fdpass"
+const socketPathServer = "/var/run/pyroute2/api"
 const lockFile = "/var/run/pyroute2/plugin-lock"
 
 type RequestPayload struct {

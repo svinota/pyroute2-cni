@@ -15,4 +15,4 @@ COPY image/* .
 # the engine
 COPY pyroute2_plugin/pyroute2-cni-plugin .
 
-CMD [ "/usr/local/bin/pyroute2-cni" ]
+CMD [ "/app/start.sh" ]

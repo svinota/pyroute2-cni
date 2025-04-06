@@ -1,3 +1,28 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: server-config
+  namespace: pyroute2-cni
+data:
+  server.ini: |
+    [api]
+    socket_path_api = /var/run/pyroute2/api
+    socket_path_fd = /var/run/pyroute2/fdpass
+
+    [network]
+    host_if = enp1s0
+    bridge = pr2-bridge
+    vxlan_if = pr2-vxlan147
+    vxlan_id = 147
+
+    [nftables]
+    magic = "pyroute2-cni nat 0x42"
+
+    [plan9]
+    port = 8149
+
+---
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -33,7 +58,7 @@ spec:
         effect: NoSchedule
       containers:
       - name: pyroute2-cni
-        image: ghcr.io/svinota/pyroute2-cni:v0.0.84
+        image: ghcr.io/svinota/pyroute2-cni:v0.0.98
         resources:
           requests:
             cpu: "100m"
@@ -54,6 +79,8 @@ spec:
           mountPath: /host
         - name: pyroute2-run
           mountPath: /var/run/pyroute2
+        - name: server-config
+          mountPath: /app/config
       volumes:
       - name: host-root
         hostPath:
@@ -62,3 +89,6 @@ spec:
         hostPath:
           path: /var/run/pyroute2
           type: DirectoryOrCreate
+      - name: server-config
+        configMap:
+          name: server-config

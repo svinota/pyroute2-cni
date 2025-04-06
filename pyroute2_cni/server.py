@@ -6,23 +6,17 @@ import random
 import socket
 import struct
 import uuid
+from configparser import ConfigParser
 from typing import Any, Optional
 
 from pydantic import BaseModel, ConfigDict, PrivateAttr, ValidationError
 from pyroute2 import AsyncIPRoute, Plan9ServerSocket
 from pyroute2.common import uifname
+from pyroute2.netlink.nfnetlink.nftsocket import Cmp, Meta, Regs
 from pyroute2.nftables.expressions import genex, ipv4addr, masq
 from pyroute2.nftables.main import AsyncNFTables
-from pyroute2.netlink.nfnetlink.nftsocket import Cmp, Meta, Regs
 
 HOST_IF = 'enp1s0'
-SOCKET_PATH_STREAM = '/var/run/pyroute2/response'
-SOCKET_PATH_DGRAM = '/var/run/pyroute2/main'
-PR2_BRIDGE = 'pr2-bridge'
-PR2_VXLAN_IF = 'pr2-vxlan147'
-PR2_VXLAN = 147
-PR2_MAGIC = 'pyroute2-cni nat 0x42'
-P9_PORT = 8149
 
 logging.basicConfig(level=logging.INFO)
 
@@ -97,11 +91,15 @@ class CNIProtocol(asyncio.Protocol):
     transport: asyncio.Transport
 
     def __init__(
-        self, on_con_lost: asyncio.Future, registry: dict[str, CNIRequest]
+        self,
+        on_con_lost: asyncio.Future,
+        registry: dict[str, CNIRequest],
+        config: ConfigParser,
     ):
         self.on_con_lost = on_con_lost
         self.registry = registry
         self.pool = AddressPool('10.244', 'H', '')
+        self.config = config
 
     def error(self, spec: str):
         return self.transport.write(spec.encode('utf-8'))
@@ -145,6 +143,7 @@ class CNIProtocol(asyncio.Protocol):
                     response,
                     self.registry[request.rid],
                     self.pool,
+                    self.config,
                 )
             )
 
@@ -159,18 +158,21 @@ class CNIServer:
 
     def __init__(
         self,
-        path: str,
+        config: ConfigParser,
         registry: dict[str, CNIRequest],
         use_event_loop: Optional[asyncio.AbstractEventLoop] = None,
     ):
         self.event_loop = use_event_loop or asyncio.get_event_loop()
         self.connection_lost = self.event_loop.create_future()
-        self.path = path
+        self.path = config['api']['socket_path_api']
         self.registry = registry
+        self.config = config
 
     async def setup_endpoint(self):
         self.endpoint = await self.event_loop.create_unix_server(
-            lambda: CNIProtocol(self.connection_lost, self.registry),
+            lambda: CNIProtocol(
+                self.connection_lost, self.registry, self.config
+            ),
             path=self.path,
         )
 
@@ -181,7 +183,9 @@ def cni_response(transport, data):
 
 def oif(index):
     ret = []
-    ret.append(genex('meta', {'key': Meta.NFT_META_OIF, 'dreg': Regs.NFT_REG_1}))
+    ret.append(
+        genex('meta', {'key': Meta.NFT_META_OIF, 'dreg': Regs.NFT_REG_1})
+    )
     ret.append(
         genex(
             'cmp',
@@ -197,7 +201,9 @@ def oif(index):
     return ret
 
 
-async def reconcile_system_firewall(pool: AddressPool, host_link: int) -> None:
+async def reconcile_system_firewall(
+    pool: AddressPool, host_link: int, magic: str
+) -> None:
     async with AsyncNFTables() as nft_main:
         # reconcile table
         async for table in await nft_main.get_tables():
@@ -222,7 +228,7 @@ async def reconcile_system_firewall(pool: AddressPool, host_link: int) -> None:
 
         # reconcile rule
         async for rule in await nft_main.get_rules():
-            if rule.get('userdata') == PR2_MAGIC:
+            if rule.get('userdata') == magic:
                 break
         else:
             await nft_main.rule(
@@ -234,7 +240,7 @@ async def reconcile_system_firewall(pool: AddressPool, host_link: int) -> None:
                     ipv4addr(dst='10.244.0.0/16', op=Cmp.NFT_CMP_NEQ),
                     masq(),
                 ),
-                userdata=PR2_MAGIC,
+                userdata=magic,
             )
 
 
@@ -243,6 +249,7 @@ async def setup_container_network(
     data: dict[str, Any],
     request: CNIRequest,
     pool: AddressPool,
+    config: ConfigParser,
 ) -> None:
     '''
     Run network setup in the CNI_NETNS
@@ -253,39 +260,47 @@ async def setup_container_network(
     vp0 = uifname()
 
     async with AsyncIPRoute() as ipr_main:
-        host_link = tuple(await ipr_main.link_lookup(ifname=HOST_IF))[0]
-        if not await ipr_main.link_lookup(ifname=PR2_BRIDGE):
+        host_link = tuple(
+            await ipr_main.link_lookup(ifname=config['network']['host_if'])
+        )[0]
+        if not await ipr_main.link_lookup(ifname=config['network']['bridge']):
             await ipr_main.link(
-                'add', ifname=PR2_BRIDGE, kind='bridge', state='up'
+                'add',
+                ifname=config['network']['bridge'],
+                kind='bridge',
+                state='up',
             )
         (bridge,) = await ipr_main.poll(
-            ipr_main.link, 'dump', ifname=PR2_BRIDGE, timeout=5
+            ipr_main.link,
+            'dump',
+            ifname=config['network']['bridge'],
+            timeout=5,
         )
         bridge_addr = [
-                x
-                async for x in await ipr_main.addr(
-                    'dump', family=socket.AF_INET, index=bridge['index']
-                )
-            ]
+            x
+            async for x in await ipr_main.addr(
+                'dump', family=socket.AF_INET, index=bridge['index']
+            )
+        ]
         if len(bridge_addr):
             gateway = bridge_addr[0].get('address')
         else:
-            gateway = pool.gateway  # pool.allocate()
+            gateway = pool.allocate()  # pool.gateway  # pool.allocate()
             await ipr_main.addr(
-                'add',
-                index=bridge['index'],
-                address=f'{gateway}/{pool.bits}',
+                'add', index=bridge['index'], address=f'{gateway}/{pool.bits}'
             )
 
-        if not await ipr_main.link_lookup(ifname=PR2_VXLAN_IF):
+        if not await ipr_main.link_lookup(
+            ifname=config['network']['vxlan_if']
+        ):
             await ipr_main.link(
                 'add',
-                ifname=PR2_VXLAN_IF,
+                ifname=config['network']['vxlan_if'],
                 kind='vxlan',
                 state='up',
                 master=bridge['index'],
                 vxlan_link=host_link,
-                vxlan_id=PR2_VXLAN,
+                vxlan_id=int(config['network']['vxlan_id']),
                 vxlan_group='239.1.1.1',
             )
         await ipr_main.link(
@@ -300,7 +315,9 @@ async def setup_container_network(
         )
         await ipr_main.link('set', index=port['index'], master=bridge['index'])
 
-    await reconcile_system_firewall(pool, host_link)
+    await reconcile_system_firewall(
+        pool, host_link, config['nftables']['magic']
+    )
 
     address = f'{pool.allocate()}/{pool.bits}'
     async with AsyncIPRoute(netns=request.netns) as ipr:
@@ -317,7 +334,7 @@ async def setup_container_network(
         }
     ]
     data['ips'] = [
-        {'address': address, 'interface': 0, 'gateway': pool.gateway}
+        {'address': address, 'interface': 0, 'gateway': gateway}
     ]
     data['routes'] = [{'dst': '0.0.0.0/0'}]
     os.close(request.netns)
@@ -352,11 +369,13 @@ def cni_request_handler(sock_dgram, registry):
         registry[request.rid].set_ready()
 
 
-async def run_fd_receiver(registry: dict[str, CNIRequest]) -> None:
-    if os.path.exists(SOCKET_PATH_DGRAM):
-        os.unlink(SOCKET_PATH_DGRAM)
+async def run_fd_receiver(
+    registry: dict[str, CNIRequest], socket_path: str
+) -> None:
+    if os.path.exists(socket_path):
+        os.unlink(socket_path)
     server_sock_dgram = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
-    server_sock_dgram.bind(SOCKET_PATH_DGRAM)
+    server_sock_dgram.bind(socket_path)
     server_sock_dgram.setblocking(False)
     loop = asyncio.get_running_loop()
     loop.add_reader(
@@ -364,7 +383,7 @@ async def run_fd_receiver(registry: dict[str, CNIRequest]) -> None:
     )
 
 
-async def main() -> None:
+async def main(config: ConfigParser) -> None:
     registry: dict[str, CNIRequest] = {}
 
     async with AsyncIPRoute() as ipr:
@@ -372,11 +391,15 @@ async def main() -> None:
             service_ipaddr = route.get('prefsrc')
             break
 
-    await run_fd_receiver(registry)
-    cni_server = CNIServer(SOCKET_PATH_STREAM, registry)
+    await run_fd_receiver(
+        registry, socket_path=config['api']['socket_path_fd']
+    )
+    cni_server = CNIServer(config, registry)
     await cni_server.setup_endpoint()
 
-    p9_server = Plan9ServerSocket(address=(service_ipaddr, P9_PORT))
+    p9_server = Plan9ServerSocket(
+        address=(service_ipaddr, int(config['plan9']['port']))
+    )
     inode_registry = p9_server.filesystem.create('registry')
     inode_registry.register_function(
         lambda: registry,
@@ -390,7 +413,10 @@ async def main() -> None:
 
 
 def run():
-    asyncio.run(main())
+    config = ConfigParser()
+    config.read('config/server.ini')
+
+    asyncio.run(main(config=config))
 
 
 if __name__ == '__main__':

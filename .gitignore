@@ -1,3 +1,5 @@
 pyroute2_plugin/pyroute2-cni-plugin
 *.pyc
 *.swp
+*.egg-info
+dist
