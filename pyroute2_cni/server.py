@@ -2,7 +2,6 @@ import asyncio
 import json
 import logging
 import os
-import random
 import socket
 import struct
 import uuid
@@ -16,34 +15,9 @@ from pyroute2.netlink.nfnetlink.nftsocket import Cmp, Meta, Regs
 from pyroute2.nftables.expressions import genex, ipv4addr, masq
 from pyroute2.nftables.main import AsyncNFTables
 
-HOST_IF = 'enp1s0'
+from pyroute2_cni.address_pool import AddressPool
 
 logging.basicConfig(level=logging.INFO)
-
-
-class AddressPool:
-    def __init__(self, prefix, size, name):
-        self.prefix = struct.pack('BB', *(int(x) for x in prefix.split('.')))
-        self.size = size
-        self.bits = struct.calcsize(size) * 8
-        self.min = 0x1
-        self.max = (1 << self.bits) - 1
-        self.allocated = set()
-        self.name = name
-        self.gateway = self.inet_ntoa(self.min)
-
-    def inet_ntoa(self, addr):
-        return socket.inet_ntoa(self.prefix + struct.pack('>H', addr))
-
-    def allocate(self):
-        while True:
-            addr = self.random()
-            if addr not in self.allocated:
-                self.allocated.add(addr)
-                return self.inet_ntoa(addr)
-
-    def random(self):
-        return random.randint(self.min + 1, self.max - 1)
 
 
 class CNIInterface(BaseModel):
@@ -333,9 +307,7 @@ async def setup_container_network(
             'sandbox': request.env['CNI_NETNS'],
         }
     ]
-    data['ips'] = [
-        {'address': address, 'interface': 0, 'gateway': gateway}
-    ]
+    data['ips'] = [{'address': address, 'interface': 0, 'gateway': gateway}]
     data['routes'] = [{'dst': '0.0.0.0/0'}]
     os.close(request.netns)
     logging.info(f'response: {data}')
