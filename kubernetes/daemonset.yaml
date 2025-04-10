@@ -22,6 +22,9 @@ data:
     [plan9]
     port = 8149
 
+    [mdns]
+    service = "_9p2r._tcp.local."
+
 ---
 apiVersion: apps/v1
 kind: DaemonSet
@@ -58,7 +61,7 @@ spec:
         effect: NoSchedule
       containers:
       - name: pyroute2-cni
-        image: ghcr.io/svinota/pyroute2-cni:v0.0.98
+        image: ghcr.io/svinota/pyroute2-cni:v0.0.106
         resources:
           requests:
             cpu: "100m"

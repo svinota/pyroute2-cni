@@ -2,8 +2,10 @@ import asyncio
 import json
 import logging
 import os
+import platform
 import socket
 import struct
+import sys
 import uuid
 from configparser import ConfigParser
 from typing import Any, Optional
@@ -69,10 +71,11 @@ class CNIProtocol(asyncio.Protocol):
         on_con_lost: asyncio.Future,
         registry: dict[str, CNIRequest],
         config: ConfigParser,
+        address_pool: AddressPool,
     ):
         self.on_con_lost = on_con_lost
         self.registry = registry
-        self.pool = AddressPool('10.244', 'H', '')
+        self.pool = address_pool
         self.config = config
 
     def error(self, spec: str):
@@ -134,6 +137,7 @@ class CNIServer:
         self,
         config: ConfigParser,
         registry: dict[str, CNIRequest],
+        address_pool: AddressPool,
         use_event_loop: Optional[asyncio.AbstractEventLoop] = None,
     ):
         self.event_loop = use_event_loop or asyncio.get_event_loop()
@@ -141,11 +145,15 @@ class CNIServer:
         self.path = config['api']['socket_path_api']
         self.registry = registry
         self.config = config
+        self.address_pool = address_pool
 
     async def setup_endpoint(self):
         self.endpoint = await self.event_loop.create_unix_server(
             lambda: CNIProtocol(
-                self.connection_lost, self.registry, self.config
+                self.connection_lost,
+                self.registry,
+                self.config,
+                self.address_pool,
             ),
             path=self.path,
         )
@@ -259,7 +267,7 @@ async def setup_container_network(
         if len(bridge_addr):
             gateway = bridge_addr[0].get('address')
         else:
-            gateway = pool.allocate()  # pool.gateway  # pool.allocate()
+            gateway = await pool.allocate()  # pool.gateway  # pool.allocate()
             await ipr_main.addr(
                 'add', index=bridge['index'], address=f'{gateway}/{pool.bits}'
             )
@@ -293,7 +301,8 @@ async def setup_container_network(
         pool, host_link, config['nftables']['magic']
     )
 
-    address = f'{pool.allocate()}/{pool.bits}'
+    address = await pool.allocate()
+    address = f'{address}/{pool.bits}'
     async with AsyncIPRoute(netns=request.netns) as ipr:
         (eth0,) = await ipr.link('get', ifname='eth0')
         await ipr.link('set', index=eth0['index'], state='up')
@@ -357,16 +366,20 @@ async def run_fd_receiver(
 
 async def main(config: ConfigParser) -> None:
     registry: dict[str, CNIRequest] = {}
+    service_ipaddr: str = ''
 
     async with AsyncIPRoute() as ipr:
         async for route in await ipr.get_default_routes():
             service_ipaddr = route.get('prefsrc')
             break
+    config['network']['ipaddr'] = service_ipaddr
 
     await run_fd_receiver(
         registry, socket_path=config['api']['socket_path_fd']
     )
-    cni_server = CNIServer(config, registry)
+    service_name = f'{platform.uname().node}.{config["mdns"]["service"]}'
+    address_pool = AddressPool('10.244', 'H', service_name, config)
+    cni_server = CNIServer(config, registry, address_pool)
     await cni_server.setup_endpoint()
 
     p9_server = Plan9ServerSocket(
@@ -380,6 +393,12 @@ async def main(config: ConfigParser) -> None:
             {k: v.model_dump() for k, v in x.items()}
         ).encode('utf-8'),
     )
+    inode_register_address = p9_server.filesystem.create('register_address')
+    inode_register_address.register_function(address_pool.register_address, dumper=lambda x: b'')
+    inode_allocated = p9_server.filesystem.create('allocated')
+    inode_allocated.register_function(
+        lambda: list(address_pool.allocated), loader=lambda x: {}, dumper=
+    )
     p9_task = await p9_server.async_run()
     await p9_task
 
@@ -388,6 +407,8 @@ def run():
     config = ConfigParser()
     config.read('config/server.ini')
 
+    if len(sys.argv) > 1:
+        config['plan9']['port'] = sys.argv[1]
     asyncio.run(main(config=config))
 
 

@@ -1,4 +1,4 @@
 pydantic==2.10.6
 zeroconf==0.146.1
 # pyroute2==0.9.1rc1
-git+https://github.com/svinota/pyroute2.git@p4-fix-batch2
+git+https://github.com/svinota/pyroute2.git@master
