@@ -394,10 +394,20 @@ async def main(config: ConfigParser) -> None:
         ).encode('utf-8'),
     )
     inode_register_address = p9_server.filesystem.create('register_address')
-    inode_register_address.register_function(address_pool.register_address, dumper=lambda x: b'')
+    inode_register_address.register_function(
+        address_pool.register_address, dumper=lambda x: b'{}'
+    )
     inode_allocated = p9_server.filesystem.create('allocated')
     inode_allocated.register_function(
-        lambda: list(address_pool.allocated), loader=lambda x: {}, dumper=
+        lambda: {
+            address_pool.inet_ntoa(x[0]): x[1]
+            for x in address_pool.allocated.items()
+        },
+        loader=lambda x: {},
+    )
+    inode_graph = p9_server.filesystem.create('graph')
+    inode_graph.register_function(
+        address_pool.export_graph, loader=lambda x: {}
     )
     p9_task = await p9_server.async_run()
     await p9_task

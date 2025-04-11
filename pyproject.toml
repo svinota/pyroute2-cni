@@ -3,5 +3,13 @@ requires = ["setuptools", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [[tool.mypy.overrides]]
-module = ["pyroute2.*", "pytest.*", "pytest_asyncio.*", "zeroconf.*"]
+module = [
+    "pyroute2.*",
+    "pytest.*",
+    "pytest_asyncio.*",
+    "zeroconf.*",
+    "matplotlib",
+    "matplotlib.*",
+    "networkx",
+]
 ignore_missing_imports = true

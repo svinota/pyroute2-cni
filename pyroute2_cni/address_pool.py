@@ -4,7 +4,10 @@ import random
 import socket
 import struct
 import traceback
+from io import BytesIO
 
+import matplotlib.pyplot as plt
+import networkx as nx
 from pyroute2 import Plan9ClientSocket
 from zeroconf import ServiceStateChange, Zeroconf
 from zeroconf.asyncio import (
@@ -68,7 +71,7 @@ class AddressPool:
         self.bits = struct.calcsize(size) * 8
         self.min = 0x1
         self.max = (1 << self.bits) - 1
-        self.allocated = set()
+        self.allocated = {}
         self.name = name
         self.gateway = self.inet_ntoa(self.min)
         self.config = config
@@ -90,9 +93,43 @@ class AddressPool:
     def inet_ntoa(self, addr):
         return socket.inet_ntoa(self.prefix + struct.pack('>H', addr))
 
-    def register_address(self, address):
-        self.allocated.add(address)
+    def register_address(self, address, name):
+        self.allocated[address] = name
         return self.inet_ntoa(address)
+
+    def export_graph(self):
+        G = nx.Graph()
+        hosts = set(self.allocated.values())
+        for h1 in hosts:
+            for h2 in hosts:
+                if h1 != h2:
+                    G.add_edge(h1, h2)
+        for ip, host in self.allocated.items():
+            G.add_edge(self.inet_ntoa(ip), host)
+        buf = BytesIO()
+        pos = nx.spring_layout(G, seed=42)
+        node_colors = [
+            'skyblue' if node in hosts else 'lightgreen' for node in G.nodes
+        ]
+        node_sizes = [800 if node in hosts else 300 for node in G.nodes]
+        plt.figure(figsize=(6, 4))
+        nx.draw(
+            G,
+            pos,
+            with_labels=True,
+            node_color=node_colors,
+            node_size=node_sizes,
+            font_size=9,
+            edge_color="gray",
+        )
+        plt.axis('off')
+
+        plt.savefig(buf, format='svg', bbox_inches='tight')
+        plt.close()
+
+        image_bytes = buf.getvalue()
+        buf.close()
+        return image_bytes
 
     async def allocate(self, address=None):
         global PEERS
@@ -108,13 +145,13 @@ class AddressPool:
                             await p9.start_session()
                             await p9.call(
                                 await p9.fid('register_address'),
-                                kwarg={'address': address},
+                                kwarg={'address': address, 'name': self.name},
                             )
                     except Exception as e:
                         logging.error('%s' % (traceback.format_exc()))
                         logging.error(f'error: {e}')
                 logging.info(f'{self.name} - {name} - {peer}')
-        return self.register_address(address)
+        return self.register_address(address, self.name)
 
     def random(self):
         return random.randint(self.min + 1, self.max - 1)

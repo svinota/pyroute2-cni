@@ -11,3 +11,5 @@ git+https://github.com/svinota/pyroute2.git@master
 # pyroute2==0.9.1rc1
 pydantic
 pydantic-settings
+networkx
+matplotlib
