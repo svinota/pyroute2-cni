@@ -131,26 +131,26 @@ class AddressPool:
         buf.close()
         return image_bytes
 
-    async def allocate(self, address=None):
+    async def allocate(self):
         global PEERS
-        if address is None:
-            while True:
-                address = self.random()
-                if address not in self.allocated:
-                    break
-            for name, peer in PEERS.items():
-                if self.name != name:
-                    try:
-                        async with Plan9ClientSocket(address=peer[0]) as p9:
-                            await p9.start_session()
-                            await p9.call(
-                                await p9.fid('register_address'),
-                                kwarg={'address': address, 'name': self.name},
-                            )
-                    except Exception as e:
-                        logging.error('%s' % (traceback.format_exc()))
-                        logging.error(f'error: {e}')
-                logging.info(f'{self.name} - {name} - {peer}')
+        address = None
+        while True:
+            address = self.random()
+            if address not in self.allocated:
+                break
+        for name, peer in PEERS.items():
+            if self.name != name:
+                try:
+                    async with Plan9ClientSocket(address=peer[0]) as p9:
+                        await p9.start_session()
+                        await p9.call(
+                            await p9.fid('register_address'),
+                            kwarg={'address': address, 'name': self.name},
+                        )
+                except Exception as e:
+                    logging.error('%s' % (traceback.format_exc()))
+                    logging.error(f'error: {e}')
+            logging.info(f'{self.name} - {name} - {peer}')
         return self.register_address(address, self.name)
 
     def random(self):

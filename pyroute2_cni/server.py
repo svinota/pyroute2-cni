@@ -385,30 +385,28 @@ async def main(config: ConfigParser) -> None:
     p9_server = Plan9ServerSocket(
         address=(service_ipaddr, int(config['plan9']['port']))
     )
-    inode_registry = p9_server.filesystem.create('registry')
-    inode_registry.register_function(
-        lambda: registry,
-        loader=lambda x: {},
-        dumper=lambda x: json.dumps(
-            {k: v.model_dump() for k, v in x.items()}
-        ).encode('utf-8'),
-    )
-    inode_register_address = p9_server.filesystem.create('register_address')
-    inode_register_address.register_function(
-        address_pool.register_address, dumper=lambda x: b'{}'
-    )
-    inode_allocated = p9_server.filesystem.create('allocated')
-    inode_allocated.register_function(
-        lambda: {
-            address_pool.inet_ntoa(x[0]): x[1]
-            for x in address_pool.allocated.items()
-        },
-        loader=lambda x: {},
-    )
-    inode_graph = p9_server.filesystem.create('graph')
-    inode_graph.register_function(
-        address_pool.export_graph, loader=lambda x: {}
-    )
+    with p9_server.filesystem.create('registry') as i:
+        i.register_function(
+            lambda: registry,
+            loader=lambda x: {},
+            dumper=lambda x: json.dumps(
+                {k: v.model_dump() for k, v in x.items()}
+            ).encode('utf-8'),
+        )
+    with p9_server.filesystem.create('register_address') as i:
+        i.register_function(
+            address_pool.register_address, dumper=lambda x: b'{}'
+        )
+    with p9_server.filesystem.create('allocated') as i:
+        i.register_function(
+            lambda: {
+                address_pool.inet_ntoa(x[0]): x[1]
+                for x in address_pool.allocated.items()
+            },
+            loader=lambda x: {},
+        )
+    with p9_server.filesystem.create('graph') as i:
+        i.register_function(address_pool.export_graph, loader=lambda x: {})
     p9_task = await p9_server.async_run()
     await p9_task
 
