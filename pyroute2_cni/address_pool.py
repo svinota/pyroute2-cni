@@ -4,6 +4,7 @@ import random
 import socket
 import struct
 import traceback
+from dataclasses import dataclass
 from io import BytesIO
 
 import matplotlib.pyplot as plt
@@ -64,6 +65,12 @@ def mdns_service_update_handler(
     logging.info(f'task {task}')
 
 
+@dataclass
+class AddressMetadata:
+    node: str
+    rid: str
+
+
 class AddressPool:
     def __init__(self, prefix, size, name, config):
         self.prefix = struct.pack('BB', *(int(x) for x in prefix.split('.')))
@@ -90,22 +97,24 @@ class AddressPool:
         )
         asyncio.ensure_future(self.mdns.async_register_service(self.info))
 
-    def inet_ntoa(self, addr):
-        return socket.inet_ntoa(self.prefix + struct.pack('>H', addr))
+    def inet_ntoa(self, address: int) -> str:
+        return socket.inet_ntoa(self.prefix + struct.pack('>H', address))
 
-    def register_address(self, address, name):
-        self.allocated[address] = name
+    def register_address(
+        self, address: int, node: str = '', rid: str = ''
+    ) -> str:
+        self.allocated[address] = AddressMetadata(node, rid)
         return self.inet_ntoa(address)
 
     def export_graph(self):
         G = nx.Graph()
-        hosts = set(self.allocated.values())
+        hosts = set([x.node for x in self.allocated.values()])
         for h1 in hosts:
             for h2 in hosts:
                 if h1 != h2:
                     G.add_edge(h1, h2)
-        for ip, host in self.allocated.items():
-            G.add_edge(self.inet_ntoa(ip), host)
+        for ip, x in self.allocated.items():
+            G.add_edge(self.inet_ntoa(ip), x.node)
         buf = BytesIO()
         pos = nx.spring_layout(G, seed=42)
         node_colors = [
@@ -131,7 +140,7 @@ class AddressPool:
         buf.close()
         return image_bytes
 
-    async def allocate(self):
+    async def allocate(self, rid: str = '') -> str:
         global PEERS
         address = None
         while True:
@@ -145,13 +154,17 @@ class AddressPool:
                         await p9.start_session()
                         await p9.call(
                             await p9.fid('register_address'),
-                            kwarg={'address': address, 'name': self.name},
+                            kwarg={
+                                'address': address,
+                                'node': self.name,
+                                'rid': rid,
+                            },
                         )
                 except Exception as e:
                     logging.error('%s' % (traceback.format_exc()))
                     logging.error(f'error: {e}')
             logging.info(f'{self.name} - {name} - {peer}')
-        return self.register_address(address, self.name)
+        return self.register_address(address, self.name, rid)
 
     def random(self):
         return random.randint(self.min + 1, self.max - 1)

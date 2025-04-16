@@ -301,7 +301,7 @@ async def setup_container_network(
         pool, host_link, config['nftables']['magic']
     )
 
-    address = await pool.allocate()
+    address = await pool.allocate(rid=request.env.get('CNI_CONTAINERID', ''))
     address = f'{address}/{pool.bits}'
     async with AsyncIPRoute(netns=request.netns) as ipr:
         (eth0,) = await ipr.link('get', ifname='eth0')
@@ -386,6 +386,7 @@ async def main(config: ConfigParser) -> None:
         address=(service_ipaddr, int(config['plan9']['port']))
     )
     with p9_server.filesystem.create('registry') as i:
+        i.metadata.call_on_read = True
         i.register_function(
             lambda: registry,
             loader=lambda x: {},
@@ -398,15 +399,18 @@ async def main(config: ConfigParser) -> None:
             address_pool.register_address, dumper=lambda x: b'{}'
         )
     with p9_server.filesystem.create('allocated') as i:
+        i.metadata.call_on_read = True
         i.register_function(
             lambda: {
-                address_pool.inet_ntoa(x[0]): x[1]
+                address_pool.inet_ntoa(x[0]): x[1].node
                 for x in address_pool.allocated.items()
             },
             loader=lambda x: {},
         )
     with p9_server.filesystem.create('graph') as i:
+        i.metadata.call_on_read = True
         i.register_function(address_pool.export_graph, loader=lambda x: {})
+
     p9_task = await p9_server.async_run()
     await p9_task
 
