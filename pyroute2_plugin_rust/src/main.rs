@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::env;
 use std::fs::{File, OpenOptions};
-use std::io::{self, Read, Write};
+use std::io::{self, IoSlice, Read, Write};
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::os::unix::net::{UnixDatagram, UnixStream};
 use std::path::Path;
@@ -9,9 +9,7 @@ use std::thread::sleep;
 use std::time::Duration;
 
 use nix::fcntl::{flock, FlockArg};
-use nix::sys::socket::{
-    sendmsg, ControlMessage, MsgFlags, UnixAddr,
-};
+use nix::sys::socket::{sendmsg, ControlMessage, MsgFlags, UnixAddr};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -72,23 +70,26 @@ fn forward_request_to_server(
     let sock_fd = sock.as_raw_fd();
 
     let data_fd = json!({"rid": rid}).to_string().into_bytes();
+    let data_fd = IoSlice::new(&data_fd);
 
     if namespace_fd > 0 {
-        let cmsg = [ControlMessage::ScmRights(&[namespace_fd])];
+        let rights = [namespace_fd];
+        let cmsg = [ControlMessage::ScmRights(&rights)];
+
         sendmsg(
-            sock_fd, 
-            &data_fd, 
+            sock_fd,
+            &[data_fd],
             &cmsg,
-            MsgFlags::empty(), 
-            Some(&UnixAddr::new(SOCKET_PATH_MAIN)?)
+            MsgFlags::empty(),
+            Some(&UnixAddr::new(SOCKET_PATH_MAIN)?),
         )?;
     } else {
         sendmsg(
-            sock_fd, 
-            &data_fd, 
+            sock_fd,
+            &[data_fd],
             &[],
-            MsgFlags::empty(), 
-            Some(&UnixAddr::new(SOCKET_PATH_MAIN)?)
+            MsgFlags::empty(),
+            Some(&UnixAddr::new(SOCKET_PATH_MAIN)?),
         )?;
     }
 
@@ -114,11 +115,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Open lock file
     let flock_file = OpenOptions::new()
+        .truncate(true)
         .create(true)
         .read(true)
         .write(true)
         .open(LOCK_FILE)?;
-    
+
     // Acquire lock
     loop {
         match flock(flock_file.as_raw_fd(), FlockArg::LockExclusiveNonblock) {
