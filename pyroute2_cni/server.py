@@ -3,11 +3,13 @@ import json
 import logging
 import os
 import platform
+import signal
 import socket
 import struct
 import sys
 import uuid
 from configparser import ConfigParser
+from functools import partial
 from typing import Any, Optional
 
 from pydantic import BaseModel, ConfigDict, PrivateAttr, ValidationError
@@ -393,6 +395,12 @@ async def run_fd_receiver(
     )
 
 
+def handle_signal(tasks: list[asyncio.Task], signal_num) -> None:
+    logging.info(f'got signal {signal.Signals(signal_num).name}')
+    for task in tasks:
+        task.cancel()
+
+
 async def main(config: ConfigParser) -> None:
     registry: dict[str, CNIRequest] = {}
     service_ipaddr: str = ''
@@ -441,6 +449,11 @@ async def main(config: ConfigParser) -> None:
         i.register_function(address_pool.export_graph, loader=lambda x: {})
 
     p9_task = await p9_server.async_run()
+    loop = asyncio.get_event_loop()
+    for signal_num in (signal.SIGTERM, signal.SIGINT, signal.SIGQUIT):
+        loop.add_signal_handler(
+            signal_num, partial(handle_signal, [p9_task], signal_num)
+        )
     await p9_task
 
 
@@ -450,7 +463,10 @@ def run():
 
     if len(sys.argv) > 1:
         config['plan9']['port'] = sys.argv[1]
-    asyncio.run(main(config=config))
+    try:
+        asyncio.run(main(config=config))
+    except asyncio.exceptions.CancelledError:
+        pass
 
 
 if __name__ == '__main__':
