@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 	"net"
-	"time"
 	"syscall"
 	"golang.org/x/sys/unix"
 )
@@ -132,21 +131,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	flock, err := os.OpenFile(lockFile, os.O_CREATE|os.O_RDWR, 0640)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to open lock file: %v\n", err)
-		os.Exit(1)
-	}
-	defer flock.Close()
-
-	for {
-		err := syscall.Flock(int(flock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
-		if err == nil {
-			break
-		}
-		time.Sleep(2 * time.Second)
-	}
-
 	var cniData map[string]interface{}
 	if err := json.Unmarshal(input, &cniData); err != nil {
 		fmt.Fprintf(os.Stderr, "failed to parse stdin JSON: %v\n", err)
@@ -187,17 +171,5 @@ func main() {
 		os.Exit(1)
 	}
 
-	var response PluginResponse
-	if err := json.Unmarshal(responseBody, &response); err != nil {
-		fmt.Fprintf(os.Stderr, "failed to decode server response: %v\n", err)
-		os.Exit(1)
-	}
-
-	output, err := json.Marshal(response)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to encode response: %v\n", err)
-		os.Exit(1)
-	}
-	syscall.Flock(int(flock.Fd()), syscall.LOCK_UN)
-	fmt.Println(string(output))
+	fmt.Println(string(responseBody))
 }
