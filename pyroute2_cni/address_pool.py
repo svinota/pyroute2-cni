@@ -68,7 +68,7 @@ def mdns_service_update_handler(
 @dataclass
 class AddressMetadata:
     node: str
-    rid: str
+    containerid: str
 
 
 class AddressPool:
@@ -96,15 +96,6 @@ class AddressPool:
             handlers=[mdns_service_update_handler],
         )
         asyncio.ensure_future(self.mdns.async_register_service(self.info))
-
-    def inet_ntoa(self, address: int) -> str:
-        return socket.inet_ntoa(self.prefix + struct.pack('>H', address))
-
-    def register_address(
-        self, address: int, node: str = '', rid: str = ''
-    ) -> str:
-        self.allocated[address] = AddressMetadata(node, rid)
-        return self.inet_ntoa(address)
 
     def export_graph(self):
         G = nx.Graph()
@@ -140,7 +131,16 @@ class AddressPool:
         buf.close()
         return image_bytes
 
-    async def allocate(self, rid: str = '') -> str:
+    def inet_ntoa(self, address: int) -> str:
+        return socket.inet_ntoa(self.prefix + struct.pack('>H', address))
+
+    def register_address(
+        self, address: int, node: str = '', containerid: str = ''
+    ) -> str:
+        self.allocated[address] = AddressMetadata(node, containerid)
+        return self.inet_ntoa(address)
+
+    async def allocate(self, containerid: str = '') -> str:
         global PEERS
         address = None
         while True:
@@ -157,14 +157,17 @@ class AddressPool:
                             kwarg={
                                 'address': address,
                                 'node': self.name,
-                                'rid': rid,
+                                'containerid': containerid,
                             },
                         )
                 except Exception as e:
                     logging.error('%s' % (traceback.format_exc()))
                     logging.error(f'error: {e}')
             logging.info(f'{self.name} - {name} - {peer}')
-        return self.register_address(address, self.name, rid)
+        return self.register_address(address, self.name, containerid)
+
+    async def release(self, containerid: str = '') -> None:
+        pass
 
     def random(self):
         return random.randint(self.min + 1, self.max - 1)

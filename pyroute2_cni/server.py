@@ -106,23 +106,37 @@ class CNIProtocol(asyncio.Protocol):
             self.registry[request.rid].merge(request)
         if run_setup:
             response: dict[str, Any] = {'cniVersion': request.cni.cniVersion}
-            if request.env.get('CNI_COMMAND', None) != 'ADD':
+            command = request.env.get('CNI_COMMAND', None)
+
+            if command == 'ADD':
+                logging.info('cni ready, wait for fd')
+                loop = asyncio.get_event_loop()
+                loop.create_task(
+                    setup_container_network(
+                        self.transport,
+                        response,
+                        self.registry[request.rid],
+                        self.pool,
+                        self.config,
+                    )
+                )
+            elif command == 'DEL':
+                logging.info('running cleanup')
+                loop = asyncio.get_event_loop()
+                loop.create_task(
+                    cleanup_container_network(
+                        self.transport,
+                        response,
+                        self.registry[request.rid],
+                        self.pool,
+                        self.config,
+                    )
+                )
+            else:
                 logging.info(
                     f'return on command {request.env.get("CNI_COMMAND", None)}'
                 )
                 return cni_response(self.transport, response)
-
-            logging.info('cni ready, wait for fd')
-            loop = asyncio.get_event_loop()
-            loop.create_task(
-                setup_container_network(
-                    self.transport,
-                    response,
-                    self.registry[request.rid],
-                    self.pool,
-                    self.config,
-                )
-            )
 
     # do not annotate
     def connection_made(self, transport):
@@ -226,6 +240,19 @@ async def reconcile_system_firewall(
             )
 
 
+async def cleanup_container_network(
+    transport: asyncio.BaseTransport,
+    data: dict[str, Any],
+    request: CNIRequest,
+    pool: AddressPool,
+    config: ConfigParser,
+) -> None:
+    '''
+    Run network setup
+    '''
+    return cni_response(transport, data)
+
+
 async def setup_container_network(
     transport: asyncio.BaseTransport,
     data: dict[str, Any],
@@ -234,7 +261,7 @@ async def setup_container_network(
     config: ConfigParser,
 ) -> None:
     '''
-    Run network setup in the CNI_NETNS
+    Run network setup
     '''
     await request.ready()
     logging.info(f'request {request.rid} ready')
@@ -301,7 +328,9 @@ async def setup_container_network(
         pool, host_link, config['nftables']['magic']
     )
 
-    address = await pool.allocate(rid=request.env.get('CNI_CONTAINERID', ''))
+    address = await pool.allocate(
+        containerid=request.env.get('CNI_CONTAINERID', '')
+    )
     address = f'{address}/{pool.bits}'
     async with AsyncIPRoute(netns=request.netns) as ipr:
         (eth0,) = await ipr.link('get', ifname='eth0')
