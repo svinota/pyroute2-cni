@@ -3,3 +3,6 @@ pyroute2_plugin/pyroute2-cni-plugin
 *.swp
 *.egg-info
 dist
+pyroute2_plugin_rust/target
+pyroute2_plugin_rust/**/*.rs.bk
+pyroute2_plugin_rust/Cargo.lock
