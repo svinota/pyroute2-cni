@@ -134,11 +134,46 @@ class AddressPool:
     def inet_ntoa(self, address: int) -> str:
         return socket.inet_ntoa(self.prefix + struct.pack('>H', address))
 
+    def unregister_address(self, containerid: str) -> AddressMetadata:
+        logging.info(f'containerid: {containerid}')
+        address = None
+        for address, metadata in tuple(self.allocated.items()):
+            logging.info(
+                f'L address {address}, containerid: {metadata.containerid}'
+            )
+            logging.info(f'L {metadata.containerid == containerid}')
+            logging.info(
+                f'L {type(metadata.containerid)} -- {type(containerid)}'
+            )
+            if metadata.containerid == containerid:
+                break
+        else:
+            raise KeyError('address not allocated')
+        return self.allocated.pop(address)
+
     def register_address(
         self, address: int, node: str = '', containerid: str = ''
     ) -> str:
         self.allocated[address] = AddressMetadata(node, containerid)
         return self.inet_ntoa(address)
+
+    async def release(self, containerid: str) -> AddressMetadata:
+        global PEERS
+        metadata = self.unregister_address(containerid)
+        for name, peer in PEERS.items():
+            if self.name != name:
+                try:
+                    async with Plan9ClientSocket(address=peer[0]) as p9:
+                        await p9.start_session()
+                        await p9.call(
+                            await p9.fid('unregister_address'),
+                            kwarg={'containerid': containerid},
+                        )
+                except Exception as e:
+                    logging.error('%s' % (traceback.format_exc()))
+                    logging.error(f'error: {e}')
+            logging.info(f'U {self.name} - {name} - {peer}')
+        return metadata
 
     async def allocate(self, containerid: str = '') -> str:
         global PEERS
@@ -163,11 +198,8 @@ class AddressPool:
                 except Exception as e:
                     logging.error('%s' % (traceback.format_exc()))
                     logging.error(f'error: {e}')
-            logging.info(f'{self.name} - {name} - {peer}')
+            logging.info(f'R {self.name} - {name} - {peer}')
         return self.register_address(address, self.name, containerid)
-
-    async def release(self, containerid: str = '') -> None:
-        pass
 
     def random(self):
         return random.randint(self.min + 1, self.max - 1)

@@ -252,7 +252,13 @@ async def cleanup_container_network(
     '''
     Run network setup
     '''
-    return cni_response(transport, data)
+    containerid = request.env.get('CNI_CONTAINERID', '')
+    try:
+        await pool.release(containerid)
+    except KeyError:
+        # just ignore non existent addresses for now
+        logging.error(f'container {containerid} not registered')
+    cni_response(transport, data)
 
 
 async def setup_container_network(
@@ -434,6 +440,10 @@ async def main(config: ConfigParser) -> None:
     with p9_server.filesystem.create('register_address') as i:
         i.register_function(
             address_pool.register_address, dumper=lambda x: b'{}'
+        )
+    with p9_server.filesystem.create('unregister_address') as i:
+        i.register_function(
+            address_pool.unregister_address, dumper=lambda x: b'{}'
         )
     with p9_server.filesystem.create('allocated') as i:
         i.metadata.call_on_read = True
