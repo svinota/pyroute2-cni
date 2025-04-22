@@ -261,6 +261,12 @@ async def cleanup_container_network(
     cni_response(transport, data)
 
 
+def set_sysctl(config: dict[str, int]) -> None:
+    for path, value in config.items():
+        with open(f'/proc/sys/{path.replace(".", "/")}', 'w') as f:
+            f.write(str(value))
+
+
 async def setup_container_network(
     transport: asyncio.BaseTransport,
     data: dict[str, Any],
@@ -276,10 +282,38 @@ async def setup_container_network(
 
     vp0 = uifname()
 
+    # MUST load vrf module before running CNI!
+    set_sysctl(
+        {
+            'net.ipv6.conf.all.seg6_enabled': 1,
+            f'net.ipv6.conf.{config["network"]["host_if"]}.seg6_enabled': 1,
+            'net.ipv4.conf.all.rp_filter': 0,  # <-- asymmetric SRv6
+            'net.vrf.strict_mode': 1,  # <-- required for SRv6 End.DT4
+        }
+    )
+
     async with AsyncIPRoute() as ipr_main:
-        host_link = tuple(
-            await ipr_main.link_lookup(ifname=config['network']['host_if'])
-        )[0]
+        ###
+        # configure vrf
+        #
+        if not await ipr_main.link_lookup(ifname='vrf0'):
+            await ipr_main.link(
+                'add', ifname='vrf0', kind='vrf', vrf_table=1010, state='up'
+            )
+        (vrf,) = await ipr_main.poll(
+            ipr_main.link, 'dump', ifname='vrf0', timeout=5
+        )
+        set_sysctl(
+            {
+                'net.ipv4.conf.vrf0.rp_filter': 0,  # <-- asymmetric SRv6
+                'net.ipv4.tcp_l3mdev_accept': 1,  # <-- serve cross VRF
+                'net.ipv4.udp_l3mdev_accept': 1,  # <-- serve cross VRF
+            }
+        )
+
+        ###
+        # configure bridge
+        #
         if not await ipr_main.link_lookup(ifname=config['network']['bridge']):
             await ipr_main.link(
                 'add',
@@ -306,7 +340,20 @@ async def setup_container_network(
             await ipr_main.addr(
                 'add', index=bridge['index'], address=f'{gateway}/{pool.bits}'
             )
+        if bridge.get('master') != vrf['index']:
+            await ipr_main.link(
+                'set', index=bridge['index'], master=vrf['index']
+            )
+            await ipr_main.route(
+                'add', dst='10.244.0.0', dst_len=16, oif=vrf['index']
+            )
 
+        host_link = tuple(
+            await ipr_main.link_lookup(ifname=config['network']['host_if'])
+        )[0]
+        ###
+        # configure vxlan
+        #
         if not await ipr_main.link_lookup(
             ifname=config['network']['vxlan_if']
         ):
@@ -336,6 +383,9 @@ async def setup_container_network(
         pool, host_link, config['nftables']['magic']
     )
 
+    ###
+    # configure container's veth
+    #
     address = await pool.allocate(
         containerid=request.env.get('CNI_CONTAINERID', '')
     )
