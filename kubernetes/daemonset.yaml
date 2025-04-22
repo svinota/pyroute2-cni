@@ -17,13 +17,13 @@ data:
     vxlan_id = 147
 
     [nftables]
-    magic = "pyroute2-cni nat 0x42"
+    magic = pyroute2-cni nat 0x42
 
     [plan9]
     port = 8149
 
     [mdns]
-    service = "_9p2r._tcp.local."
+    service = _9p2r._tcp.local.
 
 ---
 apiVersion: apps/v1
@@ -61,7 +61,7 @@ spec:
         effect: NoSchedule
       containers:
       - name: pyroute2-cni
-        image: ghcr.io/svinota/pyroute2-cni:v0.0.106
+        image: ghcr.io/svinota/pyroute2-cni:v0.0.172
         resources:
           requests:
             cpu: "100m"
