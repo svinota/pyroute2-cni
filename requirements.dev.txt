@@ -13,3 +13,6 @@ pydantic
 pydantic-settings
 networkx
 matplotlib
+kubernetes
+kubernetes-stubs
+ipaddress

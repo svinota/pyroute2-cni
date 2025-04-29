@@ -10,6 +10,7 @@ import sys
 import uuid
 from configparser import ConfigParser
 from functools import partial
+from ipaddress import IPv4Network
 from typing import Any, Optional
 
 from pydantic import BaseModel, ConfigDict, PrivateAttr, ValidationError
@@ -19,6 +20,8 @@ from pyroute2.netlink.nfnetlink.nftsocket import Cmp, Meta, Regs
 from pyroute2.nftables.expressions import genex, ipv4addr, masq
 from pyroute2.nftables.main import AsyncNFTables
 
+from kubernetes import client as k8s_client
+from kubernetes import config as k8s_config
 from pyroute2_cni.address_pool import AddressPool
 
 logging.basicConfig(level=logging.INFO)
@@ -267,6 +270,33 @@ def set_sysctl(config: dict[str, int]) -> None:
             f.write(str(value))
 
 
+def get_namespace_labels(name: str) -> dict[str, str]:
+    try:
+        k8s_config.load_incluster_config()
+    except Exception as e:
+        logging.error(f'error C reading namespace {name}: {e}')
+        return {}
+    v1 = k8s_client.CoreV1Api()
+    try:
+        ns = v1.read_namespace(name=name)
+    except Exception as e:
+        logging.error(f'error R reading namespace {name}: {e}')
+        return {}
+    # except kubernetes.client.exceptions.ApiException:
+    #    return {}
+    return ns.metadata.labels or {}
+
+
+def get_pod_namespace(request: CNIRequest) -> str:
+    cni_args = request.env.get('CNI_ARGS', '')
+    for arg in cni_args.split(';'):
+        key, value = arg.split('=')
+        if key == 'K8S_POD_NAMESPACE':
+            return value
+    logging.warning('got no pod namespace, return default')
+    return 'default'
+
+
 async def setup_container_network(
     transport: asyncio.BaseTransport,
     data: dict[str, Any],
@@ -292,20 +322,36 @@ async def setup_container_network(
         }
     )
 
+    ###
+    # get VRF and VXLAN ids for this container
+    #
+    namespace = get_pod_namespace(request)
+    labels = get_namespace_labels(namespace)
+    vrf_table = int(labels.get('pyroute2.org/vrf', '42'))
+    vxlan_id = int(labels.get('pyroute2.org/vxlan', '42'))
+    prefixlen = int(labels.get('pyroute2.org/prefixlen', '16'))
+    prefix = labels.get('pyroute2.org/network', '10.244.0.0')
+    network = IPv4Network(f'{prefix}/{prefixlen}')
+
     async with AsyncIPRoute() as ipr_main:
         ###
         # configure vrf
         #
-        if not await ipr_main.link_lookup(ifname='vrf0'):
+        vrf_name = f'vrf-{vrf_table}'
+        if not await ipr_main.link_lookup(ifname=vrf_name):
             await ipr_main.link(
-                'add', ifname='vrf0', kind='vrf', vrf_table=1010, state='up'
+                'add',
+                ifname=vrf_name,
+                kind='vrf',
+                vrf_table=vrf_table,
+                state='up',
             )
         (vrf,) = await ipr_main.poll(
-            ipr_main.link, 'dump', ifname='vrf0', timeout=5
+            ipr_main.link, 'dump', ifname=vrf_name, timeout=5
         )
         set_sysctl(
             {
-                'net.ipv4.conf.vrf0.rp_filter': 0,  # <-- asymmetric SRv6
+                f'net.ipv4.conf.{vrf_name}.rp_filter': 0,  # <-- SRv6
                 'net.ipv4.tcp_l3mdev_accept': 1,  # <-- serve cross VRF
                 'net.ipv4.udp_l3mdev_accept': 1,  # <-- serve cross VRF
             }
@@ -314,18 +360,13 @@ async def setup_container_network(
         ###
         # configure bridge
         #
-        if not await ipr_main.link_lookup(ifname=config['network']['bridge']):
+        br_name = f'br-{vrf_table}'
+        if not await ipr_main.link_lookup(ifname=br_name):
             await ipr_main.link(
-                'add',
-                ifname=config['network']['bridge'],
-                kind='bridge',
-                state='up',
+                'add', ifname=br_name, kind='bridge', state='up'
             )
         (bridge,) = await ipr_main.poll(
-            ipr_main.link,
-            'dump',
-            ifname=config['network']['bridge'],
-            timeout=5,
+            ipr_main.link, 'dump', ifname=br_name, timeout=5
         )
         bridge_addr = [
             x
@@ -336,16 +377,17 @@ async def setup_container_network(
         if len(bridge_addr):
             gateway = bridge_addr[0].get('address')
         else:
-            gateway = await pool.allocate()  # pool.gateway  # pool.allocate()
+            gateway = await pool.allocate(network=network, is_gateway=True)
             await ipr_main.addr(
-                'add', index=bridge['index'], address=f'{gateway}/{pool.bits}'
+                'add', index=bridge['index'], address=f'{gateway}/{prefixlen}'
             )
         if bridge.get('master') != vrf['index']:
             await ipr_main.link(
                 'set', index=bridge['index'], master=vrf['index']
             )
+            # if vrf_table < 100:
             await ipr_main.route(
-                'add', dst='10.244.0.0', dst_len=16, oif=vrf['index']
+                'add', dst=prefix, dst_len=prefixlen, oif=vrf['index']
             )
 
         host_link = tuple(
@@ -354,19 +396,22 @@ async def setup_container_network(
         ###
         # configure vxlan
         #
-        if not await ipr_main.link_lookup(
-            ifname=config['network']['vxlan_if']
-        ):
+        vxlan_name = f'vxlan-{vxlan_id}'
+        if not await ipr_main.link_lookup(ifname=vxlan_name):
             await ipr_main.link(
                 'add',
-                ifname=config['network']['vxlan_if'],
+                ifname=vxlan_name,
                 kind='vxlan',
                 state='up',
                 master=bridge['index'],
                 vxlan_link=host_link,
-                vxlan_id=int(config['network']['vxlan_id']),
+                vxlan_id=vxlan_id,
                 vxlan_group='239.1.1.1',
             )
+
+        ###
+        # configure veth
+        #
         await ipr_main.link(
             'add',
             kind='veth',
@@ -387,9 +432,9 @@ async def setup_container_network(
     # configure container's veth
     #
     address = await pool.allocate(
-        containerid=request.env.get('CNI_CONTAINERID', '')
+        network=network, containerid=request.env.get('CNI_CONTAINERID', '')
     )
-    address = f'{address}/{pool.bits}'
+    address = f'{address}/{prefixlen}'
     async with AsyncIPRoute(netns=request.netns) as ipr:
         (eth0,) = await ipr.link('get', ifname='eth0')
         await ipr.link('set', index=eth0['index'], state='up')
@@ -471,7 +516,7 @@ async def main(config: ConfigParser) -> None:
         registry, socket_path=config['api']['socket_path_fd']
     )
     service_name = f'{platform.uname().node}.{config["mdns"]["service"]}'
-    address_pool = AddressPool('10.244', 'H', service_name, config)
+    address_pool = AddressPool(service_name, config)
     cni_server = CNIServer(config, registry, address_pool)
     await cni_server.setup_endpoint()
 
@@ -499,7 +544,7 @@ async def main(config: ConfigParser) -> None:
         i.metadata.call_on_read = True
         i.register_function(
             lambda: {
-                address_pool.inet_ntoa(x[0]): x[1].node
+                address_pool.inet_ntoa(*x[0]): x[1].node
                 for x in address_pool.allocated.items()
             },
             loader=lambda x: {},
