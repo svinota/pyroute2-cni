@@ -6,6 +6,7 @@ import struct
 import traceback
 from dataclasses import dataclass
 from io import BytesIO
+from ipaddress import IPv4Network
 
 import matplotlib.pyplot as plt
 import networkx as nx
@@ -68,19 +69,16 @@ def mdns_service_update_handler(
 @dataclass
 class AddressMetadata:
     node: str
-    containerid: str
+    pod_uid: str
+    is_gateway: bool
+    network: str
+    address: str
 
 
 class AddressPool:
-    def __init__(self, prefix, size, name, config):
-        self.prefix = struct.pack('BB', *(int(x) for x in prefix.split('.')))
-        self.size = size
-        self.bits = struct.calcsize(size) * 8
-        self.min = 0x1
-        self.max = (1 << self.bits) - 1
+    def __init__(self, name, config):
         self.allocated = {}
         self.name = name
-        self.gateway = self.inet_ntoa(self.min)
         self.config = config
         self.mdns = AsyncZeroconf()
         self.info = AsyncServiceInfo(
@@ -99,27 +97,50 @@ class AddressPool:
 
     def export_graph(self):
         G = nx.Graph()
-        hosts = set([x.node for x in self.allocated.values()])
-        for h1 in hosts:
-            for h2 in hosts:
+
+        hosts = {
+            y: (y, {'color': '#b2ceff'})
+            for y in set([x.node for x in self.allocated.values()])
+        }
+        G.add_nodes_from(hosts.values())
+        for h1 in hosts.keys():
+            for h2 in hosts.keys():
                 if h1 != h2:
                     G.add_edge(h1, h2)
-        for ip, x in self.allocated.items():
-            G.add_edge(self.inet_ntoa(ip), x.node)
+
+        gateways = {
+            (x.network, x.node): x
+            for x in self.allocated.values()
+            if x.is_gateway
+        }
+        for gateway in gateways.values():
+            G.add_node(gateway.address, color='#b2ffe3')
+            G.add_edge(gateway.address, gateway.node)
+
+        containers = {
+            x.address: x for x in self.allocated.values() if not x.is_gateway
+        }
+        for container in containers.values():
+            G.add_node(container.address, color='#88ff97')
+            G.add_edge(
+                container.address,
+                gateways.get(
+                    (container.network, container.node),
+                    AddressMetadata('', '', False, '', 'err'),
+                ).address,
+            )
+
         buf = BytesIO()
         pos = nx.spring_layout(G, seed=42)
-        node_colors = [
-            'skyblue' if node in hosts else 'lightgreen' for node in G.nodes
-        ]
-        node_sizes = [800 if node in hosts else 300 for node in G.nodes]
-        plt.figure(figsize=(6, 4))
+        node_sizes = [800 if node in hosts.keys() else 300 for node in G.nodes]
+        plt.figure(figsize=(12, 8))
         nx.draw(
             G,
             pos,
             with_labels=True,
-            node_color=node_colors,
+            node_color=[x[1].get('color', 'red') for x in G.nodes(data=True)],
             node_size=node_sizes,
-            font_size=9,
+            font_size=14,
             edge_color="gray",
         )
         plt.axis('off')
@@ -131,35 +152,29 @@ class AddressPool:
         buf.close()
         return image_bytes
 
-    def inet_ntoa(self, address: int) -> str:
-        return socket.inet_ntoa(self.prefix + struct.pack('>H', address))
+    def inet_ntoa(self, network: str, address: int) -> str:
+        return IPv4Network(network)[address].compressed
 
-    def unregister_address(self, containerid: str) -> AddressMetadata:
-        logging.info(f'containerid: {containerid}')
+    def unregister_address(self, pod_uid: str) -> AddressMetadata:
+        logging.info(f'pod_uid: {pod_uid}')
         address = None
         for address, metadata in tuple(self.allocated.items()):
             logging.info(
-                f'L address {address}, containerid: {metadata.containerid}'
+                f'L address {address}, pod_uid: {metadata.pod_uid}'
             )
-            logging.info(f'L {metadata.containerid == containerid}')
+            logging.info(f'L {metadata.pod_uid == pod_uid}')
             logging.info(
-                f'L {type(metadata.containerid)} -- {type(containerid)}'
+                f'L {type(metadata.pod_uid)} -- {type(pod_uid)}'
             )
-            if metadata.containerid == containerid:
+            if metadata.pod_uid == pod_uid:
                 break
         else:
             raise KeyError('address not allocated')
         return self.allocated.pop(address)
 
-    def register_address(
-        self, address: int, node: str = '', containerid: str = ''
-    ) -> str:
-        self.allocated[address] = AddressMetadata(node, containerid)
-        return self.inet_ntoa(address)
-
-    async def release(self, containerid: str) -> AddressMetadata:
+    async def release(self, pod_uid: str) -> AddressMetadata:
         global PEERS
-        metadata = self.unregister_address(containerid)
+        metadata = self.unregister_address(pod_uid)
         for name, peer in PEERS.items():
             if self.name != name:
                 try:
@@ -167,7 +182,7 @@ class AddressPool:
                         await p9.start_session()
                         await p9.call(
                             await p9.fid('unregister_address'),
-                            kwarg={'containerid': containerid},
+                            kwarg={'pod_uid': pod_uid},
                         )
                 except Exception as e:
                     logging.error('%s' % (traceback.format_exc()))
@@ -175,12 +190,31 @@ class AddressPool:
             logging.info(f'U {self.name} - {name} - {peer}')
         return metadata
 
-    async def allocate(self, containerid: str = '') -> str:
+    def register_address(
+        self,
+        network: str,
+        address: int,
+        node: str = '',
+        is_gateway: bool = False,
+        pod_uid: str = '',
+    ) -> str:
+        ret = self.inet_ntoa(network, address)
+        self.allocated[(network, address)] = AddressMetadata(
+            node, pod_uid, is_gateway, network, ret
+        )
+        return ret
+
+    async def allocate(
+        self,
+        network: IPv4Network,
+        is_gateway: bool = False,
+        pod_uid: str = '',
+    ) -> str:
         global PEERS
         address = None
         while True:
-            address = self.random()
-            if address not in self.allocated:
+            address = self.random(network)
+            if (network.compressed, address) not in self.allocated:
                 break
         for name, peer in PEERS.items():
             if self.name != name:
@@ -190,16 +224,25 @@ class AddressPool:
                         await p9.call(
                             await p9.fid('register_address'),
                             kwarg={
+                                'network': network.compressed,
                                 'address': address,
                                 'node': self.name,
-                                'containerid': containerid,
+                                'is_gateway': is_gateway,
+                                'pod_uid': pod_uid,
                             },
                         )
                 except Exception as e:
                     logging.error('%s' % (traceback.format_exc()))
                     logging.error(f'error: {e}')
             logging.info(f'R {self.name} - {name} - {peer}')
-        return self.register_address(address, self.name, containerid)
+        return self.register_address(
+            network.compressed, address, self.name, is_gateway, pod_uid
+        )
 
-    def random(self):
-        return random.randint(self.min + 1, self.max - 1)
+    def random(self, network: IPv4Network) -> int:
+        (first_address,) = struct.unpack('>I', network[0].packed)
+        (last_address,) = struct.unpack('>I', network[-1].packed)
+        (hostmask,) = struct.unpack('>I', network.hostmask.packed)
+        first_host = first_address & hostmask
+        last_host = last_address & hostmask
+        return random.randint(first_host + 1, last_host - 1)

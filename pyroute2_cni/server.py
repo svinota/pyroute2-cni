@@ -255,12 +255,12 @@ async def cleanup_container_network(
     '''
     Run network setup
     '''
-    containerid = request.env.get('CNI_CONTAINERID', '')
+    pod_uid = get_pod_tag(request, 'uid')
     try:
-        await pool.release(containerid)
+        await pool.release(pod_uid)
     except KeyError:
         # just ignore non existent addresses for now
-        logging.error(f'container {containerid} not registered')
+        logging.error(f'container {pod_uid} not registered')
     cni_response(transport, data)
 
 
@@ -287,14 +287,14 @@ def get_namespace_labels(name: str) -> dict[str, str]:
     return ns.metadata.labels or {}
 
 
-def get_pod_namespace(request: CNIRequest) -> str:
+def get_pod_tag(request: CNIRequest, tag: str, default: str = '') -> str:
     cni_args = request.env.get('CNI_ARGS', '')
     for arg in cni_args.split(';'):
         key, value = arg.split('=')
-        if key == 'K8S_POD_NAMESPACE':
+        if key == f'K8S_POD_{tag.upper()}':
             return value
     logging.warning('got no pod namespace, return default')
-    return 'default'
+    return default
 
 
 async def setup_container_network(
@@ -325,7 +325,7 @@ async def setup_container_network(
     ###
     # get VRF and VXLAN ids for this container
     #
-    namespace = get_pod_namespace(request)
+    namespace = get_pod_tag(request, 'namespace', default='default')
     labels = get_namespace_labels(namespace)
     vrf_table = int(labels.get('pyroute2.org/vrf', '42'))
     vxlan_id = int(labels.get('pyroute2.org/vxlan', '42'))
@@ -432,7 +432,7 @@ async def setup_container_network(
     # configure container's veth
     #
     address = await pool.allocate(
-        network=network, containerid=request.env.get('CNI_CONTAINERID', '')
+        network=network, pod_uid=get_pod_tag(request, 'uid')
     )
     address = f'{address}/{prefixlen}'
     async with AsyncIPRoute(netns=request.netns) as ipr:
