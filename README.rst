@@ -10,6 +10,52 @@ requirements
 * VMs: Ubuntu 24.04, one NIC
 * modules preload: overlay, br_netfilter, vrf
 
+workflow
+========
+
+.. code::
+
+   kubelet            plugin             server
+      |                  |                  |
+      |   CNI_ADD        |                  |
+      |----------------->|  get request id  |      see socket_path_api
+      |                  |<---------------->|
+      |                  |                  |
+      |                  |  send netns FD   |      via socket_path_fd
+      |                  |  + request id    |
+      |                  |----------------->|
+      |                  |                  |
+      |                  |  send CNI json   |
+      |                  |  + env variables |
+      |                  |  + request id    |      via socket_path_api
+      |                  |----------------->|
+      |                  |                  |
+      |                  |                  |--->  setup_container_network()
+      |                  |                  |      1. fix FW
+      |                  |                  |      2. fix sysctl for VRF and SRv6
+      |                  |                  |      3. fix ns bridge
+      |                  |                  |      4. fix ns VRF
+      |                  |                  |      5. fix ns VXLAN
+      |                  | get CNI response |      6. who knows what else
+      |                  |<-----------------|
+      |<-----------------|                  |
+      v                  v                  v
+
+maintenance info
+================
+
+see also `config['plan9']['port']`
+
+any node can be used, all the info is replicated
+
+.. warning::
+   No recovery is pushed in the repo at the moment!
+
+.. code::
+
+   9p -a {node_ip}:8149 read allocated          # → allocated addresses
+   9p -a {node_ip}:8149 read graph | display    # → topology map as SVG
+
 install
 =======
 
@@ -18,28 +64,68 @@ install
     kubectl apply -f https://raw.githubusercontent.com/svinota/pyroute2-cni/refs/heads/main/kubernetes/namespace.yaml
     kubectl apply -f https://raw.githubusercontent.com/svinota/pyroute2-cni/refs/heads/main/kubernetes/daemonset.yaml
 
-network
-=======
+configuration
+=============
 
-* one vxlan
-* one VRF
-* hardcoded prefix 10.244.0.0/16
+.. warning::
+   Please notice that at the lab stage configuration options format
+   may change daily.
+
+**Namespace labels**
 
 .. code::
 
-    vrf:
-        name: vrf0
-        table: 1010
+    apiVersion: v1
+    kind: Namespace
+    metadata:
+      labels:
+        kubernetes.io/metadata.name: test
+        pyroute2.org/network: 10.1.0.0
+        pyroute2.org/prefixlen: "16"
+        pyroute2.org/vrf: "1000"
+        pyroute2.org/vxlan: "200"
+      name: test
 
-    vxlan:
-        name: pr2-vxlan147
-        link: enp1s0
-        master: pr2-bridge
+* network: the prefix to use in the namespace
+* prefixlen: the network mask bits (will be merged into the previous label)
+* vrf: the VRF to use for the namespace; see also `End.DT4 vrftable`;
+  → creates interface `vrf-{int}` in the host netns
+* vxlan: VXLAN id of the transport between nodes;
+  → creates interface `vxlan-{int}` in the host netns
 
-    bridge:
-        name: pr2-bridge
-        master: vrf0
-        ports:
-            - pr2-vxlan147
-            - container veth ...
-            - container veth ...
+
+**Pod labels**
+
+To be delivered soon
+
+**ConfigMap**
+
+.. code::
+
+    apiVersion: v1
+    kind: ConfigMap
+    metadata:
+      name: server-config
+      namespace: pyroute2-cni
+    data:
+      server.ini: |
+        [api]
+        socket_path_api = /var/run/pyroute2/api
+        socket_path_fd = /var/run/pyroute2/fdpass
+
+        [network]
+        host_if = enp1s0
+
+        [default]
+        network = 10.244.0.0/16
+        vxlan = 42
+        vrf = 42
+
+        [nftables]
+        magic = pyroute2-cni nat 0x42
+
+        [plan9]
+        port = 8149
+
+        [mdns]
+        service = _9p2r._tcp.local.
