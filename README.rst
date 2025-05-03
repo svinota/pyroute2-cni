@@ -80,14 +80,14 @@ configuration
     metadata:
       labels:
         kubernetes.io/metadata.name: test
-        pyroute2.org/network: 10.1.0.0
+        pyroute2.org/prefix: "10.1.0.0"
         pyroute2.org/prefixlen: "16"
         pyroute2.org/vrf: "1000"
         pyroute2.org/vxlan: "200"
       name: test
 
-* network: the prefix to use in the namespace
-* prefixlen: the network mask bits (will be merged into the previous label)
+* prefix: the prefix to use in the namespace
+* prefixlen: the network mask bits
 * vrf: the VRF to use for the namespace; see also `End.DT4 vrftable`;
   → creates interface `vrf-{int}` in the host netns
 * vxlan: VXLAN id of the transport between nodes;
@@ -117,7 +117,8 @@ To be delivered soon
         host_if = enp1s0
 
         [default]
-        network = 10.244.0.0/16
+        prefix = 10.244.0.0
+        prefixlen = 16
         vxlan = 42
         vrf = 42
 

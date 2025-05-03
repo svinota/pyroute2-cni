@@ -11,7 +11,7 @@ metadata:
   name: pyroute2-cni-clusterrole
 rules:
   - apiGroups: [""]
-    resources: ["namespaces"]
+    resources: ["namespaces", "pods"]
     verbs: ["get", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -40,9 +40,12 @@ data:
 
     [network]
     host_if = enp1s0
-    bridge = pr2-bridge
-    vxlan_if = pr2-vxlan147
-    vxlan_id = 147
+
+    [default]
+    prefix = 10.244.0.0
+    prefixlen = 16
+    vxlan = 42
+    vrf = 42
 
     [nftables]
     magic = pyroute2-cni nat 0x42
@@ -90,7 +93,7 @@ spec:
         effect: NoSchedule
       containers:
       - name: pyroute2-cni
-        image: ghcr.io/svinota/pyroute2-cni:v0.0.178
+        image: ghcr.io/svinota/pyroute2-cni:v0.0.210
         resources:
           requests:
             cpu: "100m"

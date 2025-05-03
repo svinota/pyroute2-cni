@@ -6,7 +6,7 @@ import struct
 import traceback
 from dataclasses import dataclass
 from io import BytesIO
-from ipaddress import IPv4Network
+from ipaddress import IPv4Address, IPv4Network
 
 import matplotlib.pyplot as plt
 import networkx as nx
@@ -152,6 +152,12 @@ class AddressPool:
         buf.close()
         return image_bytes
 
+    def inet_aton(self, network: IPv4Network, address: str) -> int:
+        return (
+            struct.unpack('>I', IPv4Address(address).packed)[0]
+            & struct.unpack('>I', network.hostmask.packed)[0]
+        )
+
     def inet_ntoa(self, network: str, address: int) -> str:
         return IPv4Network(network)[address].compressed
 
@@ -159,13 +165,9 @@ class AddressPool:
         logging.info(f'pod_uid: {pod_uid}')
         address = None
         for address, metadata in tuple(self.allocated.items()):
-            logging.info(
-                f'L address {address}, pod_uid: {metadata.pod_uid}'
-            )
+            logging.info(f'L address {address}, pod_uid: {metadata.pod_uid}')
             logging.info(f'L {metadata.pod_uid == pod_uid}')
-            logging.info(
-                f'L {type(metadata.pod_uid)} -- {type(pod_uid)}'
-            )
+            logging.info(f'L {type(metadata.pod_uid)} -- {type(pod_uid)}')
             if metadata.pod_uid == pod_uid:
                 break
         else:
@@ -209,13 +211,13 @@ class AddressPool:
         network: IPv4Network,
         is_gateway: bool = False,
         pod_uid: str = '',
+        address: int = -1,
     ) -> str:
         global PEERS
-        address = None
-        while True:
-            address = self.random(network)
-            if (network.compressed, address) not in self.allocated:
-                break
+        while address < 0:
+            candidate = self.random(network)
+            if (network.compressed, candidate) not in self.allocated:
+                address = candidate
         for name, peer in PEERS.items():
             if self.name != name:
                 try:

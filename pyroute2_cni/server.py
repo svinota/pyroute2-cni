@@ -297,6 +297,51 @@ def get_pod_tag(request: CNIRequest, tag: str, default: str = '') -> str:
     return default
 
 
+async def sync_system_state(address_pool: AddressPool) -> None:
+    # 1. list network namespaces -> bridges & vxlan
+    # 2. list pods -> addresses
+    try:
+        k8s_config.load_incluster_config()
+    except Exception as e:
+        logging.error(f'error listing namespaces: {e}')
+        return
+
+    v1 = k8s_client.CoreV1Api()
+    for ns in v1.list_namespace().items:
+        labels = ns.metadata.labels or {}
+        vrf_table = labels.get('pyroute2.org/vrf')
+        if vrf_table is None:
+            continue
+        prefix = labels.get('pyroute2.org/prefix')
+        if prefix is None:
+            continue
+        prefixlen = labels.get('pyroute2.org/prefixlen')
+        if prefixlen is None:
+            continue
+        vrf_table = int(vrf_table)
+        network = IPv4Network(f'{prefix}/{prefixlen}')
+        br_name = f'br-{vrf_table}'
+        async with AsyncIPRoute() as ipr:
+            br_idx = await ipr.link_lookup(ifname=br_name)
+            if not br_idx:
+                continue
+            bridge_addr = [
+                x
+                async for x in await ipr.addr(
+                    'dump', family=socket.AF_INET, index=br_idx[0]
+                )
+            ]
+            if not bridge_addr:
+                continue
+            await address_pool.allocate(
+                network=network,
+                is_gateway=True,
+                address=address_pool.inet_aton(
+                    network, bridge_addr[0].get('address')
+                ),
+            )
+
+
 async def setup_container_network(
     transport: asyncio.BaseTransport,
     data: dict[str, Any],
@@ -327,10 +372,14 @@ async def setup_container_network(
     #
     namespace = get_pod_tag(request, 'namespace', default='default')
     labels = get_namespace_labels(namespace)
-    vrf_table = int(labels.get('pyroute2.org/vrf', '42'))
-    vxlan_id = int(labels.get('pyroute2.org/vxlan', '42'))
-    prefixlen = int(labels.get('pyroute2.org/prefixlen', '16'))
-    prefix = labels.get('pyroute2.org/network', '10.244.0.0')
+    vrf_table = int(labels.get('pyroute2.org/vrf', config['default']['vrf']))
+    vxlan_id = int(
+        labels.get('pyroute2.org/vxlan', config['default']['vxlan'])
+    )
+    prefixlen = int(
+        labels.get('pyroute2.org/prefixlen', config['default']['prefixlen'])
+    )
+    prefix = labels.get('pyroute2.org/prefix', config['default']['prefix'])
     network = IPv4Network(f'{prefix}/{prefixlen}')
 
     async with AsyncIPRoute() as ipr_main:
@@ -517,6 +566,10 @@ async def main(config: ConfigParser) -> None:
     )
     service_name = f'{platform.uname().node}.{config["mdns"]["service"]}'
     address_pool = AddressPool(service_name, config)
+
+    # load system state
+    await sync_system_state(address_pool)
+
     cni_server = CNIServer(config, registry, address_pool)
     await cni_server.setup_endpoint()
 
