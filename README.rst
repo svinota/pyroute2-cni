@@ -10,36 +10,12 @@ requirements
 * VMs: Ubuntu 24.04, one NIC
 * modules preload: overlay, br_netfilter, vrf
 
-workflow
-========
+install
+=======
 
 .. code::
 
-   kubelet            plugin             server
-      |                  |                  |
-      |   CNI_ADD        |                  |
-      |----------------->|  get request id  |      see socket_path_api
-      |                  |<---------------->|
-      |                  |                  |
-      |                  |  send netns FD   |      via socket_path_fd
-      |                  |  + request id    |
-      |                  |----------------->|
-      |                  |                  |
-      |                  |  send CNI json   |
-      |                  |  + env variables |
-      |                  |  + request id    |      via socket_path_api
-      |                  |----------------->|
-      |                  |                  |
-      |                  |                  |--->  setup_container_network()
-      |                  |                  |      1. fix FW
-      |                  |                  |      2. fix sysctl for VRF and SRv6
-      |                  |                  |      3. fix ns bridge
-      |                  |                  |      4. fix ns VRF
-      |                  |                  |      5. fix ns VXLAN
-      |                  | get CNI response |      6. who knows what else
-      |                  |<-----------------|
-      |<-----------------|                  |
-      v                  v                  v
+    kubectl apply -f https://raw.githubusercontent.com/svinota/pyroute2-cni/refs/heads/main/kubernetes/pyroute2-cni.yaml
 
 maintenance info
 ================
@@ -55,14 +31,6 @@ any node can be used, all the info is replicated
 
    9p -a {node_ip}:8149 read allocated          # → allocated addresses
    9p -a {node_ip}:8149 read graph | display    # → topology map as SVG
-
-install
-=======
-
-.. code::
-
-    kubectl apply -f https://raw.githubusercontent.com/svinota/pyroute2-cni/refs/heads/main/kubernetes/namespace.yaml
-    kubectl apply -f https://raw.githubusercontent.com/svinota/pyroute2-cni/refs/heads/main/kubernetes/daemonset.yaml
 
 configuration
 =============
