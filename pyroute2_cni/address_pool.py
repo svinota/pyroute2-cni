@@ -5,6 +5,7 @@ import socket
 import struct
 import traceback
 from dataclasses import dataclass
+from functools import partial
 from io import BytesIO
 from ipaddress import IPv4Address, IPv4Network
 
@@ -18,52 +19,7 @@ from zeroconf.asyncio import (
     AsyncZeroconf,
 )
 
-PEERS = {}
-
-
-async def mdns_service_update_callback(
-    zeroconf: Zeroconf, service_type: str, name: str
-) -> None:
-    '''
-    Query and update the service info.
-    '''
-    global PEERS
-    info = AsyncServiceInfo(service_type, name)
-    await info.async_request(zeroconf, 3000)
-    logging.info(f'info {info}')
-    if info:
-        addresses = set((x for x in info.parsed_scoped_addresses()))
-        logging.info(f"  Name: {name}")
-        logging.info(f"  Addresses: {', '.join(addresses)}")
-        logging.info(f"  Weight: {info.weight}, priority: {info.priority}")
-        logging.info(f"  Server: {info.server}")
-        PEERS[name] = [(x, info.port) for x in addresses]
-        if info.properties:
-            logging.info("  Properties are:")
-            for key, value in info.properties.items():
-                logging.info(f"    {key!r}: {value!r}")
-        else:
-            logging.info("  No properties")
-    else:
-        logging.info("  No info")
-
-
-def mdns_service_update_handler(
-    zeroconf: Zeroconf,
-    service_type: str,
-    name: str,
-    state_change: ServiceStateChange,
-) -> None:
-    '''
-    Handle mDNS service updates.
-    '''
-    logging.info(f'state_change {state_change}')
-    logging.info(f'service_type {service_type}')
-    logging.info(f'name {name}')
-    task = asyncio.ensure_future(
-        mdns_service_update_callback(zeroconf, service_type, name)
-    )
-    logging.info(f'task {task}')
+PEERS: dict[str, list[tuple[str, int]]] = {}
 
 
 @dataclass
@@ -91,7 +47,7 @@ class AddressPool:
         self.browser = AsyncServiceBrowser(
             self.mdns.zeroconf,
             [self.config['mdns']['service']],
-            handlers=[mdns_service_update_handler],
+            handlers=[partial(mdns_service_update_handler, address_pool=self)],
         )
         asyncio.ensure_future(self.mdns.async_register_service(self.info))
 
@@ -248,3 +204,70 @@ class AddressPool:
         first_host = first_address & hostmask
         last_host = last_address & hostmask
         return random.randint(first_host + 1, last_host - 1)
+
+
+async def mdns_service_update_callback(
+    address_pool: AddressPool,
+    zeroconf: Zeroconf,
+    service_type: str,
+    name: str,
+    state_change: ServiceStateChange,
+) -> None:
+    '''
+    Query and update the service info.
+    '''
+    global PEERS
+    info = AsyncServiceInfo(service_type, name)
+    await info.async_request(zeroconf, 3000)
+    logging.info(f'info {info}')
+    if info:
+        addresses = set((x for x in info.parsed_scoped_addresses()))
+        logging.info(f"  Name: {name}")
+        logging.info(f"  Addresses: {', '.join(addresses)}")
+        logging.info(f"  Weight: {info.weight}, priority: {info.priority}")
+        logging.info(f"  Server: {info.server}")
+        PEERS[name] = [(x, info.port) for x in addresses]
+        if state_change == ServiceStateChange.Added:
+            async with Plan9ClientSocket(address=PEERS[name][0]) as p9:
+                await p9.start_session()
+                for (network, address), meta in address_pool.allocated.items():
+                    await p9.call(
+                        await p9.fid('register_address'),
+                        kwarg={
+                            'network': network,
+                            'address': address,
+                            'node': meta.node,
+                            'is_gateway': meta.is_gateway,
+                            'pod_uid': meta.pod_uid,
+                        },
+                    )
+
+        if info.properties:
+            logging.info("  Properties are:")
+            for key, value in info.properties.items():
+                logging.info(f"    {key!r}: {value!r}")
+        else:
+            logging.info("  No properties")
+    else:
+        logging.info("  No info")
+
+
+def mdns_service_update_handler(
+    address_pool: AddressPool,
+    zeroconf: Zeroconf,
+    service_type: str,
+    name: str,
+    state_change: ServiceStateChange,
+) -> None:
+    '''
+    Handle mDNS service updates.
+    '''
+    logging.info(f'state_change {state_change}')
+    logging.info(f'service_type {service_type}')
+    logging.info(f'name {name}')
+    task = asyncio.ensure_future(
+        mdns_service_update_callback(
+            address_pool, zeroconf, service_type, name, state_change
+        )
+    )
+    logging.info(f'task {task}')
