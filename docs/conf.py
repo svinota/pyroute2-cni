@@ -1,9 +1,11 @@
 # Configuration file for the Sphinx documentation builder.
 #
 
+
 def get_version():
     with open('../VERSION', 'r') as f:
         return f.read().strip()
+
 
 project = 'pyroute2-cni'
 copyright = '2025, Peter Saveliev'

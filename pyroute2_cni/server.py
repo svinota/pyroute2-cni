@@ -10,7 +10,7 @@ import sys
 import uuid
 from configparser import ConfigParser
 from functools import partial
-from ipaddress import IPv4Network
+from ipaddress import AddressValueError, IPv4Address, IPv4Network
 from typing import Any, Optional
 
 from pydantic import BaseModel, ConfigDict, PrivateAttr, ValidationError
@@ -297,7 +297,9 @@ def get_pod_tag(request: CNIRequest, tag: str, default: str = '') -> str:
     return default
 
 
-async def sync_system_state(address_pool: AddressPool) -> None:
+async def sync_system_state(
+    address_pool: AddressPool, config: ConfigParser
+) -> None:
     # 1. list network namespaces -> bridges & vxlan
     # 2. list pods -> addresses
     try:
@@ -307,6 +309,13 @@ async def sync_system_state(address_pool: AddressPool) -> None:
         return
 
     v1 = k8s_client.CoreV1Api()
+    networks = set()
+    default_prefix = config['default']['prefix']
+    default_prefixlen = config['default']['prefixlen']
+    default_vrf = config['default']['vrf']
+    networks.add(
+        (IPv4Network(f'{default_prefix}/{default_prefixlen}'), default_vrf)
+    )
     for ns in v1.list_namespace().items:
         labels = ns.metadata.labels or {}
         vrf_table = labels.get('pyroute2.org/vrf')
@@ -320,6 +329,9 @@ async def sync_system_state(address_pool: AddressPool) -> None:
             continue
         vrf_table = int(vrf_table)
         network = IPv4Network(f'{prefix}/{prefixlen}')
+        networks.add((network, vrf_table))
+
+    for network, vrf_table in networks:
         br_name = f'br-{vrf_table}'
         async with AsyncIPRoute() as ipr:
             br_idx = await ipr.link_lookup(ifname=br_name)
@@ -340,6 +352,21 @@ async def sync_system_state(address_pool: AddressPool) -> None:
                     network, bridge_addr[0].get('address')
                 ),
             )
+
+    for pod in v1.list_pod_for_all_namespaces().items:
+        try:
+            for network, _ in networks:
+                if IPv4Address(pod.status.pod_ip) in network:
+                    await address_pool.allocate(
+                        network=network,
+                        is_gateway=False,
+                        address=address_pool.inet_aton(
+                            network, pod.status.pod_ip
+                        ),
+                        pod_uid=pod.metadata.uid,
+                    )
+        except AddressValueError:
+            pass
 
 
 async def setup_container_network(
@@ -568,7 +595,7 @@ async def main(config: ConfigParser) -> None:
     address_pool = AddressPool(service_name, config)
 
     # load system state
-    await sync_system_state(address_pool)
+    await sync_system_state(address_pool, config)
 
     cni_server = CNIServer(config, registry, address_pool)
     await cni_server.setup_endpoint()
