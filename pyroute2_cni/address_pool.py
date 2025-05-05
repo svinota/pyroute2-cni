@@ -19,8 +19,6 @@ from zeroconf.asyncio import (
     AsyncZeroconf,
 )
 
-PEERS: dict[str, list[tuple[str, int]]] = {}
-
 
 @dataclass
 class AddressMetadata:
@@ -34,6 +32,7 @@ class AddressMetadata:
 class AddressPool:
     def __init__(self, name, config):
         self.allocated = {}
+        self.peers: dict[str, list[tuple[str, int]]] = {}
         self.name = name
         self.config = config
         self.mdns = AsyncZeroconf()
@@ -131,9 +130,8 @@ class AddressPool:
         return self.allocated.pop(address)
 
     async def release(self, pod_uid: str) -> AddressMetadata:
-        global PEERS
         metadata = self.unregister_address(pod_uid)
-        for name, peer in PEERS.items():
+        for name, peer in self.peers.items():
             if self.name != name:
                 try:
                     async with Plan9ClientSocket(address=peer[0]) as p9:
@@ -169,12 +167,11 @@ class AddressPool:
         pod_uid: str = '',
         address: int = -1,
     ) -> str:
-        global PEERS
         while address < 0:
             candidate = self.random(network)
             if (network.compressed, candidate) not in self.allocated:
                 address = candidate
-        for name, peer in PEERS.items():
+        for name, peer in self.peers.items():
             if self.name != name:
                 try:
                     async with Plan9ClientSocket(address=peer[0]) as p9:
@@ -216,7 +213,6 @@ async def mdns_service_update_callback(
     '''
     Query and update the service info.
     '''
-    global PEERS
     info = AsyncServiceInfo(service_type, name)
     await info.async_request(zeroconf, 3000)
     logging.info(f'info {info}')
@@ -226,9 +222,10 @@ async def mdns_service_update_callback(
         logging.info(f"  Addresses: {', '.join(addresses)}")
         logging.info(f"  Weight: {info.weight}, priority: {info.priority}")
         logging.info(f"  Server: {info.server}")
-        PEERS[name] = [(x, info.port) for x in addresses]
+        peer_addr = [(x, info.port) for x in addresses]
+        address_pool.peers[name] = peer_addr
         if state_change == ServiceStateChange.Added:
-            async with Plan9ClientSocket(address=PEERS[name][0]) as p9:
+            async with Plan9ClientSocket(address=peer_addr[0]) as p9:
                 await p9.start_session()
                 for (network, address), meta in address_pool.allocated.items():
                     await p9.call(
