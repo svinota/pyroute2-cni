@@ -29,6 +29,7 @@ type PluginResponse struct {
 		Version string `json:"version"`
 		Address string `json:"address"`
 	} `json:"ips"`
+	SupportedVersions []string `json:"supportedVersions"`
 }
 
 func forwardRequestToServer(input RequestPayload, nameSpaceFD int) ([]byte, error) {
@@ -99,7 +100,6 @@ func forwardRequestToServer(input RequestPayload, nameSpaceFD int) ([]byte, erro
 	if err != nil {
 		return nil, fmt.Errorf("failed to send message: %w", err)
 	}
-
 
 	// 8<------------------------------------------------------------------
 
@@ -180,7 +180,21 @@ func main() {
 		parts := bytes.SplitN([]byte(e), []byte("="), 2)
 		if len(parts) == 2 {
 			env[string(parts[0])] = string(parts[1])
-			if string(parts[0]) == "CNI_NETNS" {
+			if string(parts[0]) == "CNI_COMMAND" && string(parts[1]) == "VERSION" {
+				data := map[string]interface{}{
+					"cniVersion":        "0.3.1",
+					"supportedVersions": []string{"0.3.1", "0.4.0"},
+				}
+				jsonData, err := json.Marshal(data)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "failed to encode JSON: %v", err)
+					os.Exit(1)
+				}
+				syscall.Flock(int(flock.Fd()), syscall.LOCK_UN)
+				fmt.Fprintf(os.Stderr, "response: %v\n", string(jsonData))
+				fmt.Println(string(jsonData))
+				os.Exit(0)
+			} else if string(parts[0]) == "CNI_NETNS" {
 				nameSpace, err = os.Open(string(parts[1]))
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "failed to open netns: %v\n", err)
@@ -219,5 +233,6 @@ func main() {
 		os.Exit(1)
 	}
 	syscall.Flock(int(flock.Fd()), syscall.LOCK_UN)
+	fmt.Fprintf(os.Stderr, "response: %v\n", string(output))
 	fmt.Println(string(output))
 }
