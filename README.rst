@@ -8,7 +8,6 @@ requirements
 
 * kubernetes 1.31
 * VMs: Ubuntu 24.04, one NIC
-* modules preload: overlay, br_netfilter, vrf
 
 install
 =======
@@ -89,9 +88,6 @@ To be delivered soon
         prefixlen = 16
         vxlan = 42
         vrf = 42
-
-        [nftables]
-        magic = pyroute2-cni nat 0x42
 
         [plan9]
         port = 8149

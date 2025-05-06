@@ -4,12 +4,13 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
-	"os"
-	"net"
-	"time"
-	"syscall"
 	"golang.org/x/sys/unix"
+	"io"
+	"net"
+	"os"
+	"os/exec"
+	"syscall"
+	"time"
 )
 
 const socketPathMain = "/var/run/pyroute2/fdpass"
@@ -145,6 +146,25 @@ func main() {
 			break
 		}
 		time.Sleep(2 * time.Second)
+	}
+
+	// ensure VRF module
+	vrfPath := "/proc/sys/net/vrf"
+
+	if _, err := os.Stat(vrfPath); os.IsNotExist(err) {
+		fmt.Fprintf(os.Stderr, "%s not found. Attempting to load VRF kernel module\n", vrfPath)
+
+		cmd := exec.Command("modprobe", "vrf")
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+
+		if err := cmd.Run(); err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to load VRF module: %v\n", err)
+			os.Exit(1)
+		}
+	} else if err != nil {
+		fmt.Fprintf(os.Stderr, "Error checking VRF path: %v\n", err)
+		os.Exit(1)
 	}
 
 	var cniData map[string]interface{}
