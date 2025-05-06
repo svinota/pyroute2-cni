@@ -4,6 +4,7 @@ import random
 import socket
 import struct
 import traceback
+from configparser import ConfigParser
 from dataclasses import dataclass
 from functools import partial
 from io import BytesIO
@@ -30,8 +31,8 @@ class AddressMetadata:
 
 
 class AddressPool:
-    def __init__(self, name, config):
-        self.allocated = {}
+    def __init__(self, name: str, config: ConfigParser) -> None:
+        self.allocated: dict[tuple[str, int], AddressMetadata] = {}
         self.peers: dict[str, list[tuple[str, int]]] = {}
         self.name = name
         self.config = config

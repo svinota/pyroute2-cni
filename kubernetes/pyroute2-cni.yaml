@@ -58,9 +58,6 @@ data:
     vxlan = 42
     vrf = 42
 
-    [nftables]
-    magic = pyroute2-cni nat 0x42
-
     [plan9]
     port = 8149
 
@@ -104,7 +101,7 @@ spec:
         effect: NoSchedule
       containers:
       - name: pyroute2-cni
-        image: ghcr.io/svinota/pyroute2-cni:v0.0.210
+        image: ghcr.io/svinota/pyroute2-cni:v0.0.225
         resources:
           requests:
             cpu: "100m"

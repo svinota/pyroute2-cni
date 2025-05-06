@@ -10,61 +10,16 @@ import sys
 import uuid
 from configparser import ConfigParser
 from functools import partial
-from ipaddress import AddressValueError, IPv4Address, IPv4Network
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
-from pydantic import BaseModel, ConfigDict, PrivateAttr, ValidationError
+from pydantic import ValidationError
 from pyroute2 import AsyncIPRoute, Plan9ServerSocket
-from pyroute2.common import uifname
-from pyroute2.netlink.nfnetlink.nftsocket import Cmp, Meta, Regs
-from pyroute2.nftables.expressions import genex, ipv4addr, masq
-from pyroute2.nftables.main import AsyncNFTables
 
-from kubernetes import client as k8s_client
-from kubernetes import config as k8s_config
 from pyroute2_cni.address_pool import AddressPool
+from pyroute2_cni.network import Manager
+from pyroute2_cni.request import CNIRequest
 
 logging.basicConfig(level=logging.INFO)
-
-
-class CNIInterface(BaseModel):
-    name: str
-    mac: str
-    sandbox: str | None = None
-    gateway: str | None = None
-
-
-class CNIConfig(BaseModel):
-    cniVersion: str
-    interfaces: list[CNIInterface] | None = None
-
-
-class CNIRequest(BaseModel):
-    _ready: asyncio.Event = PrivateAttr()
-    model_config = ConfigDict(extra="forbid")
-    error: str = ''
-    errno: int = 0
-    cni: CNIConfig = CNIConfig(cniVersion='')
-    rid: str | None = None
-    netns: int = 0
-    env: dict[str, str] = {}
-
-    def __init__(self, **kwarg):
-        super().__init__(**kwarg)
-        self._ready = asyncio.Event()
-
-    def merge(self, request):
-        # just replace for now
-        if request.cni is not None:
-            self.cni = request.cni
-        if request.env is not None:
-            self.env = request.env
-
-    async def ready(self):
-        await asyncio.wait_for(self._ready.wait(), timeout=5.0)
-
-    def set_ready(self):
-        self._ready.set()
 
 
 class CNIProtocol(asyncio.Protocol):
@@ -77,11 +32,13 @@ class CNIProtocol(asyncio.Protocol):
         registry: dict[str, CNIRequest],
         config: ConfigParser,
         address_pool: AddressPool,
+        manager: Manager,
     ):
         self.on_con_lost = on_con_lost
         self.registry = registry
         self.pool = address_pool
         self.config = config
+        self.manager = manager
 
     def error(self, spec: str):
         return self.transport.write(spec.encode('utf-8'))
@@ -117,8 +74,9 @@ class CNIProtocol(asyncio.Protocol):
                 logging.info('cni ready, wait for fd')
                 loop = asyncio.get_event_loop()
                 loop.create_task(
-                    setup_container_network(
+                    send_response(
                         self.transport,
+                        self.manager.setup,
                         response,
                         self.registry[request.rid],
                         self.pool,
@@ -129,8 +87,9 @@ class CNIProtocol(asyncio.Protocol):
                 logging.info('running cleanup')
                 loop = asyncio.get_event_loop()
                 loop.create_task(
-                    cleanup_container_network(
+                    send_response(
                         self.transport,
+                        self.manager.cleanup,
                         response,
                         self.registry[request.rid],
                         self.pool,
@@ -148,6 +107,17 @@ class CNIProtocol(asyncio.Protocol):
         self.transport = transport
 
 
+async def send_response(
+    transport: asyncio.BaseTransport,
+    func: Callable,
+    data: dict[str, Any],
+    request: CNIRequest,
+    pool: AddressPool,
+    config: ConfigParser,
+) -> None:
+    cni_response(transport, await func(data, request, pool, config))
+
+
 class CNIServer:
 
     endpoint: asyncio.AbstractServer
@@ -157,6 +127,7 @@ class CNIServer:
         config: ConfigParser,
         registry: dict[str, CNIRequest],
         address_pool: AddressPool,
+        manager: Manager,
         use_event_loop: Optional[asyncio.AbstractEventLoop] = None,
     ):
         self.event_loop = use_event_loop or asyncio.get_event_loop()
@@ -165,6 +136,7 @@ class CNIServer:
         self.registry = registry
         self.config = config
         self.address_pool = address_pool
+        self.manager = manager
 
     async def setup_endpoint(self):
         self.endpoint = await self.event_loop.create_unix_server(
@@ -173,6 +145,7 @@ class CNIServer:
                 self.registry,
                 self.config,
                 self.address_pool,
+                self.manager,
             ),
             path=self.path,
         )
@@ -180,355 +153,6 @@ class CNIServer:
 
 def cni_response(transport, data):
     return transport.write(json.dumps(data).encode('utf-8'))
-
-
-def oif(index):
-    ret = []
-    ret.append(
-        genex('meta', {'key': Meta.NFT_META_OIF, 'dreg': Regs.NFT_REG_1})
-    )
-    ret.append(
-        genex(
-            'cmp',
-            {
-                'sreg': Regs.NFT_REG_1,
-                'op': Cmp.NFT_CMP_EQ,
-                'data': {
-                    'attrs': [['NFTA_DATA_VALUE', struct.pack('I', index)]]
-                },
-            },
-        )
-    )
-    return ret
-
-
-async def reconcile_system_firewall(
-    pool: AddressPool, host_link: int, magic: str
-) -> None:
-    async with AsyncNFTables() as nft_main:
-        # reconcile table
-        async for table in await nft_main.get_tables():
-            if table.get('name') == 'nat':
-                break
-        else:
-            await nft_main.table('add', name='nat')
-
-        # reconcile chain
-        async for chain in await nft_main.get_chains():
-            if chain.get('name') == 'POSTROUTING':
-                break
-        else:
-            await nft_main.chain(
-                'add',
-                table='nat',
-                name='POSTROUTING',
-                hook='postrouting',
-                type='nat',
-                policy=1,
-            )
-
-        # reconcile rule
-        async for rule in await nft_main.get_rules():
-            if rule.get('userdata') == magic:
-                break
-        else:
-            await nft_main.rule(
-                'add',
-                table='nat',
-                chain='POSTROUTING',
-                expressions=(
-                    ipv4addr(src='10.244.0.0/16'),
-                    ipv4addr(dst='10.244.0.0/16', op=Cmp.NFT_CMP_NEQ),
-                    masq(),
-                ),
-                userdata=magic,
-            )
-
-
-async def cleanup_container_network(
-    transport: asyncio.BaseTransport,
-    data: dict[str, Any],
-    request: CNIRequest,
-    pool: AddressPool,
-    config: ConfigParser,
-) -> None:
-    '''
-    Run network setup
-    '''
-    pod_uid = get_pod_tag(request, 'uid')
-    try:
-        await pool.release(pod_uid)
-    except KeyError:
-        # just ignore non existent addresses for now
-        logging.error(f'container {pod_uid} not registered')
-    cni_response(transport, data)
-
-
-def set_sysctl(config: dict[str, int]) -> None:
-    for path, value in config.items():
-        with open(f'/proc/sys/{path.replace(".", "/")}', 'w') as f:
-            f.write(str(value))
-
-
-def get_namespace_labels(name: str) -> dict[str, str]:
-    try:
-        k8s_config.load_incluster_config()
-    except Exception as e:
-        logging.error(f'error C reading namespace {name}: {e}')
-        return {}
-    v1 = k8s_client.CoreV1Api()
-    try:
-        ns = v1.read_namespace(name=name)
-    except Exception as e:
-        logging.error(f'error R reading namespace {name}: {e}')
-        return {}
-    # except kubernetes.client.exceptions.ApiException:
-    #    return {}
-    return ns.metadata.labels or {}
-
-
-def get_pod_tag(request: CNIRequest, tag: str, default: str = '') -> str:
-    cni_args = request.env.get('CNI_ARGS', '')
-    for arg in cni_args.split(';'):
-        key, value = arg.split('=')
-        if key == f'K8S_POD_{tag.upper()}':
-            return value
-    logging.warning('got no pod namespace, return default')
-    return default
-
-
-async def sync_system_state(
-    address_pool: AddressPool, config: ConfigParser
-) -> None:
-    # 1. list network namespaces -> bridges & vxlan
-    # 2. list pods -> addresses
-    try:
-        k8s_config.load_incluster_config()
-    except Exception as e:
-        logging.error(f'error listing namespaces: {e}')
-        return
-
-    v1 = k8s_client.CoreV1Api()
-    networks = set()
-    default_prefix = config['default']['prefix']
-    default_prefixlen = config['default']['prefixlen']
-    default_vrf = config['default']['vrf']
-    networks.add(
-        (IPv4Network(f'{default_prefix}/{default_prefixlen}'), default_vrf)
-    )
-    for ns in v1.list_namespace().items:
-        labels = ns.metadata.labels or {}
-        vrf_table = labels.get('pyroute2.org/vrf')
-        if vrf_table is None:
-            continue
-        prefix = labels.get('pyroute2.org/prefix')
-        if prefix is None:
-            continue
-        prefixlen = labels.get('pyroute2.org/prefixlen')
-        if prefixlen is None:
-            continue
-        vrf_table = int(vrf_table)
-        network = IPv4Network(f'{prefix}/{prefixlen}')
-        networks.add((network, vrf_table))
-
-    for network, vrf_table in networks:
-        br_name = f'br-{vrf_table}'
-        async with AsyncIPRoute() as ipr:
-            br_idx = await ipr.link_lookup(ifname=br_name)
-            if not br_idx:
-                continue
-            bridge_addr = [
-                x
-                async for x in await ipr.addr(
-                    'dump', family=socket.AF_INET, index=br_idx[0]
-                )
-            ]
-            if not bridge_addr:
-                continue
-            await address_pool.allocate(
-                network=network,
-                is_gateway=True,
-                address=address_pool.inet_aton(
-                    network, bridge_addr[0].get('address')
-                ),
-            )
-
-    for pod in v1.list_pod_for_all_namespaces().items:
-        try:
-            for network, _ in networks:
-                if IPv4Address(pod.status.pod_ip) in network:
-                    await address_pool.allocate(
-                        network=network,
-                        is_gateway=False,
-                        address=address_pool.inet_aton(
-                            network, pod.status.pod_ip
-                        ),
-                        pod_uid=pod.metadata.uid,
-                    )
-        except AddressValueError:
-            pass
-
-
-async def setup_container_network(
-    transport: asyncio.BaseTransport,
-    data: dict[str, Any],
-    request: CNIRequest,
-    pool: AddressPool,
-    config: ConfigParser,
-) -> None:
-    '''
-    Run network setup
-    '''
-    await request.ready()
-    logging.info(f'request {request.rid} ready')
-
-    vp0 = uifname()
-
-    # MUST load vrf module before running CNI!
-    set_sysctl(
-        {
-            'net.ipv6.conf.all.seg6_enabled': 1,
-            f'net.ipv6.conf.{config["network"]["host_if"]}.seg6_enabled': 1,
-            'net.ipv4.conf.all.rp_filter': 0,  # <-- asymmetric SRv6
-            'net.vrf.strict_mode': 1,  # <-- required for SRv6 End.DT4
-        }
-    )
-
-    ###
-    # get VRF and VXLAN ids for this container
-    #
-    namespace = get_pod_tag(request, 'namespace', default='default')
-    labels = get_namespace_labels(namespace)
-    vrf_table = int(labels.get('pyroute2.org/vrf', config['default']['vrf']))
-    vxlan_id = int(
-        labels.get('pyroute2.org/vxlan', config['default']['vxlan'])
-    )
-    prefixlen = int(
-        labels.get('pyroute2.org/prefixlen', config['default']['prefixlen'])
-    )
-    prefix = labels.get('pyroute2.org/prefix', config['default']['prefix'])
-    network = IPv4Network(f'{prefix}/{prefixlen}')
-
-    async with AsyncIPRoute() as ipr_main:
-        ###
-        # configure vrf
-        #
-        vrf_name = f'vrf-{vrf_table}'
-        if not await ipr_main.link_lookup(ifname=vrf_name):
-            await ipr_main.link(
-                'add',
-                ifname=vrf_name,
-                kind='vrf',
-                vrf_table=vrf_table,
-                state='up',
-            )
-        (vrf,) = await ipr_main.poll(
-            ipr_main.link, 'dump', ifname=vrf_name, timeout=5
-        )
-        set_sysctl(
-            {
-                f'net.ipv4.conf.{vrf_name}.rp_filter': 0,  # <-- SRv6
-                'net.ipv4.tcp_l3mdev_accept': 1,  # <-- serve cross VRF
-                'net.ipv4.udp_l3mdev_accept': 1,  # <-- serve cross VRF
-            }
-        )
-
-        ###
-        # configure bridge
-        #
-        br_name = f'br-{vrf_table}'
-        if not await ipr_main.link_lookup(ifname=br_name):
-            await ipr_main.link(
-                'add', ifname=br_name, kind='bridge', state='up'
-            )
-        (bridge,) = await ipr_main.poll(
-            ipr_main.link, 'dump', ifname=br_name, timeout=5
-        )
-        bridge_addr = [
-            x
-            async for x in await ipr_main.addr(
-                'dump', family=socket.AF_INET, index=bridge['index']
-            )
-        ]
-        if len(bridge_addr):
-            gateway = bridge_addr[0].get('address')
-        else:
-            gateway = await pool.allocate(network=network, is_gateway=True)
-            await ipr_main.addr(
-                'add', index=bridge['index'], address=f'{gateway}/{prefixlen}'
-            )
-        if bridge.get('master') != vrf['index']:
-            await ipr_main.link(
-                'set', index=bridge['index'], master=vrf['index']
-            )
-            # if vrf_table < 100:
-            await ipr_main.route(
-                'add', dst=prefix, dst_len=prefixlen, oif=vrf['index']
-            )
-
-        host_link = tuple(
-            await ipr_main.link_lookup(ifname=config['network']['host_if'])
-        )[0]
-        ###
-        # configure vxlan
-        #
-        vxlan_name = f'vxlan-{vxlan_id}'
-        if not await ipr_main.link_lookup(ifname=vxlan_name):
-            await ipr_main.link(
-                'add',
-                ifname=vxlan_name,
-                kind='vxlan',
-                state='up',
-                master=bridge['index'],
-                vxlan_link=host_link,
-                vxlan_id=vxlan_id,
-                vxlan_group='239.1.1.1',
-            )
-
-        ###
-        # configure veth
-        #
-        await ipr_main.link(
-            'add',
-            kind='veth',
-            ifname=vp0,
-            state='up',
-            peer={'ifname': 'eth0', 'net_ns_fd': request.netns},
-        )
-        (port,) = await ipr_main.poll(
-            ipr_main.link, 'dump', ifname=vp0, timeout=5
-        )
-        await ipr_main.link('set', index=port['index'], master=bridge['index'])
-
-    await reconcile_system_firewall(
-        pool, host_link, config['nftables']['magic']
-    )
-
-    ###
-    # configure container's veth
-    #
-    address = await pool.allocate(
-        network=network, pod_uid=get_pod_tag(request, 'uid')
-    )
-    address = f'{address}/{prefixlen}'
-    async with AsyncIPRoute(netns=request.netns) as ipr:
-        (eth0,) = await ipr.link('get', ifname='eth0')
-        await ipr.link('set', index=eth0['index'], state='up')
-        await ipr.addr('add', index=eth0['index'], address=address)
-        await ipr.route('add', gateway=gateway)
-
-    data['interfaces'] = [
-        {
-            'name': 'eth0',
-            'mac': eth0.get('address'),
-            'sandbox': request.env['CNI_NETNS'],
-        }
-    ]
-    data['ips'] = [{'address': address, 'interface': 0, 'gateway': gateway}]
-    data['routes'] = [{'dst': '0.0.0.0/0'}]
-    os.close(request.netns)
-    logging.info(f'response: {data}')
-    return cni_response(transport, data)
 
 
 def cni_request_handler(sock_dgram, registry):
@@ -595,9 +219,10 @@ async def main(config: ConfigParser) -> None:
     address_pool = AddressPool(service_name, config)
 
     # load system state
-    await sync_system_state(address_pool, config)
+    manager = Manager()
+    await manager.resync(address_pool, config)
 
-    cni_server = CNIServer(config, registry, address_pool)
+    cni_server = CNIServer(config, registry, address_pool, manager)
     await cni_server.setup_endpoint()
 
     p9_server = Plan9ServerSocket(
