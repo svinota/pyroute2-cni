@@ -204,7 +204,7 @@ class AddressPool:
         return random.randint(first_host + 1, last_host - 1)
 
 
-async def mdns_service_update_callback(
+async def mdns_service_update_task(
     address_pool: AddressPool,
     zeroconf: Zeroconf,
     service_type: str,
@@ -265,8 +265,8 @@ def mdns_service_update_handler(
     logging.info(f'state_change {state_change}')
     logging.info(f'service_type {service_type}')
     logging.info(f'name {name}')
-    task = asyncio.ensure_future(
-        mdns_service_update_callback(
+    task = asyncio.create_task(
+        mdns_service_update_task(
             address_pool, zeroconf, service_type, name, state_change
         )
     )
