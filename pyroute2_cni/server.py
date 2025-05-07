@@ -74,8 +74,7 @@ class CNIProtocol(asyncio.Protocol):
                 logging.info('cni ready, wait for fd')
                 loop = asyncio.get_event_loop()
                 loop.create_task(
-                    send_response(
-                        self.transport,
+                    self.cni_response_task(
                         self.manager.setup,
                         response,
                         self.registry[request.rid],
@@ -87,8 +86,7 @@ class CNIProtocol(asyncio.Protocol):
                 logging.info('running cleanup')
                 loop = asyncio.get_event_loop()
                 loop.create_task(
-                    send_response(
-                        self.transport,
+                    self.cni_response_task(
                         self.manager.cleanup,
                         response,
                         self.registry[request.rid],
@@ -100,22 +98,24 @@ class CNIProtocol(asyncio.Protocol):
                 logging.info(
                     f'return on command {request.env.get("CNI_COMMAND", None)}'
                 )
-                return cni_response(self.transport, response)
+                return self.cni_response(response)
 
     # do not annotate
     def connection_made(self, transport):
         self.transport = transport
 
+    def cni_response(self, data):
+        return self.transport.write(json.dumps(data).encode('utf-8'))
 
-async def send_response(
-    transport: asyncio.BaseTransport,
-    func: Callable,
-    data: dict[str, Any],
-    request: CNIRequest,
-    pool: AddressPool,
-    config: ConfigParser,
-) -> None:
-    cni_response(transport, await func(data, request, pool, config))
+    async def cni_response_task(
+        self,
+        func: Callable,
+        data: dict[str, Any],
+        request: CNIRequest,
+        pool: AddressPool,
+        config: ConfigParser,
+    ) -> None:
+        self.cni_response(await func(data, request, pool, config))
 
 
 class CNIServer:
@@ -149,10 +149,6 @@ class CNIServer:
             ),
             path=self.path,
         )
-
-
-def cni_response(transport, data):
-    return transport.write(json.dumps(data).encode('utf-8'))
 
 
 def cni_request_handler(sock_dgram, registry):
