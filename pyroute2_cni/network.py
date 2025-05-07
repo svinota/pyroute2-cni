@@ -64,6 +64,8 @@ class Manager:
         default_prefix = config['default']['prefix']
         default_prefixlen = config['default']['prefixlen']
         default_vrf = config['default']['vrf']
+        host_ip = config['network']['ipaddr']
+        logging.info(f'host ip: {host_ip}')
         networks.add(
             (IPv4Network(f'{default_prefix}/{default_prefixlen}'), default_vrf)
         )
@@ -105,6 +107,8 @@ class Manager:
                 )
 
         for pod in v1.list_pod_for_all_namespaces().items:
+            if pod.status.host_ip != host_ip:
+                continue
             try:
                 for network, _ in networks:
                     if IPv4Address(pod.status.pod_ip) in network:
