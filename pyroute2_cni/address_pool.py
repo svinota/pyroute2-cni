@@ -228,7 +228,9 @@ async def mdns_service_update_callback(
         if state_change == ServiceStateChange.Added:
             async with Plan9ClientSocket(address=peer_addr[0]) as p9:
                 await p9.start_session()
-                for (network, address), meta in address_pool.allocated.items():
+                for (network, address), meta in tuple(
+                    address_pool.allocated.items()
+                ):
                     await p9.call(
                         await p9.fid('register_address'),
                         kwarg={
