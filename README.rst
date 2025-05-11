@@ -19,7 +19,7 @@ install
 maintenance info
 ================
 
-see also `config['plan9']['port']`
+see also ``config['plan9']['port']``
 
 any node can be used, all the info is replicated
 
@@ -55,10 +55,10 @@ configuration
 
 * prefix: the prefix to use in the namespace
 * prefixlen: the network mask bits
-* vrf: the VRF to use for the namespace; see also `End.DT4 vrftable`;
-  → creates interface `vrf-{int}` in the host netns
+* vrf: the VRF to use for the namespace; see also ``End.DT4 vrftable``;
+  → creates interface ``vrf-{int}`` in the host netns
 * vxlan: VXLAN id of the transport between nodes;
-  → creates interface `vxlan-{int}` in the host netns
+  → creates interface ``vxlan-{int}`` in the host netns
 
 
 **Pod labels**
