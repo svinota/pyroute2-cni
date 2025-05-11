@@ -10,16 +10,17 @@ import sys
 import uuid
 from configparser import ConfigParser
 from functools import partial
+from importlib.metadata import entry_points
 from typing import Any, Callable, Optional
 
 from pydantic import ValidationError
 from pyroute2 import AsyncIPRoute, Plan9ServerSocket
 
 from pyroute2_cni.address_pool import AddressPool
-from pyroute2_cni.network import Manager
+from pyroute2_cni.protocols import PluginProtocol
 from pyroute2_cni.request import CNIRequest
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.DEBUG)
 
 
 class CNIProtocol(asyncio.Protocol):
@@ -32,13 +33,13 @@ class CNIProtocol(asyncio.Protocol):
         registry: dict[str, CNIRequest],
         config: ConfigParser,
         address_pool: AddressPool,
-        manager: Manager,
+        plugin: PluginProtocol,
     ):
         self.on_con_lost = on_con_lost
         self.registry = registry
         self.pool = address_pool
         self.config = config
-        self.manager = manager
+        self.plugin = plugin
 
     def error(self, spec: str):
         return self.transport.write(spec.encode('utf-8'))
@@ -75,7 +76,7 @@ class CNIProtocol(asyncio.Protocol):
                 loop = asyncio.get_event_loop()
                 loop.create_task(
                     self.cni_response_task(
-                        self.manager.setup,
+                        self.plugin.setup,
                         response,
                         self.registry[request.rid],
                         self.pool,
@@ -87,7 +88,7 @@ class CNIProtocol(asyncio.Protocol):
                 loop = asyncio.get_event_loop()
                 loop.create_task(
                     self.cni_response_task(
-                        self.manager.cleanup,
+                        self.plugin.cleanup,
                         response,
                         self.registry[request.rid],
                         self.pool,
@@ -127,7 +128,7 @@ class CNIServer:
         config: ConfigParser,
         registry: dict[str, CNIRequest],
         address_pool: AddressPool,
-        manager: Manager,
+        plugin: PluginProtocol,
         use_event_loop: Optional[asyncio.AbstractEventLoop] = None,
     ):
         self.event_loop = use_event_loop or asyncio.get_event_loop()
@@ -136,7 +137,7 @@ class CNIServer:
         self.registry = registry
         self.config = config
         self.address_pool = address_pool
-        self.manager = manager
+        self.plugin = plugin
 
     async def setup_endpoint(self):
         self.endpoint = await self.event_loop.create_unix_server(
@@ -145,7 +146,7 @@ class CNIServer:
                 self.registry,
                 self.config,
                 self.address_pool,
-                self.manager,
+                self.plugin,
             ),
             path=self.path,
         )
@@ -198,6 +199,14 @@ def handle_signal(tasks: list[asyncio.Task], signal_num) -> None:
         task.cancel()
 
 
+def load_plugin():
+    for ep in entry_points(group='pyroute2.cni'):
+        if ep.name == 'network':
+            plugin = ep.load()
+            return plugin()
+    raise RuntimeError('No plugin found for the network plugin')
+
+
 async def main(config: ConfigParser) -> None:
     registry: dict[str, CNIRequest] = {}
     service_ipaddr: str = ''
@@ -215,10 +224,10 @@ async def main(config: ConfigParser) -> None:
     address_pool = AddressPool(service_name, config)
 
     # load system state
-    manager = Manager()
-    await manager.resync(address_pool, config)
+    plugin = load_plugin()
+    await plugin.resync(address_pool, config)
 
-    cni_server = CNIServer(config, registry, address_pool, manager)
+    cni_server = CNIServer(config, registry, address_pool, plugin)
     await cni_server.setup_endpoint()
 
     p9_server = Plan9ServerSocket(

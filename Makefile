@@ -42,7 +42,7 @@ build: clean version
 
 .PHONY: patch
 patch:
-	sed -i "s/\(pyroute2-cni:\)v[0-9.]\+/\\1$$(cat VERSION)/" kubernetes/pyroute2-cni.yaml
+	sed -i "s/\(pyroute2-cni:\)v[0-9.]\+/\\1$$(cat VERSION)/" kubernetes/pyroute2-cni.yaml learning/Dockerfile
 	kubectl -n pyroute2-cni \
 		patch daemonset pyroute2-cni \
 		--type='json' \

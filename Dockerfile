@@ -1,6 +1,6 @@
 FROM python:3.12-alpine
 
-WORKDIR /app
+WORKDIR /pyroute2-cni
 
 # python modules
 RUN apk add git
@@ -15,4 +15,4 @@ COPY image/* .
 # the engine
 COPY pyroute2_plugin/pyroute2-cni-plugin .
 
-CMD [ "/app/start.sh" ]
+CMD [ "/pyroute2-cni/start.sh" ]

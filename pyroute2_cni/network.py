@@ -11,6 +11,7 @@ from pyroute2.common import uifname
 from kubernetes import client as k8s_client
 from kubernetes import config as k8s_config
 from pyroute2_cni.address_pool import AddressPool
+from pyroute2_cni.protocols import PluginProtocol
 from pyroute2_cni.request import CNIRequest
 
 
@@ -47,7 +48,7 @@ def get_pod_tag(request: CNIRequest, tag: str, default: str = '') -> str:
     return default
 
 
-class Manager:
+class Plugin(PluginProtocol):
     async def resync(
         self, address_pool: AddressPool, config: ConfigParser
     ) -> None:
@@ -129,7 +130,7 @@ class Manager:
         request: CNIRequest,
         pool: AddressPool,
         config: ConfigParser,
-    ) -> None:
+    ) -> dict[str, Any]:
         '''
         Run network setup
         '''
@@ -147,7 +148,7 @@ class Manager:
         request: CNIRequest,
         pool: AddressPool,
         config: ConfigParser,
-    ) -> None:
+    ) -> dict[str, Any]:
         '''
         Run network setup
         '''
