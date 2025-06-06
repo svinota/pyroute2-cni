@@ -50,7 +50,7 @@ def get_pod_tag(request: CNIRequest, tag: str, default: str = '') -> str:
 
 
 SegmentInfo = namedtuple(
-    'SegmentInfo', ('network', 'prefixlen', 'gateway', 'bridge')
+    'SegmentInfo', ('network', 'gateway', 'prefixlen', 'bridge')
 )
 
 
@@ -166,6 +166,9 @@ class Plugin(PluginProtocol):
     async def resync(
         self, address_pool: AddressPool, config: ConfigParser
     ) -> None:
+
+        await self.ensure_segment('kube-system', address_pool, config)
+
         # 1. list network namespaces -> bridges & vxlan
         # 2. list pods -> addresses
         try:
