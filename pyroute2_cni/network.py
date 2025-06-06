@@ -1,6 +1,7 @@
 import logging
 import os
 import socket
+from collections import namedtuple
 from configparser import ConfigParser
 from ipaddress import AddressValueError, IPv4Address, IPv4Network
 from typing import Any
@@ -48,7 +49,120 @@ def get_pod_tag(request: CNIRequest, tag: str, default: str = '') -> str:
     return default
 
 
+SegmentInfo = namedtuple(
+    'SegmentInfo', ('network', 'prefixlen', 'gateway', 'bridge')
+)
+
+
 class Plugin(PluginProtocol):
+    async def ensure_segment(
+        self, namespace: str, pool: AddressPool, config: ConfigParser
+    ) -> SegmentInfo:
+        labels = get_namespace_labels(namespace)
+        vrf_table = int(
+            labels.get('pyroute2.org/vrf', config['default']['vrf'])
+        )
+        vxlan_id = int(
+            labels.get('pyroute2.org/vxlan', config['default']['vxlan'])
+        )
+        prefixlen = int(
+            labels.get(
+                'pyroute2.org/prefixlen', config['default']['prefixlen']
+            )
+        )
+        prefix = labels.get('pyroute2.org/prefix', config['default']['prefix'])
+        network = IPv4Network(f'{prefix}/{prefixlen}')
+
+        async with AsyncIPRoute() as ipr_main:
+            default_route = await ipr_main.route('get', dst='1.1.1.1')
+            host_link = default_route[0].get('oif')
+            host_if = (await ipr_main.link('get', index=host_link))[0].get(
+                'ifname'
+            )
+            set_sysctl(
+                {
+                    'net.ipv6.conf.all.seg6_enabled': 1,
+                    f'net.ipv6.conf.{host_if}.seg6_enabled': 1,
+                    'net.ipv4.conf.all.rp_filter': 0,  # <-- asymmetric SRv6
+                    'net.vrf.strict_mode': 1,  # <-- required for SRv6 End.DT4
+                }
+            )
+            ###
+            # configure vrf
+            #
+            vrf_name = f'vrf-{vrf_table}'
+            if not await ipr_main.link_lookup(ifname=vrf_name):
+                await ipr_main.link(
+                    'add',
+                    ifname=vrf_name,
+                    kind='vrf',
+                    vrf_table=vrf_table,
+                    state='up',
+                )
+            (vrf,) = await ipr_main.poll(
+                ipr_main.link, 'dump', ifname=vrf_name, timeout=5
+            )
+            set_sysctl(
+                {
+                    f'net.ipv4.conf.{vrf_name}.rp_filter': 0,  # <-- SRv6
+                    'net.ipv4.tcp_l3mdev_accept': 1,  # <-- serve cross VRF
+                    'net.ipv4.udp_l3mdev_accept': 1,  # <-- serve cross VRF
+                }
+            )
+
+            ###
+            # configure bridge
+            #
+            br_name = f'br-{vrf_table}'
+            if not await ipr_main.link_lookup(ifname=br_name):
+                await ipr_main.link(
+                    'add', ifname=br_name, kind='bridge', state='up'
+                )
+            (bridge,) = await ipr_main.poll(
+                ipr_main.link, 'dump', ifname=br_name, timeout=5
+            )
+            bridge_addr = [
+                x
+                async for x in await ipr_main.addr(
+                    'dump', family=socket.AF_INET, index=bridge['index']
+                )
+            ]
+            if len(bridge_addr):
+                gateway = bridge_addr[0].get('address')
+            else:
+                gateway = await pool.allocate(network=network, is_gateway=True)
+                await ipr_main.addr(
+                    'add',
+                    index=bridge['index'],
+                    address=f'{gateway}/{prefixlen}',
+                )
+            if bridge.get('master') != vrf['index']:
+                await ipr_main.link(
+                    'set', index=bridge['index'], master=vrf['index']
+                )
+                # if vrf_table < 100:
+                await ipr_main.route(
+                    'add', dst=prefix, dst_len=prefixlen, oif=vrf['index']
+                )
+
+            ###
+            # configure vxlan
+            #
+            vxlan_name = f'vxlan-{vxlan_id}'
+            if not await ipr_main.link_lookup(ifname=vxlan_name):
+                await ipr_main.link(
+                    'add',
+                    ifname=vxlan_name,
+                    kind='vxlan',
+                    state='up',
+                    master=bridge['index'],
+                    vxlan_link=host_link,
+                    vxlan_id=vxlan_id,
+                    vxlan_group='239.1.1.1',
+                )
+
+        return SegmentInfo(network, gateway, prefixlen, bridge)
+
     async def resync(
         self, address_pool: AddressPool, config: ConfigParser
     ) -> None:
@@ -161,109 +275,9 @@ class Plugin(PluginProtocol):
         # get VRF and VXLAN ids for this container
         #
         namespace = get_pod_tag(request, 'namespace', default='default')
-        labels = get_namespace_labels(namespace)
-        vrf_table = int(
-            labels.get('pyroute2.org/vrf', config['default']['vrf'])
-        )
-        vxlan_id = int(
-            labels.get('pyroute2.org/vxlan', config['default']['vxlan'])
-        )
-        prefixlen = int(
-            labels.get(
-                'pyroute2.org/prefixlen', config['default']['prefixlen']
-            )
-        )
-        prefix = labels.get('pyroute2.org/prefix', config['default']['prefix'])
-        network = IPv4Network(f'{prefix}/{prefixlen}')
+        segment = await self.ensure_segment(namespace, pool, config)
 
         async with AsyncIPRoute() as ipr_main:
-            default_route = await ipr_main.route('get', dst='1.1.1.1')
-            host_link = default_route[0].get('oif')
-            host_if = (await ipr_main.link('get', index=host_link))[0].get(
-                'ifname'
-            )
-            set_sysctl(
-                {
-                    'net.ipv6.conf.all.seg6_enabled': 1,
-                    f'net.ipv6.conf.{host_if}.seg6_enabled': 1,
-                    'net.ipv4.conf.all.rp_filter': 0,  # <-- asymmetric SRv6
-                    'net.vrf.strict_mode': 1,  # <-- required for SRv6 End.DT4
-                }
-            )
-            ###
-            # configure vrf
-            #
-            vrf_name = f'vrf-{vrf_table}'
-            if not await ipr_main.link_lookup(ifname=vrf_name):
-                await ipr_main.link(
-                    'add',
-                    ifname=vrf_name,
-                    kind='vrf',
-                    vrf_table=vrf_table,
-                    state='up',
-                )
-            (vrf,) = await ipr_main.poll(
-                ipr_main.link, 'dump', ifname=vrf_name, timeout=5
-            )
-            set_sysctl(
-                {
-                    f'net.ipv4.conf.{vrf_name}.rp_filter': 0,  # <-- SRv6
-                    'net.ipv4.tcp_l3mdev_accept': 1,  # <-- serve cross VRF
-                    'net.ipv4.udp_l3mdev_accept': 1,  # <-- serve cross VRF
-                }
-            )
-
-            ###
-            # configure bridge
-            #
-            br_name = f'br-{vrf_table}'
-            if not await ipr_main.link_lookup(ifname=br_name):
-                await ipr_main.link(
-                    'add', ifname=br_name, kind='bridge', state='up'
-                )
-            (bridge,) = await ipr_main.poll(
-                ipr_main.link, 'dump', ifname=br_name, timeout=5
-            )
-            bridge_addr = [
-                x
-                async for x in await ipr_main.addr(
-                    'dump', family=socket.AF_INET, index=bridge['index']
-                )
-            ]
-            if len(bridge_addr):
-                gateway = bridge_addr[0].get('address')
-            else:
-                gateway = await pool.allocate(network=network, is_gateway=True)
-                await ipr_main.addr(
-                    'add',
-                    index=bridge['index'],
-                    address=f'{gateway}/{prefixlen}',
-                )
-            if bridge.get('master') != vrf['index']:
-                await ipr_main.link(
-                    'set', index=bridge['index'], master=vrf['index']
-                )
-                # if vrf_table < 100:
-                await ipr_main.route(
-                    'add', dst=prefix, dst_len=prefixlen, oif=vrf['index']
-                )
-
-            ###
-            # configure vxlan
-            #
-            vxlan_name = f'vxlan-{vxlan_id}'
-            if not await ipr_main.link_lookup(ifname=vxlan_name):
-                await ipr_main.link(
-                    'add',
-                    ifname=vxlan_name,
-                    kind='vxlan',
-                    state='up',
-                    master=bridge['index'],
-                    vxlan_link=host_link,
-                    vxlan_id=vxlan_id,
-                    vxlan_group='239.1.1.1',
-                )
-
             ###
             # configure veth
             #
@@ -278,21 +292,21 @@ class Plugin(PluginProtocol):
                 ipr_main.link, 'dump', ifname=vp0, timeout=5
             )
             await ipr_main.link(
-                'set', index=port['index'], master=bridge['index']
+                'set', index=port['index'], master=segment.bridge['index']
             )
 
         ###
         # configure container's veth
         #
         address = await pool.allocate(
-            network=network, pod_uid=get_pod_tag(request, 'uid')
+            network=segment.network, pod_uid=get_pod_tag(request, 'uid')
         )
-        address = f'{address}/{prefixlen}'
+        address = f'{address}/{segment.prefixlen}'
         async with AsyncIPRoute(netns=request.netns) as ipr:
             (eth0,) = await ipr.link('get', ifname='eth0')
             await ipr.link('set', index=eth0['index'], state='up')
             await ipr.addr('add', index=eth0['index'], address=address)
-            await ipr.route('add', gateway=gateway)
+            await ipr.route('add', gateway=segment.gateway)
 
         data['interfaces'] = [
             {
@@ -302,7 +316,7 @@ class Plugin(PluginProtocol):
             }
         ]
         data['ips'] = [
-            {'address': address, 'interface': 0, 'gateway': gateway}
+            {'address': address, 'interface': 0, 'gateway': segment.gateway}
         ]
         data['routes'] = [{'dst': '0.0.0.0/0'}]
         os.close(request.netns)
