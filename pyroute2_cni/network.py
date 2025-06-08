@@ -167,6 +167,18 @@ class Plugin(PluginProtocol):
         self, address_pool: AddressPool, config: ConfigParser
     ) -> None:
 
+        async with AsyncIPRoute() as ipr_main:
+            vrf1, = await ipr_main.ensure(
+                ipr_main.link,
+                present=True,
+                ifname='vrf-1',
+                kind='vrf',
+                vrf_table=1,
+            )
+            await ipr_main.ensure(
+                ipr_main.link, present=False, index=vrf1['index']
+            )
+
         await self.ensure_segment('kube-system', address_pool, config)
 
         # 1. list network namespaces -> bridges & vxlan
