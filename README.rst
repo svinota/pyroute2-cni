@@ -8,6 +8,7 @@ requirements
 
 * kubernetes 1.31
 * VMs: Ubuntu 24.04, one NIC
+* vrf kernel module
 
 install
 =======
