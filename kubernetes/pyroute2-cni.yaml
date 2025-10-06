@@ -64,6 +64,56 @@ data:
     [mdns]
     service = _9p2r._tcp.local.
 
+    [topology]
+    template = ""
+
+  segment.dot: |
+    digraph G {
+
+        node [fillcolor="#ffffff", style=filled]
+
+        subgraph cluster_v0 {
+            label="$vrf_ifname";
+            type=vrf;
+            bgcolor="#f0f0f0";
+
+            subgraph cluster_n0 {
+                label="$namespace";
+                type=netns;
+                bgcolor="#c0c0c0";
+                fd="$net_ns_fd";
+
+                "port0" [type=interface, kind=veth, label="eth0", key=2];
+                "port0" -> "port0:ip" [style=dashed, dir=none];
+                "port0:ip" [
+                    shape=note,
+                    label="$veth_ipaddr",
+                    fontsize=8,
+                ];
+            }
+
+            "br0" [type=interface, kind=bridge, label="$br_ifname"];
+            "br0" -> "br0:ip" [style=dashed, dir=none];
+            "br0:ip" [
+                shape=note,
+                label="$br_ipaddr",
+                fontsize=8,
+            ];
+
+            "port0" -> "br0";
+        }
+
+        "vxlan" [
+            type=interface,
+            kind=vxlan,
+            label="$vxlan_ifname",
+            vxlan_id=$vxlan_id,
+            vxlan_group="239.1.1.1",
+        ];
+        "vxlan" -> "br0";
+        "vxlan" -> "$host_ifname" [style=dashed, dir=none];
+    }
+
 ---
 apiVersion: apps/v1
 kind: DaemonSet
@@ -101,7 +151,7 @@ spec:
         effect: NoSchedule
       containers:
       - name: pyroute2-cni
-        image: ghcr.io/svinota/pyroute2-cni:0.0.259
+        image: ghcr.io/svinota/pyroute2-cni:0.0.287
         resources:
           requests:
             cpu: "100m"

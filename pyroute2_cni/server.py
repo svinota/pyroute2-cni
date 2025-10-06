@@ -275,6 +275,8 @@ async def main(config: ConfigParser) -> None:
 def run():
     config = ConfigParser()
     config.read('config/server.ini')
+    with open('config/segment.dot', 'rb') as dot:
+        config['topology']['template'] = dot.read().decode('utf-8')
 
     if len(sys.argv) > 1:
         config['plan9']['port'] = sys.argv[1]

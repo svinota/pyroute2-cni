@@ -4,5 +4,8 @@ kubernetes
 networkx
 matplotlib
 ipaddress
+networkx
+pydot
 # pyroute2==0.9.1rc1
 git+https://github.com/svinota/pyroute2.git@master
+git+https://github.com/svinota/sdn-fixtures.git@main
