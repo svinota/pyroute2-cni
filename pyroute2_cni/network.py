@@ -9,7 +9,7 @@ from ipaddress import AddressValueError, IPv4Address, IPv4Network
 from string import Template
 from typing import Any
 
-from pyroute2 import AsyncIPRoute
+from pyroute2 import AsyncIPRoute, Plan9ServerSocket
 from pyroute2.netlink.nfnetlink.nftsocket import Cmp, Meta, Regs
 from pyroute2.nftables.expressions import genex, ipv4addr, masq
 from pyroute2.nftables.main import AsyncNFTables
@@ -160,16 +160,31 @@ class Plugin(PluginProtocol):
         namespace: str,
         pool: AddressPool,
         config: ConfigParser,
-        pod_uid: None | str = None,
-        net_ns_fd: int = 0,
+        request: None | CNIRequest = None,
         mask: int = 0xFFFFFFFF,
+        p9server: None | Plan9ServerSocket = None,
     ) -> SegmentInfo:
+        pod_uid: None | str = None
+        pod_name: None | str = None
+        net_ns_fd: None | int = 0
+        if request is not None:
+            pod_uid = get_pod_tag(request, 'uid')
+            pod_name = get_pod_tag(request, 'name')
+            net_ns_fd = request.netns
         info = await self.allocate_segment(
             namespace, pool, config, pod_uid, net_ns_fd
         )
         template = Template(config['topology']['template'])
         topology = template.substitute(asdict(info))
         logging.info(f'topology\n{topology}')
+        if request is not None and p9server is not None:
+            base: str = f'segments/{namespace}'
+            try:
+                p9server.filesystem.walk(base)
+            except KeyError:
+                p9server.filesystem.create(base, qtype=0x80)
+            with p9server.filesystem.create(f'{base}/{pod_name}.dot') as i:
+                i.data.write(topology.encode('utf-8'))
         await ensure(present=True, data=topology, mask=mask)
         async with AsyncIPRoute() as ipr:
             await ipr.route(
@@ -357,6 +372,7 @@ class Plugin(PluginProtocol):
         request: CNIRequest,
         pool: AddressPool,
         config: ConfigParser,
+        p9server: Plan9ServerSocket,
     ) -> dict[str, Any]:
         '''
         Run network setup
@@ -375,6 +391,7 @@ class Plugin(PluginProtocol):
         request: CNIRequest,
         pool: AddressPool,
         config: ConfigParser,
+        p9server: Plan9ServerSocket,
     ) -> dict[str, Any]:
         '''
         Run network setup
@@ -383,9 +400,8 @@ class Plugin(PluginProtocol):
         logging.info(f'request {request.rid} ready')
 
         namespace = get_pod_tag(request, 'namespace', default='default')
-        pod_uid = get_pod_tag(request, 'uid')
         info = await self.ensure_segment(
-            namespace, pool, config, pod_uid, request.netns
+            namespace, pool, config, request, p9server=p9server
         )
         await self.ensure_system_firewall(namespace, config)
 

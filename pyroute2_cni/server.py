@@ -34,12 +34,14 @@ class CNIProtocol(asyncio.Protocol):
         config: ConfigParser,
         address_pool: AddressPool,
         plugin: PluginProtocol,
+        p9server: Plan9ServerSocket,
     ):
         self.on_con_lost = on_con_lost
         self.registry = registry
         self.pool = address_pool
         self.config = config
         self.plugin = plugin
+        self.p9server = p9server
 
     def error(self, spec: str):
         return self.transport.write(spec.encode('utf-8'))
@@ -81,6 +83,7 @@ class CNIProtocol(asyncio.Protocol):
                         self.registry[request.rid],
                         self.pool,
                         self.config,
+                        self.p9server,
                     )
                 )
             elif command == 'DEL':
@@ -93,6 +96,7 @@ class CNIProtocol(asyncio.Protocol):
                         self.registry[request.rid],
                         self.pool,
                         self.config,
+                        self.p9server,
                     )
                 )
             else:
@@ -115,8 +119,9 @@ class CNIProtocol(asyncio.Protocol):
         request: CNIRequest,
         pool: AddressPool,
         config: ConfigParser,
+        p9server: Plan9ServerSocket,
     ) -> None:
-        self.cni_response(await func(data, request, pool, config))
+        self.cni_response(await func(data, request, pool, config, p9server))
 
 
 class CNIServer:
@@ -129,6 +134,7 @@ class CNIServer:
         registry: dict[str, CNIRequest],
         address_pool: AddressPool,
         plugin: PluginProtocol,
+        p9server: Plan9ServerSocket,
         use_event_loop: Optional[asyncio.AbstractEventLoop] = None,
     ):
         self.event_loop = use_event_loop or asyncio.get_event_loop()
@@ -138,6 +144,7 @@ class CNIServer:
         self.config = config
         self.address_pool = address_pool
         self.plugin = plugin
+        self.p9server = p9server
 
     async def setup_endpoint(self):
         self.endpoint = await self.event_loop.create_unix_server(
@@ -147,6 +154,7 @@ class CNIServer:
                 self.config,
                 self.address_pool,
                 self.plugin,
+                self.p9server,
             ),
             path=self.path,
         )
@@ -226,13 +234,12 @@ async def main(config: ConfigParser) -> None:
     # load system state
     plugin = load_plugin()
     await plugin.resync(address_pool, config)
-
-    cni_server = CNIServer(config, registry, address_pool, plugin)
-    await cni_server.setup_endpoint()
-
     p9_server = Plan9ServerSocket(
         address=(service_ipaddr, int(config['plan9']['port']))
     )
+    p9_server.filesystem.create('segments', qtype=0x80)
+    cni_server = CNIServer(config, registry, address_pool, plugin, p9_server)
+    await cni_server.setup_endpoint()
     with p9_server.filesystem.create('registry') as i:
         i.metadata.call_on_read = True
         i.register_function(
