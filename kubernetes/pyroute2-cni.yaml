@@ -151,7 +151,7 @@ spec:
         effect: NoSchedule
       containers:
       - name: pyroute2-cni
-        image: ghcr.io/svinota/pyroute2-cni:0.0.296
+        image: ghcr.io/svinota/pyroute2-cni:0.0.300
         resources:
           requests:
             cpu: "100m"

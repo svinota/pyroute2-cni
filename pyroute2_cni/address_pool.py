@@ -7,7 +7,7 @@ import traceback
 from configparser import ConfigParser
 from dataclasses import dataclass
 from functools import partial
-from io import BytesIO
+from io import BytesIO, StringIO
 from ipaddress import IPv4Address, IPv4Network
 
 import matplotlib.pyplot as plt
@@ -51,7 +51,7 @@ class AddressPool:
         )
         asyncio.ensure_future(self.mdns.async_register_service(self.info))
 
-    def export_graph(self):
+    def export_graph(self) -> tuple[tuple[str, ...], nx.Graph]:
         G = nx.Graph()
 
         hosts = {
@@ -85,10 +85,21 @@ class AddressPool:
                     AddressMetadata('', '', False, '', 'err'),
                 ).address,
             )
+        return tuple(hosts.keys()), G
 
+    def export_graph_dot(self) -> bytes:
+        _, G = self.export_graph()
+        buf = StringIO()
+        nx.nx_pydot.write_dot(G, buf)
+        image_bytes = buf.getvalue().encode('utf-8')
+        buf.close()
+        return image_bytes
+
+    def export_graph_svg(self) -> bytes:
+        hosts, G = self.export_graph()
         buf = BytesIO()
         pos = nx.spring_layout(G, seed=42)
-        node_sizes = [800 if node in hosts.keys() else 300 for node in G.nodes]
+        node_sizes = [800 if node in hosts else 300 for node in G.nodes]
         plt.figure(figsize=(12, 8))
         nx.draw(
             G,
@@ -100,10 +111,8 @@ class AddressPool:
             edge_color="gray",
         )
         plt.axis('off')
-
         plt.savefig(buf, format='svg', bbox_inches='tight')
         plt.close()
-
         image_bytes = buf.getvalue()
         buf.close()
         return image_bytes

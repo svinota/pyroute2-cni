@@ -266,9 +266,12 @@ async def main(config: ConfigParser) -> None:
             },
             loader=lambda x: {},
         )
-    with p9_server.filesystem.create('graph') as i:
+    with p9_server.filesystem.create('graph.svg') as i:
         i.metadata.call_on_read = True
-        i.register_function(address_pool.export_graph, loader=lambda x: {})
+        i.register_function(address_pool.export_graph_svg, loader=lambda x: {})
+    with p9_server.filesystem.create('graph.dot') as i:
+        i.metadata.call_on_read = True
+        i.register_function(address_pool.export_graph_dot, loader=lambda x: {})
 
     p9_task = await p9_server.async_run()
     loop = asyncio.get_event_loop()

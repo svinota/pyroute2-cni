@@ -1,4 +1,4 @@
-FROM ghcr.io/svinota/pyroute2-cni:0.0.296
+FROM ghcr.io/svinota/pyroute2-cni:0.0.300
 
 COPY . /my_plugin
 RUN cd /my_plugin && pip install .
