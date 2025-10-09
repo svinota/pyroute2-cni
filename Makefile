@@ -28,6 +28,10 @@ clean:
 image-clean:
 	for i in `podman images | awk '/pyroute2-cni/ {print($$1":"$$2)}'`; do podman rmi $$i; done
 
+.PHONY: ghcr-clean
+ghcr-clean:
+	for i in `gh api -H 'Accept: application/vnd.github+json' /user/packages/container/pyroute2-cni/versions --jq '.[].id' | sed 1d`; do gh api -H 'Accept: application/vnd.github+json' -X DELETE /user/packages/container/pyroute2-cni/versions/$$i; done
+
 .PHONY: version
 version:
 	echo `cat VERSION | awk -F . '{print($$1"."$$2"."$$3 + 1)}'` >VERSION
