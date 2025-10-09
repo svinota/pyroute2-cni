@@ -1,4 +1,6 @@
+import asyncio
 import base64
+import errno
 import logging
 import os
 import socket
@@ -9,7 +11,7 @@ from ipaddress import AddressValueError, IPv4Address, IPv4Network
 from string import Template
 from typing import Any
 
-from pyroute2 import AsyncIPRoute, Plan9ServerSocket
+from pyroute2 import AsyncIPRoute, NetlinkError, Plan9ServerSocket
 from pyroute2.netlink.nfnetlink.nftsocket import Cmp, Meta, Regs
 from pyroute2.nftables.expressions import genex, ipv4addr, masq
 from pyroute2.nftables.main import AsyncNFTables
@@ -91,6 +93,7 @@ class SegmentInfo:
     br_ifname: str = ''
     vxlan_ifname: str = ''
     veth_mac: str = ''
+    pod_name: str = ''
 
     def __post_init__(self):
         self.vrf_ifname = f'vrf-{self.vrf_table}'
@@ -167,12 +170,14 @@ class Plugin(PluginProtocol):
         pod_uid: None | str = None
         pod_name: None | str = None
         net_ns_fd: None | int = 0
+        attempts: int = 5
+        has_vrf: bool = False
         if request is not None:
             pod_uid = get_pod_tag(request, 'uid')
             pod_name = get_pod_tag(request, 'name')
             net_ns_fd = request.netns
         info = await self.allocate_segment(
-            namespace, pool, config, pod_uid, net_ns_fd
+            namespace, pool, config, pod_uid, pod_name, net_ns_fd
         )
         template = Template(config['topology']['template'])
         topology = template.substitute(asdict(info))
@@ -185,38 +190,52 @@ class Plugin(PluginProtocol):
                 p9server.filesystem.create(base, qtype=0x80)
             with p9server.filesystem.create(f'{base}/{pod_name}.dot') as i:
                 i.data.write(topology.encode('utf-8'))
-        await ensure(present=True, data=topology, mask=mask)
-        async with AsyncIPRoute() as ipr:
-            await ipr.route(
-                'replace',
-                dst=info.prefix,
-                dst_len=info.prefixlen,
-                oif=await ipr.link_lookup(info.br_ifname),
+        while attempts:
+            attempts -= 1
+            try:
+                await ensure(present=True, data=topology, mask=mask)
+                async with AsyncIPRoute() as ipr:
+                    await ipr.route(
+                        'replace',
+                        dst=info.prefix,
+                        dst_len=info.prefixlen,
+                        oif=await ipr.link_lookup(info.br_ifname),
+                    )
+                    if not has_vrf and await ipr.link_lookup(info.vrf_ifname):
+                        has_vrf = True
+
+                if net_ns_fd > 0:
+                    async with AsyncIPRoute(netns=net_ns_fd) as ipr:
+                        info.veth_mac = (await ipr.link('get', ifname='eth0'))[
+                            0
+                        ].get('address')
+                        logging.info(f'info: {asdict(info)}')
+                        await ipr.route('add', gateway=info.br_ipaddr)
+            except NetlinkError as e:
+                if e.code == errno.EBUSY:
+                    await asyncio.sleep(1)
+                    continue
+                raise
+
+            set_sysctl(
+                {
+                    'net.ipv6.conf.all.seg6_enabled': 1,
+                    f'net.ipv6.conf.{info.host_ifname}.seg6_enabled': 1,
+                    'net.ipv4.conf.all.rp_filter': 0,  # asymmetric SRv6
+                }
             )
-
-        if net_ns_fd > 0:
-            async with AsyncIPRoute(netns=net_ns_fd) as ipr:
-                info.veth_mac = (await ipr.link('get', ifname='eth0'))[0].get(
-                    'address'
+            if has_vrf:
+                set_sysctl(
+                    {
+                        'net.vrf.strict_mode': 1,  # SRv6 End.DT4
+                        f'net.ipv4.conf.{info.vrf_ifname}.rp_filter': 0,
+                        'net.ipv4.tcp_l3mdev_accept': 1,  # serve cross VRF
+                        'net.ipv4.udp_l3mdev_accept': 1,  # serve cross VRF
+                    }
                 )
-                logging.info(f'info: {asdict(info)}')
-                await ipr.route('add', gateway=info.br_ipaddr)
-
-        set_sysctl(
-            {
-                'net.ipv6.conf.all.seg6_enabled': 1,
-                f'net.ipv6.conf.{info.host_ifname}.seg6_enabled': 1,
-                'net.ipv4.conf.all.rp_filter': 0,  # <-- asymmetric SRv6
-                'net.vrf.strict_mode': 1,  # <-- required for SRv6 End.DT4
-            }
-        )
-        set_sysctl(
-            {
-                f'net.ipv4.conf.{info.vrf_ifname}.rp_filter': 0,  # <-- SRv6
-                'net.ipv4.tcp_l3mdev_accept': 1,  # <-- serve cross VRF
-                'net.ipv4.udp_l3mdev_accept': 1,  # <-- serve cross VRF
-            }
-        )
+            break
+        else:
+            raise TimeoutError('could not ensure the segment')
         return info
 
     async def allocate_segment(
@@ -225,6 +244,7 @@ class Plugin(PluginProtocol):
         pool: AddressPool,
         config: ConfigParser,
         pod_uid: None | str = None,
+        pod_name: None | str = None,
         net_ns_fd: int = 0,
     ) -> SegmentInfo:
         labels = get_namespace_labels(namespace)
@@ -261,6 +281,7 @@ class Plugin(PluginProtocol):
                 network = IPv4Network(f'{info.prefix}/{info.prefixlen}')
                 address = await pool.allocate(network=network, pod_uid=pod_uid)
                 info.veth_ipaddr = f'{address}/{info.prefixlen}'
+                info.pod_name = pod_name
                 async for bridge in await ipr_main.link(
                     'dump', ifname=info.br_ifname
                 ):
