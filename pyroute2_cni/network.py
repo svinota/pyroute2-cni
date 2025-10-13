@@ -94,6 +94,11 @@ class SegmentInfo:
     vxlan_ifname: str = ''
     veth_mac: str = ''
     pod_name: str = ''
+    srv6sid: str = ''
+    srv6local: str = ''
+    srv6sid_prefixlen: int = 64
+    srv6local_prefixlen: int = 48
+    vrf_announce: bool = True
 
     def __post_init__(self):
         self.vrf_ifname = f'vrf-{self.vrf_table}'
@@ -170,7 +175,7 @@ class Plugin(PluginProtocol):
         pod_uid: None | str = None
         pod_name: None | str = None
         net_ns_fd: None | int = 0
-        attempts: int = 5
+        max_attempts: int = 5
         has_vrf: bool = False
         if request is not None:
             pod_uid = get_pod_tag(request, 'uid')
@@ -190,6 +195,7 @@ class Plugin(PluginProtocol):
                 p9server.filesystem.create(base, qtype=0x80)
             with p9server.filesystem.create(f'{base}/{pod_name}.dot') as i:
                 i.data.write(topology.encode('utf-8'))
+        attempts = max_attempts
         while attempts:
             attempts -= 1
             try:
@@ -236,6 +242,46 @@ class Plugin(PluginProtocol):
             break
         else:
             raise TimeoutError('could not ensure the segment')
+
+        attempts = max_attempts
+        while attempts:
+            attempts -= 1
+            try:
+                async with AsyncIPRoute() as ipr:
+                    if info.vrf_announce and info.srv6sid:
+                        await ipr.route(
+                            'replace',
+                            dst=info.srv6sid,
+                            dst_len=128,
+                            oif=await ipr.link_lookup(info.vrf_ifname),
+                            encap={
+                                'type': 'seg6local',
+                                'action': 'End.DT4',
+                                'vrf_table': info.vrf_table,
+                            },
+                        )
+                        await ipr.ensure(
+                            ipr.addr,
+                            present=True,
+                            index=info.host_link,
+                            address=info.srv6local,
+                            prefixlen=info.srv6local_prefixlen,
+                        )
+                        try:
+                            with open('/var/run/exabgp/exabgp.in', 'w') as f:
+                                cmd = f'announce route {info.srv6sid}/128 '
+                                cmd += f'next-hop {info.srv6local}\n'
+                                f.write(cmd)
+                        except (FileNotFoundError, PermissionError):
+                            pass
+            except NetlinkError as e:
+                if e.code in (errno.EBUSY, errno.EPERM):
+                    await asyncio.sleep(1)
+                    continue
+                raise
+            break
+        else:
+            raise TimeoutError('could not ensure SRv6')
         return info
 
     async def allocate_segment(
@@ -248,9 +294,12 @@ class Plugin(PluginProtocol):
         net_ns_fd: int = 0,
     ) -> SegmentInfo:
         labels = get_namespace_labels(namespace)
+        EndDT4: str = 'a'
         async with AsyncIPRoute() as ipr_main:
             default_route = await ipr_main.route('get', dst='1.1.1.1')
             host_link = (default_route[0].get('oif'),)
+            host_src = default_route[0].get('prefsrc') or '127.0.0.1'
+            host_order = host_src.split('.')[-1]
             host_ifname = (await ipr_main.link('get', index=host_link))[0].get(
                 'ifname'
             )
@@ -277,6 +326,20 @@ class Plugin(PluginProtocol):
                 namespace=namespace,
                 net_ns_fd=net_ns_fd,
             )
+            srv6sid = labels.get(
+                'pyroute2.org/srv6sid', config['default']['srv6sid']
+            )
+            if srv6sid:
+                srv6sid += f':{host_order}::{info.vrf_table}:{EndDT4}'
+                info.srv6sid = srv6sid
+            srv6local = labels.get(
+                'pyroute2.org/srv6local', config['default']['srv6local']
+            )
+            if srv6local:
+                srv6local += f':{host_order}::5'
+                info.srv6local = srv6local
+            async for _ in await ipr_main.route('dump', dst=info.srv6sid):
+                info.vrf_announce = False
             if pod_uid is not None:
                 network = IPv4Network(f'{info.prefix}/{info.prefixlen}')
                 address = await pool.allocate(network=network, pod_uid=pod_uid)

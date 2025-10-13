@@ -41,6 +41,33 @@ roleRef:
 apiVersion: v1
 kind: ConfigMap
 metadata:
+  name: exabgp-config
+  namespace: pyroute2-cni
+data:
+  start.sh: |
+    #!/bin/sh
+    #
+    mkdir /run/lock
+    for i in /run/exabgp.{in,out}; do {
+      mkfifo $i;
+      chown exa $i; 
+      chmod 600 $i;
+    } done
+    ADDRESS=`ip -o route get 1.1.1.1 | awk '{print $7}'`
+    cat /etc/exabgp/exabgp.conf.template | sed s/host_ipaddr/$ADDRESS/ >/var/run/exabgp.conf
+    exec /usr/bin/dumb-init -- exabgp server /var/run/exabgp.conf
+  exabgp.conf.template: |
+    neighbor 192.168.124.1 {
+      router-id host_ipaddr;
+      local-as 65010;
+      peer-as 65010;
+      connect 1790;
+    }
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
   name: server-config
   namespace: pyroute2-cni
 data:
@@ -57,6 +84,8 @@ data:
     prefixlen = 16
     vxlan = 42
     vrf = 42
+    srv6sid = fc00:100
+    srv6local = fc00:200:1
 
     [plan9]
     port = 8149
@@ -153,7 +182,7 @@ spec:
         effect: NoSchedule
       containers:
       - name: pyroute2-cni
-        image: ghcr.io/svinota/pyroute2-cni:0.0.306
+        image: ghcr.io/svinota/pyroute2-cni:0.0.324
         resources:
           requests:
             cpu: "100m"
@@ -176,6 +205,17 @@ spec:
           mountPath: /var/run/pyroute2
         - name: server-config
           mountPath: /pyroute2-cni/config
+        - name: exabgp-io
+          mountPath: /var/run/exabgp
+      - name: exabgp
+        image: ghcr.io/exa-networks/exabgp:latest
+        volumeMounts:
+          - name: exabgp-io
+            mountPath: /run
+          - name: exabgp-config
+            mountPath: /etc/exabgp
+        command: [ "/bin/bash" ]
+        args: [ "/etc/exabgp/start.sh" ]
       volumes:
       - name: host-root
         hostPath:
@@ -187,3 +227,8 @@ spec:
       - name: server-config
         configMap:
           name: server-config
+      - name: exabgp-config
+        configMap:
+          name: exabgp-config
+      - name: exabgp-io
+        emptyDir: {}
