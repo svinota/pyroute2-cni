@@ -201,11 +201,18 @@ class Plugin(PluginProtocol):
             try:
                 await ensure(present=True, data=topology, mask=mask)
                 async with AsyncIPRoute() as ipr:
+                    table = 254
+                    service_vrf_max = (
+                        int(config['default']['service_vrf_max']) or 1024
+                    )
+                    if info.vrf_table > service_vrf_max:
+                        table = info.vrf_table
                     await ipr.route(
                         'replace',
                         dst=info.prefix,
                         dst_len=info.prefixlen,
                         oif=await ipr.link_lookup(info.br_ifname),
+                        table=table,
                     )
                     if not has_vrf and await ipr.link_lookup(info.vrf_ifname):
                         has_vrf = True

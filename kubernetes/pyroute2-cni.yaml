@@ -84,6 +84,7 @@ data:
     prefixlen = 16
     vxlan = 42
     vrf = 42
+    service_vrf_max = 512
     srv6sid = fc00:100
     srv6local = fc00:200:1
 
@@ -182,7 +183,7 @@ spec:
         effect: NoSchedule
       containers:
       - name: pyroute2-cni
-        image: ghcr.io/svinota/pyroute2-cni:0.0.324
+        image: ghcr.io/svinota/pyroute2-cni:0.0.326
         resources:
           requests:
             cpu: "100m"
