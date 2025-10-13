@@ -1,0 +1,20 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: debug-daemonset
+  labels:
+    app: cni-debug
+spec:
+  selector:
+    matchLabels:
+      app: cni-debug
+  template:
+    metadata:
+      labels:
+        app: cni-debug
+    spec:
+      containers:
+        - name: cni-debug
+          image: wbitt/network-multitool
+          command: ["sleep", "infinity"]
+      terminationGracePeriodSeconds: 4

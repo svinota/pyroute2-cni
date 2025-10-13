@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  labels:
+    pyroute2.org/prefix: 172.16.10.0
+    pyroute2.org/prefixlen: "24"
+    pyroute2.org/vrf: "1002"
+    pyroute2.org/vxlan: "200"
+  name: example-app

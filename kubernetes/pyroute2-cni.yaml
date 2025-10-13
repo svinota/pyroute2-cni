@@ -85,8 +85,8 @@ data:
     vxlan = 42
     vrf = 42
     service_vrf_max = 512
-    srv6sid = fc00:100
-    srv6local = fc00:200:1
+    srv6sid = fc00:100:$host_order::$vrf_table:a
+    srv6local = fc00:200:1:$host_order::5
 
     [plan9]
     port = 8149
@@ -183,7 +183,7 @@ spec:
         effect: NoSchedule
       containers:
       - name: pyroute2-cni
-        image: ghcr.io/svinota/pyroute2-cni:0.0.326
+        image: ghcr.io/svinota/pyroute2-cni:0.0.330
         resources:
           requests:
             cpu: "100m"

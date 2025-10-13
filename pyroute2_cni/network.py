@@ -85,6 +85,7 @@ class SegmentInfo:
     vxlan_id: int
     host_link: int
     host_ifname: str
+    host_order: int
     namespace: str
     net_ns_fd: int = 0
     veth_ipaddr: str = ''
@@ -301,7 +302,6 @@ class Plugin(PluginProtocol):
         net_ns_fd: int = 0,
     ) -> SegmentInfo:
         labels = get_namespace_labels(namespace)
-        EndDT4: str = 'a'
         async with AsyncIPRoute() as ipr_main:
             default_route = await ipr_main.route('get', dst='1.1.1.1')
             host_link = (default_route[0].get('oif'),)
@@ -330,21 +330,22 @@ class Plugin(PluginProtocol):
                 ),
                 host_link=host_link,
                 host_ifname=host_ifname,
+                host_order=host_order,
                 namespace=namespace,
                 net_ns_fd=net_ns_fd,
             )
-            srv6sid = labels.get(
-                'pyroute2.org/srv6sid', config['default']['srv6sid']
+            srv6sid = Template(
+                labels.get(
+                    'pyroute2.org/srv6sid', config['default']['srv6sid']
+                )
             )
-            if srv6sid:
-                srv6sid += f':{host_order}::{info.vrf_table}:{EndDT4}'
-                info.srv6sid = srv6sid
-            srv6local = labels.get(
-                'pyroute2.org/srv6local', config['default']['srv6local']
+            info.srv6sid = srv6sid.substitute(asdict(info))
+            srv6local = Template(
+                labels.get(
+                    'pyroute2.org/srv6local', config['default']['srv6local']
+                )
             )
-            if srv6local:
-                srv6local += f':{host_order}::5'
-                info.srv6local = srv6local
+            info.srv6local = srv6local.substitute(asdict(info))
             async for _ in await ipr_main.route('dump', dst=info.srv6sid):
                 info.vrf_announce = False
             if pod_uid is not None:
