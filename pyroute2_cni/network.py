@@ -95,7 +95,8 @@ class SegmentInfo:
     vxlan_ifname: str = ''
     veth_mac: str = ''
     pod_name: str = ''
-    srv6sid: str = ''
+    srv6end: str = ''
+    srv6endDT4: str = ''
     srv6local: str = ''
     srv6sid_prefixlen: int = 64
     srv6local_prefixlen: int = 48
@@ -256,10 +257,10 @@ class Plugin(PluginProtocol):
             attempts -= 1
             try:
                 async with AsyncIPRoute() as ipr:
-                    if info.vrf_announce and info.srv6sid:
+                    if info.vrf_announce and info.srv6endDT4:
                         await ipr.route(
                             'replace',
-                            dst=info.srv6sid,
+                            dst=info.srv6endDT4,
                             dst_len=128,
                             oif=await ipr.link_lookup(info.vrf_ifname),
                             encap={
@@ -268,6 +269,13 @@ class Plugin(PluginProtocol):
                                 'vrf_table': info.vrf_table,
                             },
                         )
+                        try:
+                            with open('/var/run/exabgp/exabgp.in', 'w') as f:
+                                cmd = f'announce route {info.srv6endDT4}/128 '
+                                cmd += f'next-hop {info.srv6local}\n'
+                                f.write(cmd)
+                        except (FileNotFoundError, PermissionError):
+                            pass
                         await ipr.ensure(
                             ipr.addr,
                             present=True,
@@ -275,13 +283,6 @@ class Plugin(PluginProtocol):
                             address=info.srv6local,
                             prefixlen=info.srv6local_prefixlen,
                         )
-                        try:
-                            with open('/var/run/exabgp/exabgp.in', 'w') as f:
-                                cmd = f'announce route {info.srv6sid}/128 '
-                                cmd += f'next-hop {info.srv6local}\n'
-                                f.write(cmd)
-                        except (FileNotFoundError, PermissionError):
-                            pass
             except NetlinkError as e:
                 if e.code in (errno.EBUSY, errno.EPERM):
                     await asyncio.sleep(1)
@@ -334,19 +335,25 @@ class Plugin(PluginProtocol):
                 namespace=namespace,
                 net_ns_fd=net_ns_fd,
             )
-            srv6sid = Template(
+            srv6end = Template(
                 labels.get(
-                    'pyroute2.org/srv6sid', config['default']['srv6sid']
+                    'pyroute2.org/srv6end', config['default']['srv6end']
                 )
             )
-            info.srv6sid = srv6sid.substitute(asdict(info))
+            info.srv6end = srv6end.substitute(asdict(info))
+            srv6endDT4 = Template(
+                labels.get(
+                    'pyroute2.org/srv6endDT4', config['default']['srv6endDT4']
+                )
+            )
+            info.srv6endDT4 = srv6endDT4.substitute(asdict(info))
             srv6local = Template(
                 labels.get(
                     'pyroute2.org/srv6local', config['default']['srv6local']
                 )
             )
             info.srv6local = srv6local.substitute(asdict(info))
-            async for _ in await ipr_main.route('dump', dst=info.srv6sid):
+            async for _ in await ipr_main.route('dump', dst=info.srv6endDT4):
                 info.vrf_announce = False
             if pod_uid is not None:
                 network = IPv4Network(f'{info.prefix}/{info.prefixlen}')
@@ -359,12 +366,15 @@ class Plugin(PluginProtocol):
                     async for address in await ipr_main.addr(
                         'dump', family=socket.AF_INET, index=bridge['index']
                     ):
-                        info.br_ipaddr = address.get('address')
+                        info.br_ipaddr = (
+                            f'{address.get("address")}/{info.prefixlen}'
+                        )
                         break
                 if not info.br_ipaddr:
-                    info.br_ipaddr = await pool.allocate(
+                    address = await pool.allocate(
                         network=network, is_gateway=True
                     )
+                    info.br_ipaddr = f'{address}/{info.prefixlen}'
 
         return info
 
