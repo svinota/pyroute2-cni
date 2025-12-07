@@ -360,9 +360,13 @@ class Plugin(PluginProtocol):
                 address = await pool.allocate(network=network, pod_uid=pod_uid)
                 info.veth_ipaddr = f'{address}/{info.prefixlen}'
                 info.pod_name = pod_name
-                async for bridge in await ipr_main.link(
-                    'dump', ifname=info.br_ifname
-                ):
+                dump = [
+                    x
+                    async for x in await ipr_main.link(
+                        'dump', ifname=info.br_ifname
+                    )
+                ]
+                for bridge in dump:
                     async for address in await ipr_main.addr(
                         'dump', family=socket.AF_INET, index=bridge['index']
                     ):
