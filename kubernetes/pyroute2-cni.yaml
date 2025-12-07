@@ -159,7 +159,7 @@ spec:
         effect: NoSchedule
       containers:
       - name: pyroute2-cni
-        image: ghcr.io/svinota/pyroute2-cni:0.0.335
+        image: ghcr.io/svinota/pyroute2-cni:0.0.342
         resources:
           requests:
             cpu: "100m"
@@ -182,3 +182,14 @@ spec:
           mountPath: /var/run/pyroute2
         - name: server-config
           mountPath: /pyroute2-cni/config
+      volumes:
+      - name: host-root
+        hostPath:
+          path: /
+      - name: pyroute2-run
+        hostPath:
+          path: /var/run/pyroute2
+          type: DirectoryOrCreate
+      - name: server-config
+        configMap:
+          name: server-config
