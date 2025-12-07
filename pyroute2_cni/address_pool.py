@@ -235,21 +235,29 @@ async def mdns_service_update_task(
         peer_addr = [(x, info.port) for x in addresses]
         address_pool.peers[name] = peer_addr
         if state_change == ServiceStateChange.Added:
-            async with Plan9ClientSocket(address=peer_addr[0]) as p9:
-                await p9.start_session()
-                for (network, address), meta in tuple(
-                    address_pool.allocated.items()
-                ):
-                    await p9.call(
-                        await p9.fid('register_address'),
-                        kwarg={
-                            'network': network,
-                            'address': address,
-                            'node': meta.node,
-                            'is_gateway': meta.is_gateway,
-                            'pod_uid': meta.pod_uid,
-                        },
-                    )
+            for _ in range(5):
+                try:
+                    async with Plan9ClientSocket(address=peer_addr[0]) as p9:
+                        await p9.start_session()
+                        for (network, address), meta in tuple(
+                            address_pool.allocated.items()
+                        ):
+                            await p9.call(
+                                await p9.fid('register_address'),
+                                kwarg={
+                                    'network': network,
+                                    'address': address,
+                                    'node': meta.node,
+                                    'is_gateway': meta.is_gateway,
+                                    'pod_uid': meta.pod_uid,
+                                },
+                            )
+                    break
+                except ConnectionRefusedError:
+                    logging.warning(f'peer connection refused, {peer_addr}')
+                    await asyncio.sleep(5)
+            else:
+                logging.warning(f'peer connection failed, {peer_addr}')
 
         if info.properties:
             logging.info("  Properties are:")
