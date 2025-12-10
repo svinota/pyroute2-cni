@@ -220,9 +220,15 @@ async def main(config: ConfigParser) -> None:
     service_ipaddr: str = ''
 
     async with AsyncIPRoute() as ipr:
-        async for route in await ipr.get_default_routes():
-            service_ipaddr = route.get('prefsrc')
+        async for addr in await ipr.addr(
+            'dump', index=await ipr.link_lookup(config['network']['host_if'])
+        ):
+            service_ipaddr = addr.get('address') or ''
             break
+        else:
+            async for route in await ipr.get_default_routes():
+                service_ipaddr = route.get('prefsrc') or ''
+                break
     config['network']['ipaddr'] = service_ipaddr
 
     await run_fd_receiver(
