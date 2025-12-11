@@ -308,8 +308,12 @@ class Plugin(PluginProtocol):
                 host_ifname = config['network']['host_if']
                 logging.info(f'using host_if from config: {host_ifname}')
                 (host_link,) = await ipr_main.link_lookup(host_ifname)
-                async for addr in await ipr_main.addr('dump', index=host_link):
-                    host_src = addr
+                addr_dump = [
+                    x
+                    async for x in await ipr_main.addr('dump', index=host_link)
+                ]
+                for msg in addr_dump:
+                    host_src = msg.get('address')
                     break
                 else:
                     logging.error('could not find host_src')
@@ -367,30 +371,33 @@ class Plugin(PluginProtocol):
             info.srv6local = srv6local.substitute(asdict(info))
             async for _ in await ipr_main.route('dump', dst=info.srv6endDT4):
                 info.vrf_announce = False
+            network = IPv4Network(f'{info.prefix}/{info.prefixlen}')
             if pod_uid is not None:
-                network = IPv4Network(f'{info.prefix}/{info.prefixlen}')
                 address = await pool.allocate(network=network, pod_uid=pod_uid)
                 info.veth_ipaddr = f'{address}/{info.prefixlen}'
                 info.pod_name = pod_name
-                dump = [
+
+            # reconcile the bridge anyways
+            dump_link = [
+                x
+                async for x in await ipr_main.link(
+                    'dump', ifname=info.br_ifname
+                )
+            ]
+            for bridge in dump_link:
+                dump_addr = [
                     x
-                    async for x in await ipr_main.link(
-                        'dump', ifname=info.br_ifname
+                    async for x in await ipr_main.addr(
+                        'dump', family=socket.AF_INET, index=bridge['index']
                     )
                 ]
-                for bridge in dump:
-                    async for address in await ipr_main.addr(
-                        'dump', family=socket.AF_INET, index=bridge['index']
-                    ):
-                        info.br_ipaddr = (
-                            f'{address.get("address")}/{info.prefixlen}'
-                        )
-                        break
-                if not info.br_ipaddr:
-                    address = await pool.allocate(
-                        network=network, is_gateway=True
-                    )
-                    info.br_ipaddr = f'{address}/{info.prefixlen}'
+                for msg in dump_addr:
+                    info.br_ipaddr = f'{msg.get("address")}/{info.prefixlen}'
+                    break
+            if not info.br_ipaddr:
+                address = await pool.allocate(network=network, is_gateway=True)
+                info.br_ipaddr = f'{address}/{info.prefixlen}'
+            logging.info(f'bridge {info.br_ifname} addr: {info.br_ipaddr}')
 
         return info
 

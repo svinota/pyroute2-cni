@@ -89,7 +89,7 @@ data:
                 bgcolor="#c0c0c0";
                 fd="$net_ns_fd";
 
-                "port0" [type=interface, kind=veth, label="eth0", mtu="1450", sysctl="?brport/hairpin_mode=1", key=2];
+                "port0" [type=interface, kind=veth, label="eth0", mtu="1440", sysctl="?brport/hairpin_mode=1", key=2];
                 "port0" -> "port0:ip" [style=dashed, dir=none];
                 "port0:ip" [
                     shape=note,
@@ -159,7 +159,7 @@ spec:
         effect: NoSchedule
       containers:
       - name: pyroute2-cni
-        image: ghcr.io/svinota/pyroute2-cni:0.0.351
+        image: ghcr.io/svinota/pyroute2-cni:0.0.357
         resources:
           requests:
             cpu: "100m"
