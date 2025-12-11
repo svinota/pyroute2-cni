@@ -120,6 +120,7 @@ class Plugin(PluginProtocol):
         async with AsyncIPRoute() as ipr_main:
             default_route = await ipr_main.route('get', dst='1.1.1.1')
             default_link = default_route[0].get('oif')
+            logging.info(f'fw: external interface {default_link}')
         async with AsyncNFTables() as nft_main:
             # reconcile table
             async for table in await nft_main.get_tables():
@@ -150,6 +151,7 @@ class Plugin(PluginProtocol):
                 if rule.get('userdata') == magic:
                     break
             else:
+                logging.info(f'fw: install nat rule with magic {magic}')
                 await nft_main.rule(
                     'add',
                     table='nat',
@@ -164,6 +166,7 @@ class Plugin(PluginProtocol):
                     ),
                     userdata=magic,
                 )
+                logging.info('fw: done')
 
     async def ensure_segment(
         self,
@@ -405,6 +408,7 @@ class Plugin(PluginProtocol):
         self, address_pool: AddressPool, config: ConfigParser
     ) -> None:
 
+        # trigger the VRF module
         async with AsyncIPRoute() as ipr_main:
             (vrf1,) = await ipr_main.ensure(
                 ipr_main.link,
@@ -417,6 +421,7 @@ class Plugin(PluginProtocol):
                 ipr_main.link, present=False, index=vrf1['index']
             )
 
+        await self.ensure_system_firewall('kube-system', config)
         await self.ensure_segment('kube-system', address_pool, config, mask=1)
 
         # 1. list network namespaces -> bridges & vxlan
