@@ -304,13 +304,25 @@ class Plugin(PluginProtocol):
     ) -> SegmentInfo:
         labels = get_namespace_labels(namespace)
         async with AsyncIPRoute() as ipr_main:
-            default_route = await ipr_main.route('get', dst='1.1.1.1')
-            host_link = (default_route[0].get('oif'),)
-            host_src = default_route[0].get('prefsrc') or '127.0.0.1'
+            if 'host_if' in config['network']:
+                host_ifname = config['network']['host_if']
+                logging.info(f'using host_if from config: {host_ifname}')
+                (host_link,) = await ipr_main.link_lookup(host_ifname)
+                async for addr in await ipr_main.addr('dump', index=host_link):
+                    host_src = addr
+                    break
+                else:
+                    logging.error('could not find host_src')
+                    raise Exception()
+            else:
+                logging.info('trying to calculate host_if')
+                default_route = await ipr_main.route('get', dst='1.1.1.1')
+                host_link = (default_route[0].get('oif'),)
+                host_src = default_route[0].get('prefsrc') or '127.0.0.1'
+                host_ifname = (await ipr_main.link('get', index=host_link))[
+                    0
+                ].get('ifname')
             host_order = host_src.split('.')[-1]
-            host_ifname = (await ipr_main.link('get', index=host_link))[0].get(
-                'ifname'
-            )
             info = SegmentInfo(
                 prefix=labels.get(
                     'pyroute2.org/prefix', config['default']['prefix']
