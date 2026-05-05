@@ -26,7 +26,7 @@ rules:
     verbs: ["get", "list", "watch"]
   - apiGroups: ["ipam.pyroute2.org"]
     resources: ["ipblocks"]
-    verbs: ["get", "list", "watch", "create", "patch", "update"]
+    verbs: ["get", "list", "watch", "create", "patch", "update", "delete"]
   - apiGroups: ["ipam.pyroute2.org"]
     resources: ["ipblocks/status"]
     verbs: ["get", "patch", "update"]
@@ -166,7 +166,7 @@ spec:
         effect: NoSchedule
       containers:
       - name: pyroute2-cni
-        image: ghcr.io/svinota/pyroute2-cni:0.0.370
+        image: ghcr.io/svinota/pyroute2-cni:0.0.374
         resources:
           requests:
             cpu: "100m"

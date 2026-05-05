@@ -505,7 +505,7 @@ class Plugin(PluginProtocol):
         p9server: Plan9ServerSocket,
     ) -> dict[str, Any]:
         '''
-        Run network setup
+        Run network cleanup
         '''
         pod_uid = get_pod_tag(request, 'uid')
         try:
@@ -513,6 +513,10 @@ class Plugin(PluginProtocol):
         except KeyError:
             # just ignore non existent addresses for now
             logging.error(f'container {pod_uid} not registered')
+        try:
+            await pool.gc_empty_blocks()
+        except Exception as e:
+            logging.warning(f'empty IPBlock gc failed: {e}')
         return data
 
     async def setup(

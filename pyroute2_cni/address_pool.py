@@ -77,12 +77,15 @@ class AddressPool:
         name = metadata.get('name') or item.get('name')
         if not name:
             raise KeyError('name')
+        allocated = status.get('allocated')
+        if allocated is None:
+            allocated = len(allocations)
         return {
             'name': name,
             'node_name': spec.get('nodeName') or '',
             'cidr': block,
             'allocations': allocations,
-            'allocated': int(status.get('allocated') or len(allocations)),
+            'allocated': int(allocated),
             'capacity': int(
                 status.get('capacity') or self._block_capacity(block)
             ),
@@ -127,9 +130,43 @@ class AddressPool:
                     'name': block['name'],
                     'cidr': block['cidr'],
                     'allocations': block['allocations'],
+                    'allocated': block['allocated'],
+                    'creation_timestamp': (
+                        (item.get('metadata') or {}).get('creationTimestamp') or ''
+                    ),
                 }
             )
         return result
+
+    def _delete_block(self, name: str) -> None:
+        self.k8s.delete_cluster_custom_object(
+            IPBLOCK_GROUP, IPBLOCK_VERSION, IPBLOCK_PLURAL, name
+        )
+
+    async def gc_empty_blocks(
+        self, limit: int = 1, keep: int = 1
+    ) -> int:
+        logging.info('Starting IPBlock GC')
+        async with self.lock:
+            empty_blocks = [
+                item for item in self._node_block_items() if item['allocated'] == 0
+            ]
+            empty_blocks.sort(key=lambda x: x['creation_timestamp'])
+            deletions = 0
+            while len(empty_blocks) > keep and deletions < limit:
+                block = empty_blocks.pop(0)
+                logging.info(f'Deleting IPBlock {block["name"]}')
+                try:
+                    self._delete_block(block['name'])
+                    deletions += 1
+                except ApiException as err:
+                    logging.warning(
+                        'failed to delete empty IPBlock %s: %s',
+                        block['name'],
+                        err,
+                    )
+                    break
+            return deletions
 
     def _next_free_block(self, network: IPv4Network) -> IPv4Network:
         used = self._all_block_cidrs(network)
