@@ -123,14 +123,14 @@ class Plugin(PluginProtocol):
             logging.info(f'fw: external interface {default_link}')
         async with AsyncNFTables() as nft_main:
             # reconcile table
-            async for table in await nft_main.get_tables():
+            for table in [x async for x in await nft_main.get_tables()]:
                 if table.get('name') == 'nat':
                     break
             else:
                 await nft_main.table('add', name='nat')
 
             # reconcile chain
-            async for chain in await nft_main.get_chains():
+            for chain in [x async for x in await nft_main.get_chains()]:
                 if chain.get('name') == 'POSTROUTING':
                     break
             else:
@@ -147,7 +147,7 @@ class Plugin(PluginProtocol):
             magic = '0x42 ' + base64.b64encode(
                 f'{prefix}/{prefixlen}'.encode('ascii')
             ).decode('ascii')
-            async for rule in await nft_main.get_rules():
+            for rule in [x async for x in await nft_main.get_rules()]:
                 if rule.get('userdata') == magic:
                     break
             else:
@@ -421,7 +421,6 @@ class Plugin(PluginProtocol):
                 ipr_main.link, present=False, index=vrf1['index']
             )
 
-        await self.ensure_system_firewall('kube-system', config)
         await self.ensure_segment('kube-system', address_pool, config, mask=1)
 
         # 1. list network namespaces -> bridges & vxlan
@@ -443,6 +442,7 @@ class Plugin(PluginProtocol):
             (IPv4Network(f'{default_prefix}/{default_prefixlen}'), default_vrf)
         )
         for ns in v1.list_namespace().items:
+            await self.ensure_system_firewall(ns.metadata.name, config)
             labels = ns.metadata.labels or {}
             vrf_table = labels.get('pyroute2.org/vrf')
             if vrf_table is None:
