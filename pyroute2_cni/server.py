@@ -234,8 +234,9 @@ async def main(config: ConfigParser) -> None:
     await run_fd_receiver(
         registry, socket_path=config['api']['socket_path_fd']
     )
-    service_name = f'{platform.uname().node}.{config["mdns"]["service"]}'
-    address_pool = AddressPool(service_name, config)
+    node_name = platform.uname().node
+    service_name = f'{node_name}.{config["mdns"]["service"]}'
+    address_pool = AddressPool(service_name, node_name, config)
 
     # load system state
     plugin = load_plugin()
