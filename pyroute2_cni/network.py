@@ -7,7 +7,7 @@ import socket
 import struct
 from configparser import ConfigParser
 from dataclasses import asdict, dataclass
-from ipaddress import AddressValueError, IPv4Address, IPv4Network
+from ipaddress import IPv4Network
 from string import Template
 from typing import Any
 
@@ -376,7 +376,12 @@ class Plugin(PluginProtocol):
                 info.vrf_announce = False
             network = IPv4Network(f'{info.prefix}/{info.prefixlen}')
             if pod_uid is not None:
-                address = await pool.allocate(network=network, pod_uid=pod_uid)
+                address = await pool.allocate(
+                    network=network,
+                    vrf_table=info.vrf_table,
+                    vxlan_id=info.vxlan_id,
+                    pod_uid=pod_uid,
+                )
                 info.veth_ipaddr = f'{address}/{info.prefixlen}'
                 info.pod_name = pod_name
 
@@ -398,7 +403,12 @@ class Plugin(PluginProtocol):
                     info.br_ipaddr = f'{msg.get("address")}/{info.prefixlen}'
                     break
             if not info.br_ipaddr:
-                address = await pool.allocate(network=network, is_gateway=True)
+                address = await pool.allocate(
+                    network=network,
+                    vrf_table=info.vrf_table,
+                    vxlan_id=info.vxlan_id,
+                    is_gateway=True,
+                )
                 info.br_ipaddr = f'{address}/{info.prefixlen}'
             logging.info(f'bridge {info.br_ifname} addr: {info.br_ipaddr}')
 
@@ -424,7 +434,6 @@ class Plugin(PluginProtocol):
         await self.ensure_segment('kube-system', address_pool, config, mask=1)
 
         # 1. list network namespaces -> bridges & vxlan
-        # 2. list pods -> addresses
         try:
             k8s_config.load_incluster_config()
         except Exception as e:
@@ -435,11 +444,14 @@ class Plugin(PluginProtocol):
         networks = set()
         default_prefix = config['default']['prefix']
         default_prefixlen = config['default']['prefixlen']
-        default_vrf = config['default']['vrf']
-        host_ip = config['network']['ipaddr']
-        logging.info(f'host ip: {host_ip}')
+        default_vrf = int(config['default']['vrf'])
+        default_vxlan = int(config['default']['vxlan'])
         networks.add(
-            (IPv4Network(f'{default_prefix}/{default_prefixlen}'), default_vrf)
+            (
+                IPv4Network(f'{default_prefix}/{default_prefixlen}'),
+                default_vrf,
+                default_vxlan,
+            )
         )
         for ns in v1.list_namespace().items:
             await self.ensure_system_firewall(ns.metadata.name, config)
@@ -454,10 +466,11 @@ class Plugin(PluginProtocol):
             if prefixlen is None:
                 continue
             vrf_table = int(vrf_table)
+            vxlan_id = int(labels.get('pyroute2.org/vxlan', default_vxlan))
             network = IPv4Network(f'{prefix}/{prefixlen}')
-            networks.add((network, vrf_table))
+            networks.add((network, vrf_table, vxlan_id))
 
-        for network, vrf_table in networks:
+        for network, vrf_table, vxlan_id in networks:
             br_ifname = f'br-{vrf_table}'
             async with AsyncIPRoute() as ipr:
                 br_idx = await ipr.link_lookup(ifname=br_ifname)
@@ -473,28 +486,13 @@ class Plugin(PluginProtocol):
                     continue
                 await address_pool.allocate(
                     network=network,
+                    vrf_table=vrf_table,
+                    vxlan_id=vxlan_id,
                     is_gateway=True,
                     address=address_pool.inet_aton(
                         network, bridge_addr[0].get('address')
                     ),
                 )
-
-        for pod in v1.list_pod_for_all_namespaces().items:
-            if pod.status.host_ip != host_ip:
-                continue
-            try:
-                for network, _ in networks:
-                    if IPv4Address(pod.status.pod_ip) in network:
-                        await address_pool.allocate(
-                            network=network,
-                            is_gateway=False,
-                            address=address_pool.inet_aton(
-                                network, pod.status.pod_ip
-                            ),
-                            pod_uid=pod.metadata.uid,
-                        )
-            except AddressValueError:
-                pass
 
     async def cleanup(
         self,

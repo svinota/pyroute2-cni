@@ -268,7 +268,9 @@ async def main(config: ConfigParser) -> None:
         i.metadata.call_on_read = True
         i.register_function(
             lambda: {
-                address_pool.inet_ntoa(*x[0]): x[1].node
+                f'{x[0][0]}/{x[0][1]}/{address_pool.inet_ntoa(x[0][2], x[0][3])}': x[
+                    1
+                ].node
                 for x in address_pool.allocated.items()
             },
             loader=lambda x: {},
