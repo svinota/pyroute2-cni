@@ -88,6 +88,7 @@ class AddressPool:
         metadata = item.get('metadata') or {}
         spec = item.get('spec') or {}
         status = item.get('status') or {}
+        resource_version = metadata.get('resourceVersion') or ''
         cidr = spec.get('cidr')
         if not cidr:
             raise KeyError('cidr')
@@ -104,6 +105,7 @@ class AddressPool:
         )
         return {
             'name': name,
+            'resource_version': resource_version,
             'node_name': spec.get('nodeName') or '',
             'vrf_table': vrf_table,
             'vxlan_id': vxlan_id,
@@ -118,6 +120,12 @@ class AddressPool:
     def _block_items(
         self, network: IPv4Network, vrf_table: int, vxlan_id: int
     ) -> list[dict[str, Any]]:
+        '''
+        List normalized IPBlocks for this node and domain within `network`.
+
+        Only blocks owned by this node, matching `vrf_table` / `vxlan_id`,
+        and contained in `network` are returned.
+        '''
         result: list[dict[str, Any]] = []
         for item in self._raw_block_items():
             block = self._parse_block(item)
@@ -177,6 +185,34 @@ class AddressPool:
                 }
             )
         return result
+
+    async def prune_stale_allocations(
+        self,
+        network: IPv4Network,
+        vrf_table: int,
+        vxlan_id: int,
+        live_pod_ips: dict[str, str],
+        gateway_ip: str | None = None,
+    ) -> int:
+        async with self.lock:
+            removed = 0
+            for item in self._block_items(network, vrf_table, vxlan_id):
+                logging.info(f'Block item: {item}')
+                allocations = dict(item['allocations'])
+                for ip, ref in tuple(allocations.items()):
+                    keep = (
+                        ref == 'gateway'
+                        and gateway_ip is not None
+                        and ip == gateway_ip
+                    ) or (live_pod_ips.get(ref) == ip)
+                    logging.info(f'>>> Block ip: {ip} : {ref} : {keep}')
+                    if keep:
+                        continue
+                    allocations.pop(ip, None)
+                    removed += 1
+                if allocations != item['allocations']:
+                    self._patch_block_status(item, allocations)
+            return removed
 
     def _delete_block(self, name: str) -> None:
         self.k8s.delete_cluster_custom_object(
@@ -278,16 +314,31 @@ class AddressPool:
         raise KeyError(f'IPBlock {cidr} not found')
 
     def _patch_block_status(
-        self, name: str, cidr: IPv4Network, allocations: dict[str, str]
+        self, item: dict[str, Any], allocations: dict[str, str]
     ) -> None:
+        name = item['name']
+        cidr = item['cidr']
         body = {
+            'apiVersion': f'{IPBLOCK_GROUP}/{IPBLOCK_VERSION}',
+            'kind': 'IPBlock',
+            'metadata': {
+                'name': name,
+                'resourceVersion': item['resource_version'],
+            },
+            'spec': {
+                'cidr': cidr.compressed,
+                'nodeName': self.node_name,
+                'vrfTable': item['vrf_table'],
+                'vxlanId': item['vxlan_id'],
+            },
             'status': {
                 'allocated': len(allocations),
                 'capacity': self._block_capacity(cidr),
                 'allocations': allocations,
-            }
+            },
         }
-        self.k8s.patch_cluster_custom_object_status(
+        logging.info(f'Patching: {allocations}')
+        self.k8s.replace_cluster_custom_object_status(
             IPBLOCK_GROUP, IPBLOCK_VERSION, IPBLOCK_PLURAL, name, body
         )
 
@@ -393,9 +444,7 @@ class AddressPool:
                             ip,
                         )
                     allocations.pop(ip, None)
-                    self._patch_block_status(
-                        item['name'], item['cidr'], allocations
-                    )
+                    self._patch_block_status(item, allocations)
                     return metadata
         raise KeyError('address not allocated')
 
@@ -468,7 +517,7 @@ class AddressPool:
                 )
 
             allocations[ip.compressed] = ref
-            self._patch_block_status(block['name'], block['cidr'], allocations)
+            self._patch_block_status(block, allocations)
             return self.register_address(
                 network.compressed,
                 self.inet_aton(network, ip.compressed),

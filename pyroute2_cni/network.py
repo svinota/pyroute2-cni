@@ -441,6 +441,17 @@ class Plugin(PluginProtocol):
             return
 
         v1 = k8s_client.CoreV1Api()
+        node_name = address_pool.node_name
+        live_pod_ips = {
+            pod.metadata.uid: pod.status.pod_ip
+            for pod in v1.list_pod_for_all_namespaces(
+                field_selector=f'spec.nodeName={node_name}'
+            ).items
+            if pod.metadata
+            and pod.metadata.uid
+            and pod.status
+            and pod.status.pod_ip
+        }
         networks = set()
         default_prefix = config['default']['prefix']
         default_prefixlen = config['default']['prefixlen']
@@ -459,12 +470,10 @@ class Plugin(PluginProtocol):
             vrf_table = labels.get('pyroute2.org/vrf')
             if vrf_table is None:
                 continue
-            prefix = labels.get('pyroute2.org/prefix')
-            if prefix is None:
-                continue
-            prefixlen = labels.get('pyroute2.org/prefixlen')
-            if prefixlen is None:
-                continue
+            prefix = labels.get('pyroute2.org/prefix') or default_prefix
+            prefixlen = (
+                labels.get('pyroute2.org/prefixlen') or default_prefixlen
+            )
             vrf_table = int(vrf_table)
             vxlan_id = int(labels.get('pyroute2.org/vxlan', default_vxlan))
             network = IPv4Network(f'{prefix}/{prefixlen}')
@@ -472,27 +481,34 @@ class Plugin(PluginProtocol):
 
         for network, vrf_table, vxlan_id in networks:
             br_ifname = f'br-{vrf_table}'
+            gateway_ip = None
             async with AsyncIPRoute() as ipr:
                 br_idx = await ipr.link_lookup(ifname=br_ifname)
                 if not br_idx:
-                    continue
-                bridge_addr = [
-                    x
-                    async for x in await ipr.addr(
-                        'dump', family=socket.AF_INET, index=br_idx[0]
-                    )
-                ]
-                if not bridge_addr:
-                    continue
+                    pass
+                else:
+                    bridge_addr = [
+                        x
+                        async for x in await ipr.addr(
+                            'dump', family=socket.AF_INET, index=br_idx[0]
+                        )
+                    ]
+                    if bridge_addr:
+                        gateway_ip = bridge_addr[0].get('address')
+
+            await address_pool.prune_stale_allocations(
+                network, vrf_table, vxlan_id, live_pod_ips, gateway_ip
+            )
+            if gateway_ip is not None:
                 await address_pool.allocate(
                     network=network,
                     vrf_table=vrf_table,
                     vxlan_id=vxlan_id,
                     is_gateway=True,
-                    address=address_pool.inet_aton(
-                        network, bridge_addr[0].get('address')
-                    ),
+                    address=address_pool.inet_aton(network, gateway_ip),
                 )
+
+        await address_pool.gc_empty_blocks()
 
     async def cleanup(
         self,
