@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SOCK=/var/run/frr/reload.sock
+FRR_CONF=/etc/frr/frr.conf
+FRR_START=/usr/lib/frr/frrinit.sh
+
+cleanup() {
+  if [[ -S "$SOCK" || -e "$SOCK" ]]; then
+    rm -f "$SOCK"
+  fi
+  "$FRR_START" stop || true
+}
+
+trap cleanup TERM INT
+
+rm -f "$SOCK"
+"$FRR_START" start
+
+while true; do
+  socat -u "UNIX-LISTEN:$SOCK,fork,unlink-close" EXEC:/handle-command
+done
