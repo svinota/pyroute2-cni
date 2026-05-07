@@ -2,7 +2,6 @@ import asyncio
 import json
 import logging
 import os
-import platform
 import signal
 import socket
 import struct
@@ -234,7 +233,7 @@ async def main(config: ConfigParser) -> None:
     await run_fd_receiver(
         registry, socket_path=config['api']['socket_path_fd']
     )
-    node_name = platform.uname().node
+    node_name = os.environ['NODE_NAME']
     service_name = f'{node_name}.{config["mdns"]["service"]}'
     address_pool = AddressPool(service_name, node_name, config)
 

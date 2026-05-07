@@ -105,7 +105,6 @@ class AddressPool:
         )
         return {
             'name': name,
-            'resource_version': resource_version,
             'node_name': spec.get('nodeName') or '',
             'vrf_table': vrf_table,
             'vxlan_id': vxlan_id,
@@ -115,6 +114,8 @@ class AddressPool:
             'capacity': int(
                 status.get('capacity') or self._block_capacity(block)
             ),
+            'resource_version': resource_version,
+            'creation_timestamp': metadata.get('creationTimestamp', ''),
         }
 
     def _block_items(
@@ -170,20 +171,7 @@ class AddressPool:
             block = self._parse_block(item)
             if block['node_name'] != self.node_name:
                 continue
-            result.append(
-                {
-                    'name': block['name'],
-                    'cidr': block['cidr'],
-                    'vrf_table': block['vrf_table'],
-                    'vxlan_id': block['vxlan_id'],
-                    'allocations': block['allocations'],
-                    'allocated': block['allocated'],
-                    'creation_timestamp': (
-                        (item.get('metadata') or {}).get('creationTimestamp')
-                        or ''
-                    ),
-                }
-            )
+            result.append(block)
         return result
 
     async def prune_stale_allocations(
@@ -412,12 +400,8 @@ class AddressPool:
         return IPv4Network(network)[address].compressed
 
     def unregister_address(self, pod_uid: str) -> AddressMetadata:
-        logging.info(f'pod_uid: {pod_uid}')
         address = None
         for address, metadata in tuple(self.allocated.items()):
-            logging.info(f'L address {address}, pod_uid: {metadata.pod_uid}')
-            logging.info(f'L {metadata.pod_uid == pod_uid}')
-            logging.info(f'L {type(metadata.pod_uid)} -- {type(pod_uid)}')
             if metadata.pod_uid == pod_uid:
                 break
         else:

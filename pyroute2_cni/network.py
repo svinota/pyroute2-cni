@@ -526,7 +526,7 @@ class Plugin(PluginProtocol):
             await pool.release(pod_uid)
         except KeyError:
             # just ignore non existent addresses for now
-            logging.error(f'container {pod_uid} not registered')
+            logging.error(f'pod_uid {pod_uid} not registered')
         try:
             await pool.gc_empty_blocks()
         except Exception as e:
