@@ -15,7 +15,10 @@ install
 
 .. code::
 
-    kubectl apply -f https://raw.githubusercontent.com/svinota/pyroute2-cni/refs/heads/main/kubernetes/pyroute2-cni.yaml
+    curl -fsSL https://raw.githubusercontent.com/svinota/pyroute2-cni/refs/heads/main/kubernetes/install.sh | bash
+
+This waits for the CRD to become established before applying namespace, RBAC,
+config, and DaemonSet.
 
 maintenance info
 ================

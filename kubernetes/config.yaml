@@ -1,0 +1,85 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: server-config
+  namespace: pyroute2-cni
+data:
+  server.ini: |
+    [api]
+    socket_path_api = /var/run/pyroute2/api
+    socket_path_fd = /var/run/pyroute2/fdpass
+
+    [network]
+    host_if = enp1s0
+
+    [default]
+    prefix = 10.244.0.0
+    prefixlen = 16
+    ipblocklen = 26
+    vxlan = 42
+    vrf = 42
+    service_vrf_max = 512
+    srv6end = fc00:100:$host_order::$vrf_table:a
+    srv6endDT4 = fc00:100:$host_order::$vrf_table:b
+    srv6local = fc00:200:1:$host_order::5
+
+    [plan9]
+    port = 8149
+
+    [mdns]
+    service = _9p2r._tcp.local.
+
+    [topology]
+    template = ""
+
+  segment.dot: |
+    digraph G {
+
+        node [fillcolor="#ffffff", style=filled]
+
+        subgraph cluster_v0 {
+            label="K8S namespace $namespace\nVRF domain $vrf_ifname";
+            type=vrf;
+            table=$vrf_table;
+            ifname="$vrf_ifname";
+            bgcolor="#f0f0f0";
+
+            subgraph cluster_n0 {
+                label="$pod_name";
+                type=netns;
+                bgcolor="#c0c0c0";
+                fd="$net_ns_fd";
+
+                "port0" [type=interface, kind=veth, label="eth0", mtu="1440", sysctl="?brport/hairpin_mode=1", key=2];
+                "port0" -> "port0:ip" [style=dashed, dir=none];
+                "port0:ip" [
+                    shape=note,
+                    label="$veth_ipaddr",
+                    fontsize=8,
+                ];
+            }
+
+            "br0" [type=interface, kind=bridge, label="$br_ifname"];
+            "br0" -> "br0:ip" [style=dashed, dir=none];
+            "br0:ip" [
+                shape=note,
+                label="$br_ipaddr",
+                fontsize=8,
+            ];
+            "br0:route" [shape=note, label="$prefix/$prefixlen"];
+            "br0" -> "br0:route";
+
+            "port0" -> "br0";
+        }
+
+        "vxlan" [
+            type=interface,
+            kind=vxlan,
+            label="$vxlan_ifname",
+            vxlan_id=$vxlan_id,
+            vxlan_group="239.1.1.1",
+        ];
+        "vxlan" -> "br0";
+        "vxlan" -> "$host_ifname" [style=dashed, dir=none];
+    }
