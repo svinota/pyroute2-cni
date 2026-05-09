@@ -147,6 +147,8 @@ class FRRManager:
                 f' !\n'
                 f' address-family ipv4 unicast\n'
                 f'  redistribute connected\n'
+                f'  redistribute static\n'
+                f'  redistribute kernel\n'
                 f' exit-address-family\n'
                 f' !\n'
                 f' address-family l2vpn evpn\n'
@@ -180,6 +182,26 @@ class Plugin(PluginProtocol):
     def __init__(self) -> None:
         self.frr: FRRManager | None = None
         self.vrfs = VRFRegistry()
+
+    async def reconcile_routes(
+        self,
+        ipr: AsyncIPRoute,
+        block_cidrs: set[IPv4Network],
+        br_ifname: str,
+        table: int,
+    ) -> None:
+        oif = await ipr.link_lookup(ifname=br_ifname)
+        if not oif:
+            logging.info(f'skip routes for missing bridge {br_ifname}')
+            return
+        for cidr in block_cidrs:
+            await ipr.route(
+                'replace',
+                dst=str(cidr.network_address),
+                dst_len=cidr.prefixlen,
+                oif=oif,
+                table=table,
+            )
 
     async def ensure_system_firewall(
         self, namespace: str, config: ConfigParser
@@ -286,12 +308,15 @@ class Plugin(PluginProtocol):
                     )
                     if info.vrf_table > service_vrf_max:
                         table = info.vrf_table
-                    await ipr.route(
-                        'replace',
-                        dst=info.prefix,
-                        dst_len=info.prefixlen,
-                        oif=await ipr.link_lookup(info.br_ifname),
-                        table=table,
+                    await self.reconcile_routes(
+                        ipr,
+                        pool.block_cidrs(
+                            IPv4Network(f'{info.prefix}/{info.prefixlen}'),
+                            info.vrf_table,
+                            info.vxlan_id,
+                        ),
+                        info.br_ifname,
+                        table
                     )
                     if not has_vrf and await ipr.link_lookup(info.vrf_ifname):
                         has_vrf = True
@@ -559,29 +584,50 @@ class Plugin(PluginProtocol):
             br_ifname = f'br-{vrf_table}'
             gateway_ip = None
             async with AsyncIPRoute() as ipr:
+                block_cidrs = address_pool.block_cidrs(network, vrf_table, vxlan_id)
                 br_idx = await ipr.link_lookup(ifname=br_ifname)
                 if not br_idx:
-                    pass
-                else:
-                    bridge_addr = [
-                        x
-                        async for x in await ipr.addr(
-                            'dump', family=socket.AF_INET, index=br_idx[0]
-                        )
-                    ]
-                    if bridge_addr:
-                        gateway_ip = bridge_addr[0].get('address')
+                    continue
+                bridge_addr = [
+                    x
+                    async for x in await ipr.addr(
+                        'dump', family=socket.AF_INET, index=br_idx[0]
+                    )
+                ]
+                if bridge_addr:
+                    gateway_ip = bridge_addr[0].get('address')
+                    await address_pool.allocate(
+                        network=network,
+                        vrf_table=vrf_table,
+                        vxlan_id=vxlan_id,
+                        is_gateway=True,
+                        address=address_pool.inet_aton(network, gateway_ip),
+                    )
+                    await address_pool.prune_stale_allocations(
+                        network, vrf_table, vxlan_id, live_pod_ips, gateway_ip
+                    )
 
-            await address_pool.prune_stale_allocations(
-                network, vrf_table, vxlan_id, live_pod_ips, gateway_ip
-            )
-            if gateway_ip is not None:
-                await address_pool.allocate(
-                    network=network,
-                    vrf_table=vrf_table,
-                    vxlan_id=vxlan_id,
-                    is_gateway=True,
-                    address=address_pool.inet_aton(network, gateway_ip),
+                table = 254
+                service_vrf_max = int(config['default']['service_vrf_max']) or 1024
+                if vrf_table > service_vrf_max:
+                    table = vrf_table
+
+                # Cleanup broad prefix routes possibly left from previous versions
+                try:
+                    await ipr.route(
+                        'del',
+                        dst=str(network.network_address),
+                        dst_len=network.prefixlen,
+                        table=table,
+                    )
+                except NetlinkError as e:
+                    if e.code != errno.ESRCH:
+                        raise
+                await self.reconcile_routes(
+                    ipr,
+                    block_cidrs,
+                    br_ifname,
+                    table,
                 )
 
         await address_pool.gc_empty_blocks()

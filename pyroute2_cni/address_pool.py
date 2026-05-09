@@ -165,6 +165,11 @@ class AddressPool:
                 cidrs.add(block)
         return cidrs
 
+    def block_cidrs(
+        self, network: IPv4Network, vrf_table: int, vxlan_id: int
+    ) -> set[IPv4Network]:
+        return self._all_block_cidrs(network, vrf_table, vxlan_id)
+
     def _node_block_items(self) -> list[dict[str, Any]]:
         result: list[dict[str, Any]] = []
         for item in self._raw_block_items():
