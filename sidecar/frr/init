@@ -4,12 +4,19 @@ set -euo pipefail
 SOCK=/var/run/frr/reload.sock
 FRR_CONF=/etc/frr/frr.conf
 FRR_START=/usr/lib/frr/frrinit.sh
+STOP=0
+SOCAT_PID=
 
 cleanup() {
+  STOP=1
   if [[ -S "$SOCK" || -e "$SOCK" ]]; then
     rm -f "$SOCK"
   fi
+  if [[ -n "${SOCAT_PID}" ]]; then
+    kill "$SOCAT_PID" 2>/dev/null || true
+  fi
   "$FRR_START" stop || true
+  exit 0
 }
 
 trap cleanup TERM INT
@@ -17,6 +24,8 @@ trap cleanup TERM INT
 rm -f "$SOCK"
 "$FRR_START" start
 
-while true; do
-  socat -u "UNIX-LISTEN:$SOCK,fork,unlink-close" EXEC:/handle-command
+while [[ "$STOP" -eq 0 ]]; do
+  socat -u "UNIX-LISTEN:$SOCK,fork,unlink-close" EXEC:/handle-command &
+  SOCAT_PID=$!
+  wait "$SOCAT_PID" || true
 done
