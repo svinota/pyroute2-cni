@@ -7,8 +7,8 @@ import socket
 import struct
 from configparser import ConfigParser
 from dataclasses import asdict, dataclass
-from pathlib import Path
 from ipaddress import IPv4Network
+from pathlib import Path
 from string import Template
 from typing import Any
 
@@ -179,8 +179,9 @@ class FRRManager:
 
 
 class Plugin(PluginProtocol):
-    def __init__(self) -> None:
-        self.frr: FRRManager | None = None
+    def __init__(self, config: ConfigParser) -> None:
+        self.config = config
+        self.frr = FRRManager('/pyroute2-cni/templates/frr.conf.tpl', config)
         self.vrfs = VRFRegistry()
 
     async def reconcile_routes(
@@ -203,9 +204,8 @@ class Plugin(PluginProtocol):
                 table=table,
             )
 
-    async def ensure_system_firewall(
-        self, namespace: str, config: ConfigParser
-    ) -> None:
+    async def ensure_system_firewall(self, namespace: str) -> None:
+        config = self.config
         labels = get_namespace_labels(namespace)
         prefixlen = labels.get(
             'pyroute2.org/prefixlen', config['default']['prefixlen']
@@ -266,11 +266,11 @@ class Plugin(PluginProtocol):
         self,
         namespace: str,
         pool: AddressPool,
-        config: ConfigParser,
         request: None | CNIRequest = None,
         mask: int = 0xFFFFFFFF,
         p9server: None | Plan9ServerSocket = None,
     ) -> SegmentInfo:
+        config = self.config
         pod_uid: None | str = None
         pod_name: None | str = None
         net_ns_fd: None | int = 0
@@ -283,7 +283,9 @@ class Plugin(PluginProtocol):
         info = await self.allocate_segment(
             namespace, pool, config, pod_uid, pod_name, net_ns_fd
         )
-        if self.frr is not None and self.vrfs.add(info.vrf_table, info.vxlan_id):
+        if self.frr is not None and self.vrfs.add(
+            info.vrf_table, info.vxlan_id
+        ):
             await self.frr.reload(self.vrfs.items())
         template = Template(config['topology']['template'])
         topology = template.substitute(asdict(info))
@@ -316,7 +318,7 @@ class Plugin(PluginProtocol):
                             info.vxlan_id,
                         ),
                         info.br_ifname,
-                        table
+                        table,
                     )
                     if not has_vrf and await ipr.link_lookup(info.vrf_ifname):
                         has_vrf = True
@@ -513,10 +515,8 @@ class Plugin(PluginProtocol):
 
         return info
 
-    async def resync(
-        self, address_pool: AddressPool, config: ConfigParser
-    ) -> None:
-        self.frr = FRRManager('/pyroute2-cni/templates/frr.conf.tpl', config)
+    async def resync(self, address_pool: AddressPool) -> None:
+        config = self.config
 
         # trigger the VRF module
         async with AsyncIPRoute() as ipr_main:
@@ -531,7 +531,7 @@ class Plugin(PluginProtocol):
                 ipr_main.link, present=False, index=vrf1['index']
             )
 
-        await self.ensure_segment('kube-system', address_pool, config, mask=1)
+        await self.ensure_segment('kube-system', address_pool, mask=1)
 
         # 1. list network namespaces -> bridges & vxlan
         try:
@@ -565,7 +565,7 @@ class Plugin(PluginProtocol):
             )
         )
         for ns in v1.list_namespace().items:
-            await self.ensure_system_firewall(ns.metadata.name, config)
+            await self.ensure_system_firewall(ns.metadata.name)
             labels = ns.metadata.labels or {}
             vrf_table = labels.get('pyroute2.org/vrf')
             if vrf_table is None:
@@ -584,7 +584,9 @@ class Plugin(PluginProtocol):
             br_ifname = f'br-{vrf_table}'
             gateway_ip = None
             async with AsyncIPRoute() as ipr:
-                block_cidrs = address_pool.block_cidrs(network, vrf_table, vxlan_id)
+                block_cidrs = address_pool.block_cidrs(
+                    network, vrf_table, vxlan_id
+                )
                 br_idx = await ipr.link_lookup(ifname=br_ifname)
                 if not br_idx:
                     continue
@@ -608,11 +610,14 @@ class Plugin(PluginProtocol):
                     )
 
                 table = 254
-                service_vrf_max = int(config['default']['service_vrf_max']) or 1024
+                service_vrf_max = (
+                    int(config['default']['service_vrf_max']) or 1024
+                )
                 if vrf_table > service_vrf_max:
                     table = vrf_table
 
-                # Cleanup broad prefix routes possibly left from previous versions
+                # Cleanup broad prefix routes possibly left from
+                # previous versions
                 try:
                     await ipr.route(
                         'del',
@@ -623,12 +628,7 @@ class Plugin(PluginProtocol):
                 except NetlinkError as e:
                     if e.code != errno.ESRCH:
                         raise
-                await self.reconcile_routes(
-                    ipr,
-                    block_cidrs,
-                    br_ifname,
-                    table,
-                )
+                await self.reconcile_routes(ipr, block_cidrs, br_ifname, table)
 
         await address_pool.gc_empty_blocks()
         if self.frr is not None:
@@ -639,7 +639,6 @@ class Plugin(PluginProtocol):
         data: dict[str, Any],
         request: CNIRequest,
         pool: AddressPool,
-        config: ConfigParser,
         p9server: Plan9ServerSocket,
     ) -> dict[str, Any]:
         '''
@@ -662,7 +661,6 @@ class Plugin(PluginProtocol):
         data: dict[str, Any],
         request: CNIRequest,
         pool: AddressPool,
-        config: ConfigParser,
         p9server: Plan9ServerSocket,
     ) -> dict[str, Any]:
         '''
@@ -673,9 +671,9 @@ class Plugin(PluginProtocol):
 
         namespace = get_pod_tag(request, 'namespace', default='default')
         info = await self.ensure_segment(
-            namespace, pool, config, request, p9server=p9server
+            namespace, pool, request, p9server=p9server
         )
-        await self.ensure_system_firewall(namespace, config)
+        await self.ensure_system_firewall(namespace)
 
         data['interfaces'] = [
             {

@@ -81,7 +81,6 @@ class CNIProtocol(asyncio.Protocol):
                         response,
                         self.registry[request.rid],
                         self.pool,
-                        self.config,
                         self.p9server,
                     )
                 )
@@ -94,7 +93,6 @@ class CNIProtocol(asyncio.Protocol):
                         response,
                         self.registry[request.rid],
                         self.pool,
-                        self.config,
                         self.p9server,
                     )
                 )
@@ -117,10 +115,9 @@ class CNIProtocol(asyncio.Protocol):
         data: dict[str, Any],
         request: CNIRequest,
         pool: AddressPool,
-        config: ConfigParser,
         p9server: Plan9ServerSocket,
     ) -> None:
-        self.cni_response(await func(data, request, pool, config, p9server))
+        self.cni_response(await func(data, request, pool, p9server))
 
 
 class CNIServer:
@@ -206,11 +203,11 @@ def handle_signal(tasks: list[asyncio.Task], signal_num) -> None:
         task.cancel()
 
 
-def load_plugin():
+def load_plugin(config: ConfigParser):
     for ep in entry_points(group='pyroute2.cni'):
         if ep.name == 'network':
             plugin = ep.load()
-            return plugin()
+            return plugin(config)
     raise RuntimeError('No plugin found for the network plugin')
 
 
@@ -239,8 +236,8 @@ async def main(config: ConfigParser) -> None:
     address_pool = AddressPool(service_name, node_name, config)
 
     # load system state
-    plugin = load_plugin()
-    await plugin.resync(address_pool, config)
+    plugin = load_plugin(config)
+    await plugin.resync(address_pool)
     p9_server = Plan9ServerSocket(
         address=(service_ipaddr, int(config['plan9']['port']))
     )
@@ -268,9 +265,10 @@ async def main(config: ConfigParser) -> None:
         i.metadata.call_on_read = True
         i.register_function(
             lambda: {
-                f'{x[0][0]}/{x[0][1]}/{address_pool.inet_ntoa(x[0][2], x[0][3])}': x[
-                    1
-                ].node
+                (
+                    f'{x[0][0]}/{x[0][1]}/'
+                    f'{address_pool.inet_ntoa(x[0][2], x[0][3])}'
+                ): x[1].node
                 for x in address_pool.allocated.items()
             },
             loader=lambda x: {},

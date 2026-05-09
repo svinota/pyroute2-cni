@@ -73,7 +73,10 @@ class AddressPool:
             for x in self.node_name.lower()
         )
         safe_cidr = str(cidr.network_address).replace('.', '-')
-        return f'{safe_node}-vrf{vrf_table}-vx{vxlan_id}-{safe_cidr}-{cidr.prefixlen}'
+        return (
+            f'{safe_node}-vrf{vrf_table}-vx{vxlan_id}-'
+            f'{safe_cidr}-{cidr.prefixlen}'
+        )
 
     def _block_capacity(self, cidr: IPv4Network) -> int:
         return max(cidr.num_addresses - 2, 0)
@@ -212,7 +215,7 @@ class AddressPool:
             IPBLOCK_GROUP, IPBLOCK_VERSION, IPBLOCK_PLURAL, name
         )
 
-    async def gc_empty_blocks(self, limit: int = 1, keep: int = 1) -> int:
+    async def gc_empty_blocks(self, limit: int = 1, keep: int = 0) -> int:
         logging.info('Starting IPBlock GC')
         async with self.lock:
             empty_blocks_by_domain: dict[
