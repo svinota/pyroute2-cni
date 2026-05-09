@@ -18,6 +18,18 @@ spec:
         tier: node
         app: pyroute2-cni
     spec:
+      initContainers:
+      - name: init-frr-config
+        image: busybox:1.36
+        command:
+        - sh
+        - -ec
+        - cp -a /config/. /etc/frr/
+        volumeMounts:
+        - name: frr-conf
+          mountPath: /etc/frr
+        - name: frr-templates
+          mountPath: /config
       serviceAccountName: pyroute2-cni-sa
       affinity:
         nodeAffinity:
@@ -34,8 +46,19 @@ spec:
       - operator: Exists
         effect: NoSchedule
       containers:
+
+      - name: pyroute2-frr
+        image: ghcr.io/svinota/pyroute2-frr:0.0.1
+        securityContext:
+          privileged: true
+        volumeMounts:
+        - name: frr-run
+          mountPath: /var/run/frr
+        - name: frr-conf
+          mountPath: /etc/frr
+
       - name: pyroute2-cni
-        image: ghcr.io/svinota/pyroute2-cni:0.0.390
+        image: ghcr.io/svinota/pyroute2-cni:0.0.392
         resources:
           requests:
             cpu: "100m"
@@ -60,8 +83,15 @@ spec:
           mountPath: /host
         - name: pyroute2-run
           mountPath: /var/run/pyroute2
+        - name: frr-run
+          mountPath: /var/run/frr
+        - name: frr-conf
+          mountPath: /etc/frr
         - name: server-config
           mountPath: /pyroute2-cni/config
+        - name: frr-templates
+          mountPath: /pyroute2-cni/templates
+
       volumes:
       - name: host-root
         hostPath:
@@ -70,6 +100,13 @@ spec:
         hostPath:
           path: /var/run/pyroute2
           type: DirectoryOrCreate
+      - name: frr-run
+        emptyDir: {}
+      - name: frr-conf
+        emptyDir: {}
       - name: server-config
         configMap:
           name: server-config
+      - name: frr-templates
+        configMap:
+          name: frr-config

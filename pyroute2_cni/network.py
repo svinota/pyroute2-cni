@@ -7,6 +7,7 @@ import socket
 import struct
 from configparser import ConfigParser
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from ipaddress import IPv4Network
 from string import Template
 from typing import Any
@@ -108,7 +109,78 @@ class SegmentInfo:
         self.vxlan_ifname = f'vxlan-{self.vxlan_id}'
 
 
+@dataclass(frozen=True)
+class VRFEntry:
+    vrf: str
+    vni: int
+
+
+class VRFRegistry:
+    def __init__(self) -> None:
+        self._vrfs: dict[tuple[int, int], VRFEntry] = {}
+
+    def add(self, vrf_table: int, vxlan_id: int) -> bool:
+        key = (vrf_table, vxlan_id)
+        if key in self._vrfs:
+            return False
+        self._vrfs[key] = VRFEntry(vrf=f'vrf-{vrf_table}', vni=vxlan_id)
+        return True
+
+    def items(self) -> list[VRFEntry]:
+        return list(self._vrfs.values())
+
+
+class FRRManager:
+    def __init__(self, template_path: str, config: ConfigParser) -> None:
+        self.template_path = Path(template_path)
+        self.config = config
+        self.output_path = Path('/etc/frr/frr.conf')
+        self.reload_sock = '/var/run/frr/reload.sock'
+
+    def render(self, vrfs: list[VRFEntry]) -> str:
+        vrf_sections = []
+        vrf_router_sections = []
+        for item in vrfs:
+            vrf_sections.append(f'vrf {item.vrf}\n vni {item.vni}\nexit-vrf')
+            vrf_router_sections.append(
+                f'router bgp 65000 vrf {item.vrf}\n'
+                f' !\n'
+                f' address-family ipv4 unicast\n'
+                f'  redistribute connected\n'
+                f' exit-address-family\n'
+                f' !\n'
+                f' address-family l2vpn evpn\n'
+                f'  advertise ipv4 unicast\n'
+                f' exit-address-family\n'
+                f'exit'
+            )
+
+        template = Template(self.template_path.read_text(encoding='utf-8'))
+        return template.substitute(
+            node_name=self.config['network']['node_name'],
+            router_id=self.config['network']['ipaddr'],
+            rr_ip=self.config['network']['rr_ip'],
+            vrf_sections='\n!\n'.join(vrf_sections),
+            vrf_router_sections='\n!\n'.join(vrf_router_sections),
+        )
+
+    async def reload(self, vrfs: list[VRFEntry]) -> None:
+        self.output_path.write_text(self.render(vrfs), encoding='utf-8')
+        reader, writer = await asyncio.open_unix_connection(self.reload_sock)
+        try:
+            writer.write(b'restart\n')
+            await writer.drain()
+            await reader.read()
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+
 class Plugin(PluginProtocol):
+    def __init__(self) -> None:
+        self.frr: FRRManager | None = None
+        self.vrfs = VRFRegistry()
+
     async def ensure_system_firewall(
         self, namespace: str, config: ConfigParser
     ) -> None:
@@ -189,6 +261,8 @@ class Plugin(PluginProtocol):
         info = await self.allocate_segment(
             namespace, pool, config, pod_uid, pod_name, net_ns_fd
         )
+        if self.frr is not None and self.vrfs.add(info.vrf_table, info.vxlan_id):
+            await self.frr.reload(self.vrfs.items())
         template = Template(config['topology']['template'])
         topology = template.substitute(asdict(info))
         logging.info(f'topology\n{topology}')
@@ -417,6 +491,7 @@ class Plugin(PluginProtocol):
     async def resync(
         self, address_pool: AddressPool, config: ConfigParser
     ) -> None:
+        self.frr = FRRManager('/pyroute2-cni/templates/frr.conf.tpl', config)
 
         # trigger the VRF module
         async with AsyncIPRoute() as ipr_main:
@@ -478,6 +553,7 @@ class Plugin(PluginProtocol):
             vxlan_id = int(labels.get('pyroute2.org/vxlan', default_vxlan))
             network = IPv4Network(f'{prefix}/{prefixlen}')
             networks.add((network, vrf_table, vxlan_id))
+            self.vrfs.add(vrf_table, vxlan_id)
 
         for network, vrf_table, vxlan_id in networks:
             br_ifname = f'br-{vrf_table}'
@@ -509,6 +585,8 @@ class Plugin(PluginProtocol):
                 )
 
         await address_pool.gc_empty_blocks()
+        if self.frr is not None:
+            await self.frr.reload(self.vrfs.items())
 
     async def cleanup(
         self,

@@ -229,6 +229,7 @@ async def main(config: ConfigParser) -> None:
                 service_ipaddr = route.get('prefsrc') or ''
                 break
     config['network']['ipaddr'] = service_ipaddr
+    config['network']['node_name'] = os.environ['NODE_NAME']
 
     await run_fd_receiver(
         registry, socket_path=config['api']['socket_path_fd']
