@@ -50,7 +50,7 @@ patch:
 	kubectl -n pyroute2-cni \
 		patch daemonset pyroute2-cni \
 		--type='json' \
-		-p='[{"op": "replace", "path": "/spec/template/spec/containers/0/image", "value": "ghcr.io/svinota/pyroute2-cni:'$$(cat VERSION)'"}]'
+		-p='[{"op": "replace", "path": "/spec/template/spec/containers/1/image", "value": "ghcr.io/svinota/pyroute2-cni:'$$(cat VERSION)'"}]'
 
 .PHONY: deploy
 deploy: build patch
