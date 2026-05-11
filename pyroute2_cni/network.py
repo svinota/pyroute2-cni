@@ -224,6 +224,7 @@ class Plugin(PluginProtocol):
             )
 
     async def ensure_system_firewall(self, namespace: str) -> None:
+        await self.firewall.setup()
         await self.firewall.ensure_system_firewall(namespace)
 
     async def ensure_segment(
