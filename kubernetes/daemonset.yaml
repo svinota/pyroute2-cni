@@ -58,7 +58,7 @@ spec:
           mountPath: /etc/frr
 
       - name: pyroute2-cni
-        image: ghcr.io/svinota/pyroute2-cni:0.0.392
+        image: ghcr.io/svinota/pyroute2-cni:0.0.409
         resources:
           requests:
             cpu: "100m"

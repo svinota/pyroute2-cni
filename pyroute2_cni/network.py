@@ -137,7 +137,13 @@ class FRRManager:
         self.output_path = Path('/etc/frr/frr.conf')
         self.reload_sock = '/var/run/frr/reload.sock'
 
-    def render(self, vrfs: list[VRFEntry]) -> str:
+    def render(
+        self,
+        vrfs: list[VRFEntry],
+        all_peer_ips: list[str],
+        control_plane_peer_ips: list[str],
+        is_control_plane: bool,
+    ) -> str:
         vrf_sections = []
         vrf_router_sections = []
         for item in vrfs:
@@ -157,17 +163,40 @@ class FRRManager:
                 f'exit'
             )
 
+        peer_sections = '\n'.join(
+            f' neighbor {peer} peer-group RR' for peer in all_peer_ips
+        )
+        rr_sections = ''
+        if is_control_plane:
+            rr_sections = '  bgp cluster-id 65000\n'
+            rr_sections += '\n'.join(
+                f'  neighbor {peer} route-reflector-client'
+                for peer in control_plane_peer_ips
+            )
+
         template = Template(self.template_path.read_text(encoding='utf-8'))
         return template.substitute(
             node_name=self.config['network']['node_name'],
             router_id=self.config['network']['ipaddr'],
-            rr_ip=self.config['network']['rr_ip'],
+            peer_sections=peer_sections,
+            rr_sections=rr_sections,
             vrf_sections='\n!\n'.join(vrf_sections),
             vrf_router_sections='\n!\n'.join(vrf_router_sections),
         )
 
-    async def reload(self, vrfs: list[VRFEntry]) -> None:
-        self.output_path.write_text(self.render(vrfs), encoding='utf-8')
+    async def reload(
+        self,
+        vrfs: list[VRFEntry],
+        all_peer_ips: list[str],
+        control_plane_peer_ips: list[str],
+        is_control_plane: bool,
+    ) -> None:
+        self.output_path.write_text(
+            self.render(
+                vrfs, all_peer_ips, control_plane_peer_ips, is_control_plane
+            ),
+            encoding='utf-8',
+        )
         reader, writer = await asyncio.open_unix_connection(self.reload_sock)
         try:
             writer.write(b'restart\n')
@@ -183,6 +212,45 @@ class Plugin(PluginProtocol):
         self.config = config
         self.frr = FRRManager('/pyroute2-cni/templates/frr.conf.tpl', config)
         self.vrfs = VRFRegistry()
+        self.all_peer_ips: list[str] = []
+        self.control_plane_peer_ips: list[str] = []
+        self.is_control_plane = False
+
+    @staticmethod
+    def _node_peer_ip(node: Any) -> str | None:
+        addresses = getattr(node.status, 'addresses', None) or []
+        for addr in addresses:
+            if addr.type == 'InternalIP':
+                return addr.address
+        for addr in addresses:
+            if addr.type == 'ExternalIP':
+                return addr.address
+        return None
+
+    @staticmethod
+    def _is_control_plane_node(node: Any) -> bool:
+        labels = node.metadata.labels or {}
+        return (
+            'node-role.kubernetes.io/control-plane' in labels
+            or 'node-role.kubernetes.io/master' in labels
+        )
+
+    def refresh_frr_peers(self, v1: k8s_client.CoreV1Api) -> None:
+        all_peer_ips = []
+        control_plane_peer_ips = []
+        local_node_name = self.config['network']['node_name']
+        for node in v1.list_node().items:
+            if node.metadata and node.metadata.name == local_node_name:
+                continue
+            peer_ip = self._node_peer_ip(node)
+            if peer_ip is None:
+                continue
+            all_peer_ips.append(peer_ip)
+            if self._is_control_plane_node(node):
+                control_plane_peer_ips.append(peer_ip)
+        self.all_peer_ips = sorted(set(all_peer_ips))
+        self.control_plane_peer_ips = sorted(set(control_plane_peer_ips))
+        self.is_control_plane = bool(self.control_plane_peer_ips)
 
     async def reconcile_routes(
         self,
@@ -286,7 +354,12 @@ class Plugin(PluginProtocol):
         if self.frr is not None and self.vrfs.add(
             info.vrf_table, info.vxlan_id
         ):
-            await self.frr.reload(self.vrfs.items())
+            await self.frr.reload(
+                self.vrfs.items(),
+                self.all_peer_ips,
+                self.control_plane_peer_ips,
+                self.is_control_plane,
+            )
         template = Template(config['topology']['template'])
         topology = template.substitute(asdict(info))
         logging.info(f'topology\n{topology}')
@@ -541,6 +614,7 @@ class Plugin(PluginProtocol):
             return
 
         v1 = k8s_client.CoreV1Api()
+        self.refresh_frr_peers(v1)
         node_name = address_pool.node_name
         live_pod_ips = {
             pod.metadata.uid: pod.status.pod_ip
@@ -632,7 +706,12 @@ class Plugin(PluginProtocol):
 
         await address_pool.gc_empty_blocks()
         if self.frr is not None:
-            await self.frr.reload(self.vrfs.items())
+            await self.frr.reload(
+                self.vrfs.items(),
+                self.all_peer_ips,
+                self.control_plane_peer_ips,
+                self.is_control_plane,
+            )
 
     async def cleanup(
         self,

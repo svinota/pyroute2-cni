@@ -11,7 +11,7 @@ metadata:
   name: pyroute2-cni-clusterrole
 rules:
   - apiGroups: [""]
-    resources: ["namespaces", "pods"]
+    resources: ["namespaces", "pods", "nodes"]
     verbs: ["get", "list", "watch"]
   - apiGroups: ["ipam.pyroute2.org"]
     resources: ["ipblocks"]

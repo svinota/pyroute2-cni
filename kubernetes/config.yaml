@@ -19,10 +19,11 @@ data:
      no bgp default ipv4-unicast
      neighbor RR peer-group
      neighbor RR remote-as 65000
-     neighbor $rr_ip peer-group RR
+    $peer_sections
      !
      address-family ipv4 unicast
       network $router_id/32
+    $rr_sections
      exit-address-family
      !
      address-family l2vpn evpn
