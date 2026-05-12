@@ -95,8 +95,8 @@ class FRRManager:
     def render(
         self,
         vrfs: list[VRFEntry],
-        all_peer_ips: list[str],
-        control_plane_peer_ips: list[str],
+        rr_peer_ips: list[str],
+        leaf_peer_ips: list[str],
         is_control_plane: bool,
     ) -> str:
         vrf_sections = []
@@ -118,36 +118,42 @@ class FRRManager:
                 f'exit'
             )
 
-        bgp_config = self.config['bgp'] if self.config.has_section('bgp') else {}
+        bgp_config = (
+            self.config['bgp'] if self.config.has_section('bgp') else {}
+        )
         rr_mode = bgp_config.get('rr_mode', 'control-plane')
         rr_sections = ''
-        peer_sections = ''
+        leaf_sections = ''
+        cluster_id = ''
+        router_id = self.config['network']['ipaddr']
 
-        if rr_mode == 'control-plane' and is_control_plane:
-            rr_sections = '  bgp cluster-id 65000\n'
-            rr_sections += '\n'.join(
-                f'  neighbor {peer} route-reflector-client'
-                for peer in control_plane_peer_ips
-            )
-            peer_sections = '\n'.join(
-                f' neighbor {peer} peer-group RR' for peer in all_peer_ips
-            )
+        if rr_mode == 'control-plane':
+            if is_control_plane:
+                cluster_id = f' bgp cluster-id {router_id}\n'
+                rr_sections += '\n'.join(
+                    f' neighbor {peer} peer-group RR' for peer in rr_peer_ips
+                )
+                leaf_sections = '\n'.join(
+                    f' neighbor {peer} peer-group LEAF'
+                    for peer in leaf_peer_ips
+                )
         elif rr_mode == 'node-label':
             node_name = self.config['network']['node_name']
-            node_rr_label = get_node_labels(node_name).get('pyroute2.org/rr')
-            if node_rr_label:
-                rr_sections = '  bgp cluster-id 65000\n'
-                rr_sections += (
-                    f'  neighbor {node_rr_label} route-reflector-client'
+            node_rr_label = (
+                get_node_labels(node_name).get('pyroute2.org/rr') or ''
+            )
+            rr_list = node_rr_label.split('-')
+            if rr_list:
+                rr_sections += '\n'.join(
+                    f' neighbor {peer} peer-group RR' for peer in rr_list
                 )
-                peer_sections = f' neighbor {node_rr_label} peer-group RR'
 
         template = Template(self.template_path.read_text(encoding='utf-8'))
         return template.substitute(
-            node_name=self.config['network']['node_name'],
-            router_id=self.config['network']['ipaddr'],
-            peer_sections=peer_sections,
+            router_id=router_id,
+            cluster_id=cluster_id,
             rr_sections=rr_sections,
+            leaf_sections=leaf_sections,
             vrf_sections='\n!\n'.join(vrf_sections),
             vrf_router_sections='\n!\n'.join(vrf_router_sections),
         )
@@ -155,14 +161,12 @@ class FRRManager:
     async def reload(
         self,
         vrfs: list[VRFEntry],
-        all_peer_ips: list[str],
-        control_plane_peer_ips: list[str],
+        rr_peer_ips: list[str],
+        leaf_peer_ips: list[str],
         is_control_plane: bool,
     ) -> None:
         self.output_path.write_text(
-            self.render(
-                vrfs, all_peer_ips, control_plane_peer_ips, is_control_plane
-            ),
+            self.render(vrfs, rr_peer_ips, leaf_peer_ips, is_control_plane),
             encoding='utf-8',
         )
         reader, writer = await asyncio.open_unix_connection(self.reload_sock)
@@ -181,8 +185,8 @@ class Plugin(PluginProtocol):
         self.frr = FRRManager('/pyroute2-cni/templates/frr.conf.tpl', config)
         self.firewall = FirewallManager(config)
         self.vrfs = VRFRegistry()
-        self.all_peer_ips: list[str] = []
-        self.control_plane_peer_ips: list[str] = []
+        self.rr_peer_ips: list[str] = []
+        self.leaf_peer_ips: list[str] = []
         self.is_control_plane = False
 
     @staticmethod
@@ -205,21 +209,24 @@ class Plugin(PluginProtocol):
         )
 
     def refresh_frr_peers(self, v1: k8s_client.CoreV1Api) -> None:
-        all_peer_ips = []
-        control_plane_peer_ips = []
+        rr_peer_ips = []
+        leaf_peer_ips = []
         local_node_name = self.config['network']['node_name']
         for node in v1.list_node().items:
+            is_control_plane = self._is_control_plane_node(node)
             if node.metadata and node.metadata.name == local_node_name:
+                if is_control_plane:
+                    self.is_control_plane = True
                 continue
             peer_ip = self._node_peer_ip(node)
             if peer_ip is None:
                 continue
-            all_peer_ips.append(peer_ip)
-            if self._is_control_plane_node(node):
-                control_plane_peer_ips.append(peer_ip)
-        self.all_peer_ips = sorted(set(all_peer_ips))
-        self.control_plane_peer_ips = sorted(set(control_plane_peer_ips))
-        self.is_control_plane = bool(self.control_plane_peer_ips)
+            if is_control_plane:
+                rr_peer_ips.append(peer_ip)
+            else:
+                leaf_peer_ips.append(peer_ip)
+        self.rr_peer_ips = sorted(set(rr_peer_ips))
+        self.leaf_peer_ips = sorted(set(leaf_peer_ips))
 
     async def reconcile_routes(
         self,
@@ -271,8 +278,8 @@ class Plugin(PluginProtocol):
         ):
             await self.frr.reload(
                 self.vrfs.items(),
-                self.all_peer_ips,
-                self.control_plane_peer_ips,
+                self.rr_peer_ips,
+                self.leaf_peer_ips,
                 self.is_control_plane,
             )
         template = Template(config['topology']['template'])
@@ -624,8 +631,8 @@ class Plugin(PluginProtocol):
         if self.frr is not None:
             await self.frr.reload(
                 self.vrfs.items(),
-                self.all_peer_ips,
-                self.control_plane_peer_ips,
+                self.rr_peer_ips,
+                self.leaf_peer_ips,
                 self.is_control_plane,
             )
 

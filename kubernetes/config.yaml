@@ -7,29 +7,30 @@ metadata:
 data:
   frr.conf.tpl: |
     !
-    frr defaults traditional
-    hostname $node_name
-    no ipv6 forwarding
     service integrated-vtysh-config
-    !
-    $vrf_sections
     !
     router bgp 65000
      bgp router-id $router_id
-     no bgp default ipv4-unicast
+    $cluster_id
      neighbor RR peer-group
-     neighbor RR remote-as 65000
-    $peer_sections
+     neighbor RR remote-as internal
+    $rr_sections
+
+     neighbor LEAF peer-group
+     neighbor LEAF remote-as internal
+    $leaf_sections
      !
      address-family ipv4 unicast
       network $router_id/32
-    $rr_sections
      exit-address-family
      !
      address-family l2vpn evpn
       neighbor RR activate
+      neighbor LEAF activate
+      neighbor LEAF route-reflector-client
+
       advertise-all-vni
-      advertise ipv4 unicast
+      advertise-svi-ip
      exit-address-family
     exit
     !
