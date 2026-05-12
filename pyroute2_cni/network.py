@@ -43,6 +43,7 @@ class SegmentInfo:
     host_order: int
     namespace: str
     net_ns_fd: int = 0
+    host_ipaddr: str = ''
     veth_ipaddr: str = ''
     br_ipaddr: str = ''
     vrf_ifname: str = ''
@@ -119,24 +120,27 @@ class FRRManager:
 
         bgp_config = self.config['bgp'] if self.config.has_section('bgp') else {}
         rr_mode = bgp_config.get('rr_mode', 'control-plane')
-        rr_sections = '  bgp cluster-id 65000\n'
+        rr_sections = ''
+        peer_sections = ''
 
         if rr_mode == 'control-plane' and is_control_plane:
-            peer_sections = '\n'.join(
-                f' neighbor {peer} peer-group RR' for peer in all_peer_ips
-            )
+            rr_sections = '  bgp cluster-id 65000\n'
             rr_sections += '\n'.join(
                 f'  neighbor {peer} route-reflector-client'
                 for peer in control_plane_peer_ips
+            )
+            peer_sections = '\n'.join(
+                f' neighbor {peer} peer-group RR' for peer in all_peer_ips
             )
         elif rr_mode == 'node-label':
             node_name = self.config['network']['node_name']
             node_rr_label = get_node_labels(node_name).get('pyroute2.org/rr')
             if node_rr_label:
-                peer_sections = f' neighbor {node_rr_label} peer-group RR'
+                rr_sections = '  bgp cluster-id 65000\n'
                 rr_sections += (
                     f'  neighbor {node_rr_label} route-reflector-client'
                 )
+                peer_sections = f' neighbor {node_rr_label} peer-group RR'
 
         template = Template(self.template_path.read_text(encoding='utf-8'))
         return template.substitute(
@@ -438,6 +442,7 @@ class Plugin(PluginProtocol):
                 host_order=host_order,
                 namespace=namespace,
                 net_ns_fd=net_ns_fd,
+                host_ipaddr=config['network']['ipaddr'],
             )
             srv6end = Template(
                 labels.get(
