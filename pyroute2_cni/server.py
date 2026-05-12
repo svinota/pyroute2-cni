@@ -2,7 +2,6 @@ import asyncio
 import json
 import logging
 import os
-import platform
 import signal
 import socket
 import struct
@@ -82,7 +81,6 @@ class CNIProtocol(asyncio.Protocol):
                         response,
                         self.registry[request.rid],
                         self.pool,
-                        self.config,
                         self.p9server,
                     )
                 )
@@ -95,7 +93,6 @@ class CNIProtocol(asyncio.Protocol):
                         response,
                         self.registry[request.rid],
                         self.pool,
-                        self.config,
                         self.p9server,
                     )
                 )
@@ -118,10 +115,9 @@ class CNIProtocol(asyncio.Protocol):
         data: dict[str, Any],
         request: CNIRequest,
         pool: AddressPool,
-        config: ConfigParser,
         p9server: Plan9ServerSocket,
     ) -> None:
-        self.cni_response(await func(data, request, pool, config, p9server))
+        self.cni_response(await func(data, request, pool, p9server))
 
 
 class CNIServer:
@@ -207,11 +203,11 @@ def handle_signal(tasks: list[asyncio.Task], signal_num) -> None:
         task.cancel()
 
 
-def load_plugin():
+def load_plugin(config: ConfigParser):
     for ep in entry_points(group='pyroute2.cni'):
         if ep.name == 'network':
             plugin = ep.load()
-            return plugin()
+            return plugin(config)
     raise RuntimeError('No plugin found for the network plugin')
 
 
@@ -230,16 +226,18 @@ async def main(config: ConfigParser) -> None:
                 service_ipaddr = route.get('prefsrc') or ''
                 break
     config['network']['ipaddr'] = service_ipaddr
+    config['network']['node_name'] = os.environ['NODE_NAME']
 
     await run_fd_receiver(
         registry, socket_path=config['api']['socket_path_fd']
     )
-    service_name = f'{platform.uname().node}.{config["mdns"]["service"]}'
-    address_pool = AddressPool(service_name, config)
+    node_name = os.environ['NODE_NAME']
+    service_name = f'{node_name}.{config["mdns"]["service"]}'
+    address_pool = AddressPool(service_name, node_name, config)
 
     # load system state
-    plugin = load_plugin()
-    await plugin.resync(address_pool, config)
+    plugin = load_plugin(config)
+    await plugin.resync(address_pool)
     p9_server = Plan9ServerSocket(
         address=(service_ipaddr, int(config['plan9']['port']))
     )
@@ -267,17 +265,14 @@ async def main(config: ConfigParser) -> None:
         i.metadata.call_on_read = True
         i.register_function(
             lambda: {
-                address_pool.inet_ntoa(*x[0]): x[1].node
+                (
+                    f'{x[0][0]}/{x[0][1]}/'
+                    f'{address_pool.inet_ntoa(x[0][2], x[0][3])}'
+                ): x[1].node
                 for x in address_pool.allocated.items()
             },
             loader=lambda x: {},
         )
-    with p9_server.filesystem.create('graph.svg') as i:
-        i.metadata.call_on_read = True
-        i.register_function(address_pool.export_graph_svg, loader=lambda x: {})
-    with p9_server.filesystem.create('graph.dot') as i:
-        i.metadata.call_on_read = True
-        i.register_function(address_pool.export_graph_dot, loader=lambda x: {})
 
     p9_task = await p9_server.async_run()
     loop = asyncio.get_event_loop()

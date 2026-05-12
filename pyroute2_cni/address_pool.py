@@ -1,28 +1,25 @@
 import asyncio
 import logging
-import random
-import socket
 import struct
-import traceback
 from configparser import ConfigParser
 from dataclasses import dataclass
-from functools import partial
-from io import BytesIO, StringIO
 from ipaddress import IPv4Address, IPv4Network
+from typing import Any, cast
 
-import matplotlib.pyplot as plt
-import networkx as nx
-from pyroute2 import Plan9ClientSocket
-from zeroconf import ServiceStateChange, Zeroconf
-from zeroconf.asyncio import (
-    AsyncServiceBrowser,
-    AsyncServiceInfo,
-    AsyncZeroconf,
-)
+from kubernetes.client.exceptions import ApiException
+
+from kubernetes import client as k8s_client
+from kubernetes import config as k8s_config  # type: ignore[attr-defined]
+
+IPBLOCK_GROUP = 'ipam.pyroute2.org'
+IPBLOCK_VERSION = 'v1alpha1'
+IPBLOCK_PLURAL = 'ipblocks'
 
 
 @dataclass
 class AddressMetadata:
+    vrf_table: int
+    vxlan_id: int
     node: str
     pod_uid: str
     is_gateway: bool
@@ -31,91 +28,375 @@ class AddressMetadata:
 
 
 class AddressPool:
-    def __init__(self, name: str, config: ConfigParser) -> None:
-        self.allocated: dict[tuple[str, int], AddressMetadata] = {}
-        self.peers: dict[str, list[tuple[str, int]]] = {}
+    def __init__(
+        self, name: str, node_name: str, config: ConfigParser
+    ) -> None:
+        self.allocated: dict[tuple[int, int, str, int], AddressMetadata] = {}
         self.name = name
+        self.node_name = node_name
         self.config = config
-        self.mdns = AsyncZeroconf()
-        self.info = AsyncServiceInfo(
-            self.config['mdns']['service'],
-            self.name,
-            addresses=[socket.inet_aton(self.config['network']['ipaddr'])],
-            port=int(self.config['plan9']['port']),
-            properties={'role': 'candidate'},
-        )
-        self.browser = AsyncServiceBrowser(
-            self.mdns.zeroconf,
-            [self.config['mdns']['service']],
-            handlers=[partial(mdns_service_update_handler, address_pool=self)],
-        )
-        asyncio.ensure_future(self.mdns.async_register_service(self.info))
-
-    def export_graph(self) -> tuple[tuple[str, ...], nx.Graph]:
-        G = nx.Graph()
-
-        hosts = {
-            y: (y, {'color': '#b2ceff'})
-            for y in set([x.node for x in self.allocated.values()])
-        }
-        G.add_nodes_from(hosts.values())
-        for h1 in hosts.keys():
-            for h2 in hosts.keys():
-                if h1 != h2:
-                    G.add_edge(h1, h2)
-
-        gateways = {
-            (x.network, x.node): x
-            for x in self.allocated.values()
-            if x.is_gateway
-        }
-        for gateway in gateways.values():
-            G.add_node(gateway.address, color='#b2ffe3')
-            G.add_edge(gateway.address, gateway.node)
-
-        containers = {
-            x.address: x for x in self.allocated.values() if not x.is_gateway
-        }
-        for container in containers.values():
-            G.add_node(container.address, color='#88ff97')
-            G.add_edge(
-                container.address,
-                gateways.get(
-                    (container.network, container.node),
-                    AddressMetadata('', '', False, '', 'err'),
-                ).address,
+        self.block_prefixlen = int(
+            self.config['default'].get(
+                'ipblocklen', self.config['default']['prefixlen']
             )
-        return tuple(hosts.keys()), G
-
-    def export_graph_dot(self) -> bytes:
-        _, G = self.export_graph()
-        buf = StringIO()
-        nx.nx_pydot.write_dot(G, buf)
-        image_bytes = buf.getvalue().encode('utf-8')
-        buf.close()
-        return image_bytes
-
-    def export_graph_svg(self) -> bytes:
-        hosts, G = self.export_graph()
-        buf = BytesIO()
-        pos = nx.spring_layout(G, seed=42)
-        node_sizes = [800 if node in hosts else 300 for node in G.nodes]
-        plt.figure(figsize=(12, 8))
-        nx.draw(
-            G,
-            pos,
-            with_labels=True,
-            node_color=[x[1].get('color', 'red') for x in G.nodes(data=True)],
-            node_size=node_sizes,
-            font_size=14,
-            edge_color="gray",
         )
-        plt.axis('off')
-        plt.savefig(buf, format='svg', bbox_inches='tight')
-        plt.close()
-        image_bytes = buf.getvalue()
-        buf.close()
-        return image_bytes
+        self.k8s = self._load_k8s_client()
+        self.lock = asyncio.Lock()
+
+    def _load_k8s_client(self) -> k8s_client.CustomObjectsApi:
+        try:
+            k8s_config.load_incluster_config()
+        except Exception:
+            k8s_config.load_kube_config()
+        return k8s_client.CustomObjectsApi()
+
+    def _domain_defaults(self) -> tuple[int, int]:
+        return (
+            int(self.config['default'].get('vrf', 0)),
+            int(self.config['default'].get('vxlan', 0)),
+        )
+
+    def _resolve_domain(
+        self, vrf_table: int | None = None, vxlan_id: int | None = None
+    ) -> tuple[int, int]:
+        default_vrf, default_vxlan = self._domain_defaults()
+        return (
+            default_vrf if vrf_table is None else int(vrf_table),
+            default_vxlan if vxlan_id is None else int(vxlan_id),
+        )
+
+    def _block_name(
+        self, cidr: IPv4Network, vrf_table: int, vxlan_id: int
+    ) -> str:
+        safe_node = ''.join(
+            x if x.isalnum() or x == '-' else '-'
+            for x in self.node_name.lower()
+        )
+        safe_cidr = str(cidr.network_address).replace('.', '-')
+        return (
+            f'{safe_node}-vrf{vrf_table}-vx{vxlan_id}-'
+            f'{safe_cidr}-{cidr.prefixlen}'
+        )
+
+    def _block_capacity(self, cidr: IPv4Network) -> int:
+        return max(cidr.num_addresses - 2, 0)
+
+    def _raw_block_items(self) -> list[dict[str, Any]]:
+        response = self.k8s.list_cluster_custom_object(
+            IPBLOCK_GROUP, IPBLOCK_VERSION, IPBLOCK_PLURAL
+        )
+        return response.get('items', [])
+
+    def _parse_block(self, item: dict[str, Any]) -> dict[str, Any]:
+        metadata = item.get('metadata') or {}
+        spec = item.get('spec') or {}
+        status = item.get('status') or {}
+        resource_version = metadata.get('resourceVersion') or ''
+        cidr = spec.get('cidr')
+        if not cidr:
+            raise KeyError('cidr')
+        block = IPv4Network(cidr)
+        allocations = status.get('allocations') or {}
+        name = metadata.get('name') or item.get('name')
+        if not name:
+            raise KeyError('name')
+        allocated = status.get('allocated')
+        if allocated is None:
+            allocated = len(allocations)
+        vrf_table, vxlan_id = self._resolve_domain(
+            spec.get('vrfTable'), spec.get('vxlanId')
+        )
+        return {
+            'name': name,
+            'node_name': spec.get('nodeName') or '',
+            'vrf_table': vrf_table,
+            'vxlan_id': vxlan_id,
+            'cidr': block,
+            'allocations': allocations,
+            'allocated': int(allocated),
+            'capacity': int(
+                status.get('capacity') or self._block_capacity(block)
+            ),
+            'resource_version': resource_version,
+            'creation_timestamp': metadata.get('creationTimestamp', ''),
+        }
+
+    def _block_items(
+        self, network: IPv4Network, vrf_table: int, vxlan_id: int
+    ) -> list[dict[str, Any]]:
+        '''
+        List normalized IPBlocks for this node and domain within `network`.
+
+        Only blocks owned by this node, matching `vrf_table` / `vxlan_id`,
+        and contained in `network` are returned.
+        '''
+        result: list[dict[str, Any]] = []
+        for item in self._raw_block_items():
+            block = self._parse_block(item)
+            if block['node_name'] != self.node_name:
+                continue
+            if (
+                block['vrf_table'] != vrf_table
+                or block['vxlan_id'] != vxlan_id
+            ):
+                continue
+            if block['cidr'].subnet_of(network):
+                result.append(block)
+        result.sort(
+            key=lambda x: (int(x['cidr'].network_address), x['cidr'].prefixlen)
+        )
+        return result
+
+    def _all_block_cidrs(
+        self, network: IPv4Network, vrf_table: int, vxlan_id: int
+    ) -> set[IPv4Network]:
+        response = self.k8s.list_cluster_custom_object(
+            IPBLOCK_GROUP, IPBLOCK_VERSION, IPBLOCK_PLURAL
+        )
+        cidrs: set[IPv4Network] = set()
+        for item in response.get('items', []):
+            spec = item.get('spec') or {}
+            cidr = spec.get('cidr')
+            if not cidr:
+                continue
+            item_vrf = int(spec.get('vrfTable', self._domain_defaults()[0]))
+            item_vxlan = int(spec.get('vxlanId', self._domain_defaults()[1]))
+            if item_vrf != vrf_table or item_vxlan != vxlan_id:
+                continue
+            block = IPv4Network(cidr)
+            if block.subnet_of(network):
+                cidrs.add(block)
+        return cidrs
+
+    def block_cidrs(
+        self, network: IPv4Network, vrf_table: int, vxlan_id: int
+    ) -> set[IPv4Network]:
+        return self._all_block_cidrs(network, vrf_table, vxlan_id)
+
+    def _node_block_items(self) -> list[dict[str, Any]]:
+        result: list[dict[str, Any]] = []
+        for item in self._raw_block_items():
+            block = self._parse_block(item)
+            if block['node_name'] != self.node_name:
+                continue
+            result.append(block)
+        return result
+
+    async def prune_stale_allocations(
+        self,
+        network: IPv4Network,
+        vrf_table: int,
+        vxlan_id: int,
+        live_pod_ips: dict[str, str],
+        gateway_ip: str | None = None,
+    ) -> int:
+        async with self.lock:
+            removed = 0
+            for item in self._block_items(network, vrf_table, vxlan_id):
+                logging.info(f'Block item: {item}')
+                allocations = dict(item['allocations'])
+                for ip, ref in tuple(allocations.items()):
+                    keep = (
+                        ref == 'gateway'
+                        and gateway_ip is not None
+                        and ip == gateway_ip
+                    ) or (live_pod_ips.get(ref) == ip)
+                    logging.info(f'>>> Block ip: {ip} : {ref} : {keep}')
+                    if keep:
+                        continue
+                    allocations.pop(ip, None)
+                    removed += 1
+                if allocations != item['allocations']:
+                    self._patch_block_status(item, allocations)
+            return removed
+
+    def _delete_block(self, name: str) -> None:
+        self.k8s.delete_cluster_custom_object(
+            IPBLOCK_GROUP, IPBLOCK_VERSION, IPBLOCK_PLURAL, name
+        )
+
+    async def gc_empty_blocks(self, limit: int = 1, keep: int = 0) -> int:
+        logging.info('Starting IPBlock GC')
+        async with self.lock:
+            empty_blocks_by_domain: dict[
+                tuple[int, int], list[dict[str, Any]]
+            ] = {}
+            for item in self._node_block_items():
+                if item['allocated'] != 0:
+                    continue
+                domain = (item['vrf_table'], item['vxlan_id'])
+                empty_blocks_by_domain.setdefault(domain, []).append(item)
+            empty_blocks: list[dict[str, Any]] = []
+            for blocks in empty_blocks_by_domain.values():
+                blocks.sort(key=lambda x: x['creation_timestamp'])
+                if len(blocks) > keep:
+                    empty_blocks.extend(blocks[: len(blocks) - keep])
+            empty_blocks.sort(key=lambda x: x['creation_timestamp'])
+            deletions = 0
+            while empty_blocks and deletions < limit:
+                block = empty_blocks.pop(0)
+                logging.info(f'Deleting IPBlock {block["name"]}')
+                try:
+                    self._delete_block(block['name'])
+                    deletions += 1
+                except ApiException as err:
+                    logging.warning(
+                        'failed to delete empty IPBlock %s: %s',
+                        block['name'],
+                        err,
+                    )
+                    break
+            return deletions
+
+    def _next_free_block(
+        self, network: IPv4Network, vrf_table: int, vxlan_id: int
+    ) -> IPv4Network:
+        used = self._all_block_cidrs(network, vrf_table, vxlan_id)
+        for block in network.subnets(new_prefix=self.block_prefixlen):
+            if block not in used:
+                return block
+        raise RuntimeError(f'no available IPBlocks in {network}')
+
+    def _create_block(
+        self,
+        network: IPv4Network,
+        cidr: IPv4Network,
+        vrf_table: int,
+        vxlan_id: int,
+    ) -> dict[str, Any]:
+        body = {
+            'apiVersion': f'{IPBLOCK_GROUP}/{IPBLOCK_VERSION}',
+            'kind': 'IPBlock',
+            'metadata': {
+                'name': self._block_name(cidr, vrf_table, vxlan_id),
+                'labels': {
+                    'pyroute2.org/node': self.node_name,
+                    'pyroute2.org/vrf': str(vrf_table),
+                    'pyroute2.org/vxlan': str(vxlan_id),
+                },
+            },
+            'spec': {
+                'cidr': cidr.compressed,
+                'nodeName': self.node_name,
+                'vrfTable': vrf_table,
+                'vxlanId': vxlan_id,
+            },
+        }
+        try:
+            created = cast(
+                dict[str, Any],
+                self.k8s.create_cluster_custom_object(
+                    IPBLOCK_GROUP, IPBLOCK_VERSION, IPBLOCK_PLURAL, body
+                ),
+            )
+            return self._parse_block(created)
+        except ApiException as err:
+            if err.status == 409:
+                return self._get_block_by_cidr(
+                    network, cidr, vrf_table, vxlan_id
+                )
+            raise
+
+    def _get_block_by_cidr(
+        self,
+        network: IPv4Network,
+        cidr: IPv4Network,
+        vrf_table: int,
+        vxlan_id: int,
+    ) -> dict[str, Any]:
+        for item in self._block_items(network, vrf_table, vxlan_id):
+            if item['cidr'] == cidr:
+                return item
+        raise KeyError(f'IPBlock {cidr} not found')
+
+    def _patch_block_status(
+        self, item: dict[str, Any], allocations: dict[str, str]
+    ) -> None:
+        name = item['name']
+        cidr = item['cidr']
+        body = {
+            'apiVersion': f'{IPBLOCK_GROUP}/{IPBLOCK_VERSION}',
+            'kind': 'IPBlock',
+            'metadata': {
+                'name': name,
+                'resourceVersion': item['resource_version'],
+            },
+            'spec': {
+                'cidr': cidr.compressed,
+                'nodeName': self.node_name,
+                'vrfTable': item['vrf_table'],
+                'vxlanId': item['vxlan_id'],
+            },
+            'status': {
+                'allocated': len(allocations),
+                'capacity': self._block_capacity(cidr),
+                'allocations': allocations,
+            },
+        }
+        logging.info(f'Patching: {allocations}')
+        self.k8s.replace_cluster_custom_object_status(
+            IPBLOCK_GROUP, IPBLOCK_VERSION, IPBLOCK_PLURAL, name, body
+        )
+
+    def _find_free_ip(
+        self, cidr: IPv4Network, allocations: dict[str, str]
+    ) -> IPv4Address | None:
+        for ip in cidr.hosts():
+            if ip.compressed not in allocations:
+                return ip
+        return None
+
+    def _ip_for_address(
+        self, network: IPv4Network, address: int
+    ) -> IPv4Address:
+        return IPv4Address(network[address])
+
+    def _block_for_ip(
+        self, network: IPv4Network, ip: IPv4Address
+    ) -> IPv4Network:
+        block = IPv4Network(f'{ip}/{self.block_prefixlen}', strict=False)
+        if not block.subnet_of(network):
+            raise ValueError(f'{ip} is outside of {network}')
+        return block
+
+    def _ensure_block_for_ip(
+        self,
+        network: IPv4Network,
+        ip: IPv4Address,
+        vrf_table: int,
+        vxlan_id: int,
+    ) -> dict[str, Any]:
+        block_cidr = self._block_for_ip(network, ip)
+        for item in self._block_items(network, vrf_table, vxlan_id):
+            if item['cidr'] == block_cidr:
+                return item
+        return self._create_block(network, block_cidr, vrf_table, vxlan_id)
+
+    def _select_block(
+        self,
+        network: IPv4Network,
+        vrf_table: int,
+        vxlan_id: int,
+        ip: IPv4Address | None = None,
+    ) -> dict[str, Any]:
+        blocks = self._block_items(network, vrf_table, vxlan_id)
+        if ip is not None:
+            block_cidr = self._block_for_ip(network, ip)
+            for item in blocks:
+                if item['cidr'] == block_cidr:
+                    return item
+            return self._create_block(network, block_cidr, vrf_table, vxlan_id)
+
+        for item in blocks:
+            if item['allocated'] < item['capacity']:
+                return item
+
+        return self._create_block(
+            network,
+            self._next_free_block(network, vrf_table, vxlan_id),
+            vrf_table,
+            vxlan_id,
+        )
 
     def inet_aton(self, network: IPv4Network, address: str) -> int:
         return (
@@ -127,12 +408,8 @@ class AddressPool:
         return IPv4Network(network)[address].compressed
 
     def unregister_address(self, pod_uid: str) -> AddressMetadata:
-        logging.info(f'pod_uid: {pod_uid}')
         address = None
         for address, metadata in tuple(self.allocated.items()):
-            logging.info(f'L address {address}, pod_uid: {metadata.pod_uid}')
-            logging.info(f'L {metadata.pod_uid == pod_uid}')
-            logging.info(f'L {type(metadata.pod_uid)} -- {type(pod_uid)}')
             if metadata.pod_uid == pod_uid:
                 break
         else:
@@ -140,151 +417,105 @@ class AddressPool:
         return self.allocated.pop(address)
 
     async def release(self, pod_uid: str) -> AddressMetadata:
-        metadata = self.unregister_address(pod_uid)
-        for name, peer in self.peers.items():
-            if self.name != name:
-                try:
-                    async with Plan9ClientSocket(address=peer[0]) as p9:
-                        await p9.start_session()
-                        await p9.call(
-                            await p9.fid('unregister_address'),
-                            kwarg={'pod_uid': pod_uid},
+        async with self.lock:
+            for item in self._node_block_items():
+                allocations = dict(item['allocations'])
+                for ip, ref in tuple(allocations.items()):
+                    if ref != pod_uid:
+                        continue
+                    try:
+                        metadata = self.unregister_address(pod_uid)
+                    except KeyError:
+                        metadata = AddressMetadata(
+                            item['vrf_table'],
+                            item['vxlan_id'],
+                            self.node_name,
+                            pod_uid,
+                            False,
+                            item['cidr'].compressed,
+                            ip,
                         )
-                except Exception as e:
-                    logging.error('%s' % (traceback.format_exc()))
-                    logging.error(f'error: {e}')
-            logging.info(f'U {self.name} - {name} - {peer}')
-        return metadata
+                    allocations.pop(ip, None)
+                    self._patch_block_status(item, allocations)
+                    return metadata
+        raise KeyError('address not allocated')
 
     def register_address(
         self,
         network: str,
         address: int,
+        vrf_table: int,
+        vxlan_id: int,
         node: str = '',
         is_gateway: bool = False,
         pod_uid: str = '',
     ) -> str:
         ret = self.inet_ntoa(network, address)
-        self.allocated[(network, address)] = AddressMetadata(
-            node, pod_uid, is_gateway, network, ret
+        self.allocated[(vrf_table, vxlan_id, network, address)] = (
+            AddressMetadata(
+                vrf_table, vxlan_id, node, pod_uid, is_gateway, network, ret
+            )
         )
         return ret
 
     async def allocate(
         self,
         network: IPv4Network,
+        vrf_table: int | None = None,
+        vxlan_id: int | None = None,
         is_gateway: bool = False,
         pod_uid: str = '',
         address: int = -1,
     ) -> str:
-        while address < 0:
-            candidate = self.random(network)
-            if (network.compressed, candidate) not in self.allocated:
-                address = candidate
-        for name, peer in self.peers.items():
-            if self.name != name:
-                try:
-                    async with Plan9ClientSocket(address=peer[0]) as p9:
-                        await p9.start_session()
-                        await p9.call(
-                            await p9.fid('register_address'),
-                            kwarg={
-                                'network': network.compressed,
-                                'address': address,
-                                'node': self.name,
-                                'is_gateway': is_gateway,
-                                'pod_uid': pod_uid,
-                            },
-                        )
-                except Exception as e:
-                    logging.error('%s' % (traceback.format_exc()))
-                    logging.error(f'error: {e}')
-            logging.info(f'R {self.name} - {name} - {peer}')
-        return self.register_address(
-            network.compressed, address, self.name, is_gateway, pod_uid
-        )
+        async with self.lock:
+            vrf_table, vxlan_id = self._resolve_domain(vrf_table, vxlan_id)
+            ref = pod_uid or ('gateway' if is_gateway else '')
+            ip = (
+                self._ip_for_address(network, address)
+                if address >= 0
+                else None
+            )
+            block = self._select_block(network, vrf_table, vxlan_id, ip)
+            allocations = dict(block['allocations'])
 
-    def random(self, network: IPv4Network) -> int:
-        (first_address,) = struct.unpack('>I', network[0].packed)
-        (last_address,) = struct.unpack('>I', network[-1].packed)
-        (hostmask,) = struct.unpack('>I', network.hostmask.packed)
-        first_host = first_address & hostmask
-        last_host = last_address & hostmask
-        return random.randint(first_host + 1, last_host - 1)
+            if ip is None:
+                ip = self._find_free_ip(block['cidr'], allocations)
+                if ip is None:
+                    block = self._create_block(
+                        network,
+                        self._next_free_block(network, vrf_table, vxlan_id),
+                        vrf_table,
+                        vxlan_id,
+                    )
+                    allocations = dict(block['allocations'])
+                    ip = self._find_free_ip(block['cidr'], allocations)
+                    if ip is None:
+                        raise RuntimeError(f'no free IPs in {block["cidr"]}')
 
+            if ip.compressed in allocations:
+                existing = allocations[ip.compressed]
+                if existing and existing != ref:
+                    raise RuntimeError(
+                        f'IP {ip} already allocated to {existing}'
+                    )
+                return self.register_address(
+                    network.compressed,
+                    self.inet_aton(network, ip.compressed),
+                    vrf_table,
+                    vxlan_id,
+                    self.node_name,
+                    is_gateway,
+                    ref,
+                )
 
-async def mdns_service_update_task(
-    address_pool: AddressPool,
-    zeroconf: Zeroconf,
-    service_type: str,
-    name: str,
-    state_change: ServiceStateChange,
-) -> None:
-    '''
-    Query and update the service info.
-    '''
-    info = AsyncServiceInfo(service_type, name)
-    await info.async_request(zeroconf, 3000)
-    logging.info(f'info {info}')
-    if info:
-        addresses = set((x for x in info.parsed_scoped_addresses()))
-        logging.info(f"  Name: {name}")
-        logging.info(f"  Addresses: {', '.join(addresses)}")
-        logging.info(f"  Weight: {info.weight}, priority: {info.priority}")
-        logging.info(f"  Server: {info.server}")
-        peer_addr = [(x, info.port) for x in addresses]
-        address_pool.peers[name] = peer_addr
-        if state_change == ServiceStateChange.Added:
-            for _ in range(5):
-                try:
-                    async with Plan9ClientSocket(address=peer_addr[0]) as p9:
-                        await p9.start_session()
-                        for (network, address), meta in tuple(
-                            address_pool.allocated.items()
-                        ):
-                            await p9.call(
-                                await p9.fid('register_address'),
-                                kwarg={
-                                    'network': network,
-                                    'address': address,
-                                    'node': meta.node,
-                                    'is_gateway': meta.is_gateway,
-                                    'pod_uid': meta.pod_uid,
-                                },
-                            )
-                    break
-                except ConnectionRefusedError:
-                    logging.warning(f'peer connection refused, {peer_addr}')
-                    await asyncio.sleep(5)
-            else:
-                logging.warning(f'peer connection failed, {peer_addr}')
-
-        if info.properties:
-            logging.info("  Properties are:")
-            for key, value in info.properties.items():
-                logging.info(f"    {key!r}: {value!r}")
-        else:
-            logging.info("  No properties")
-    else:
-        logging.info("  No info")
-
-
-def mdns_service_update_handler(
-    address_pool: AddressPool,
-    zeroconf: Zeroconf,
-    service_type: str,
-    name: str,
-    state_change: ServiceStateChange,
-) -> None:
-    '''
-    Handle mDNS service updates.
-    '''
-    logging.info(f'state_change {state_change}')
-    logging.info(f'service_type {service_type}')
-    logging.info(f'name {name}')
-    task = asyncio.create_task(
-        mdns_service_update_task(
-            address_pool, zeroconf, service_type, name, state_change
-        )
-    )
-    logging.info(f'task {task}')
+            allocations[ip.compressed] = ref
+            self._patch_block_status(block, allocations)
+            return self.register_address(
+                network.compressed,
+                self.inet_aton(network, ip.compressed),
+                vrf_table,
+                vxlan_id,
+                self.node_name,
+                is_gateway,
+                ref,
+            )

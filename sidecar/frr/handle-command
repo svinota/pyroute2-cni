@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+FRR_CONF=/etc/frr/frr.conf
+
+read -r cmd
+case "$cmd" in
+  reload)
+    vtysh -b "$FRR_CONF"
+    echo OK
+    ;;
+  restart)
+    /usr/lib/frr/frrinit.sh restart
+    echo OK
+    ;;
+  *)
+    echo ERR unknown command
+    ;;
+esac
