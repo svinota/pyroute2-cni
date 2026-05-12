@@ -1,4 +1,3 @@
-import base64
 import logging
 import struct
 
@@ -140,6 +139,7 @@ class FirewallManager:
         self.config = config
         self.has_setup = False
         self.table_name = 'pyroute2-cni'
+        self.version = 'v1'
 
     async def setup(self) -> None:
         if self.has_setup:
@@ -263,12 +263,17 @@ class FirewallManager:
             vrf_bridge_index = await ipr_main.link_lookup(
                 ifname=vrf_bridge_name
             )
+            # install RPDB rule -- complement to the CT mark
+            for rule in [x async for x in await ipr_main.get_rules()]:
+                if rule.get('fwmark') == vrf_table:
+                    break
+            else:
+                await ipr_main.rule('add', fwmark=vrf_table, table=vrf_table)
+
         async with AsyncNFTables() as nft_main:
 
-            # reconcile rule
-            magic = '0x42 ' + base64.b64encode(
-                f'{prefix}/{prefixlen}'.encode('ascii')
-            ).decode('ascii')
+            # reconcile rules
+            magic = f'{self.version}|p={prefix}/{prefixlen}'
             for rule in [x async for x in await nft_main.get_rules()]:
                 if rule.get('userdata') == magic:
                     break
@@ -288,15 +293,25 @@ class FirewallManager:
                     ),
                     userdata=magic,
                 )
-                if vrf_bridge_index:
-                    await nft_main.rule(
-                        'add',
-                        table=self.table_name,
-                        chain='ct-mark',
-                        expressions=(
-                            iif(vrf_bridge_index[0]),
-                            ct_state_match(0x8),
-                            ct_mark_set(vrf_table),
-                        ),
-                    )
-                logging.info('fw: done')
+            if not vrf_bridge_index:
+                return
+
+            magic = f'{self.version}|b={vrf_bridge_index[0]}|t={vrf_table}'
+            for rule in [x async for x in await nft_main.get_rules()]:
+                if rule.get('userdata') == magic:
+                    break
+            else:
+                logging.info(f'fw: install mark rule with magic {magic}')
+                await nft_main.rule(
+                    'add',
+                    table=self.table_name,
+                    chain='ct-mark',
+                    expressions=(
+                        iif(vrf_bridge_index[0]),
+                        ct_state_match(0x8),
+                        ct_mark_set(vrf_table),
+                    ),
+                    userdata=magic,
+                )
+
+            logging.info('fw: done')
