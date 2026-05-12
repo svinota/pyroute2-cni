@@ -1,13 +1,13 @@
 pyroute2-cni
 ------------
 
-A lab code to test Kubernetes integration with SRv6 / VRF
+A lab project to test Kubernetes integration with eVPN-VXLAN / SRv6 / VRF
 
 requirements
 ============
 
 * kubernetes 1.31
-* VMs: Ubuntu 24.04, one NIC
+* VM: Ubuntu 24.04, one NIC
 * vrf kernel module
 
 install
@@ -17,23 +17,39 @@ install
 
     curl -fsSL https://raw.githubusercontent.com/svinota/pyroute2-cni/refs/heads/main/kubernetes/install.sh | bash
 
-This waits for the CRD to become established before applying namespace, RBAC,
-config, and DaemonSet.
+This waits for the CRD to become established before applying the namespace,
+RBAC, config, and DaemonSet.
 
-maintenance info
-================
+maintenance
+===========
 
-see also ``config['plan9']['port']``
-
-any node can be used, all the info is replicated
-
-.. warning::
-   No recovery is pushed in the repo at the moment!
+Allocated IP blocks:
 
 .. code::
 
-   9p -a {node_ip}:8149 read allocated          # → allocated addresses
-   9p -a {node_ip}:8149 read graph | display    # → topology map as SVG
+    $ kubectl get ipblocks.ipam.pyroute2.org
+    NAME                                   CIDR              NODE    VRF    VNI    ALLOCATED   CAPACITY
+    k8s02-vrf1024-vx5500-10-244-0-64-26    10.244.0.64/26    k8s02   1024   5500   1           62
+    k8s02-vrf4005-vx4005-192-168-0-64-26   192.168.0.64/26   k8s02   4005   4005   1           62
+    k8s02-vrf42-vx42-10-244-0-64-26        10.244.0.64/26    k8s02   42     42     14          62
+    k8s03-vrf1024-vx5500-10-244-0-0-26     10.244.0.0/26     k8s03   1024   5500   5           62
+    k8s03-vrf4004-vx4004-172-16-12-0-26    172.16.12.0/26    k8s03   4004   4004   2           62
+    k8s03-vrf4005-vx4005-192-168-0-0-26    192.168.0.0/26    k8s03   4005   4005   1           62
+    k8s03-vrf42-vx42-10-244-0-0-26         10.244.0.0/26     k8s03   42     42     10          62
+
+Access FRR shell:
+
+.. code::
+
+    $ kubectl -n pyroute2-cni exec -ti {{pod-name}} -c pyroute2-frr -- vtysh
+
+Useful vtysh commands:
+
+.. code::
+
+    # show bgp l2vpn evpn summary
+    # show bgp l2vpn evpn route
+    # show ip route vrf {{vrf-name}}
 
 configuration
 =============
@@ -41,6 +57,20 @@ configuration
 .. warning::
    Please notice that at the lab stage configuration options format
    may change daily.
+
+**Node labels**
+
+.. code::
+
+    apiVersion: v1
+    kind: Node
+    metadata:
+      labels:
+        ...
+        pyroute2.org/rr: 192.168.124.1
+      name: k8s02
+
+* rr: only used if ``config['bgp']['rr_mode'] == 'node-label'`
 
 **Namespace labels**
 
@@ -50,11 +80,12 @@ configuration
     kind: Namespace
     metadata:
       labels:
-        kubernetes.io/metadata.name: test
+        ...
         pyroute2.org/prefix: "10.1.0.0"
         pyroute2.org/prefixlen: "16"
         pyroute2.org/vrf: "1000"
         pyroute2.org/vxlan: "200"
+        pyroute2.org/rr: "192.168.0.115"
       name: test
 
 * prefix: the prefix to use in the namespace
@@ -92,6 +123,11 @@ To be delivered soon
         prefixlen = 16
         vxlan = 42
         vrf = 42
+
+        [bgp]
+        # control-plane: deploy internal RRs
+        # node-label: use an external RR, specified per node
+        rr_mode = control-plane
 
         [plan9]
         port = 8149

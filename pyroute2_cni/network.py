@@ -17,7 +17,11 @@ from kubernetes import client as k8s_client
 from kubernetes import config as k8s_config
 from pyroute2_cni.address_pool import AddressPool
 from pyroute2_cni.firewall import FirewallManager
-from pyroute2_cni.kubernetes import get_namespace_labels, get_pod_tag
+from pyroute2_cni.kubernetes import (
+    get_namespace_labels,
+    get_node_labels,
+    get_pod_tag,
+)
 from pyroute2_cni.protocols import PluginProtocol
 from pyroute2_cni.request import CNIRequest
 
@@ -113,16 +117,26 @@ class FRRManager:
                 f'exit'
             )
 
-        peer_sections = '\n'.join(
-            f' neighbor {peer} peer-group RR' for peer in all_peer_ips
-        )
-        rr_sections = ''
-        if is_control_plane:
-            rr_sections = '  bgp cluster-id 65000\n'
+        bgp_config = self.config['bgp'] if self.config.has_section('bgp') else {}
+        rr_mode = bgp_config.get('rr_mode', 'control-plane')
+        rr_sections = '  bgp cluster-id 65000\n'
+
+        if rr_mode == 'control-plane' and is_control_plane:
+            peer_sections = '\n'.join(
+                f' neighbor {peer} peer-group RR' for peer in all_peer_ips
+            )
             rr_sections += '\n'.join(
                 f'  neighbor {peer} route-reflector-client'
                 for peer in control_plane_peer_ips
             )
+        elif rr_mode == 'node-label':
+            node_name = self.config['network']['node_name']
+            node_rr_label = get_node_labels(node_name).get('pyroute2.org/rr')
+            if node_rr_label:
+                peer_sections = f' neighbor {node_rr_label} peer-group RR'
+                rr_sections += (
+                    f'  neighbor {node_rr_label} route-reflector-client'
+                )
 
         template = Template(self.template_path.read_text(encoding='utf-8'))
         return template.substitute(

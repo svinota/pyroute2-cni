@@ -22,6 +22,21 @@ def get_namespace_labels(name: str) -> dict[str, str]:
     return ns.metadata.labels or {}
 
 
+def get_node_labels(name: str) -> dict[str, str]:
+    try:
+        k8s_config.load_incluster_config()
+    except Exception as e:
+        logging.error(f'error C reading node {name}: {e}')
+        return {}
+    v1 = k8s_client.CoreV1Api()
+    try:
+        node = v1.read_node(name=name)
+    except Exception as e:
+        logging.error(f'error R reading node {name}: {e}')
+        return {}
+    return node.metadata.labels or {}
+
+
 def get_pod_tag(request: CNIRequest, tag: str, default: str = '') -> str:
     cni_args = request.env.get('CNI_ARGS', '')
     for arg in cni_args.split(';'):
