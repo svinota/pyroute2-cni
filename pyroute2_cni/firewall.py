@@ -226,24 +226,33 @@ class FirewallManager:
 
             # 8<=======================================================
             # default unconditional rules
-            await nft_main.rule(
-                'add',
-                table=self.table_name,
-                chain='ct-restore',
-                expressions=(meta_mark(),),
-            )
-            await nft_main.rule(
-                'add',
-                table=self.table_name,
-                chain='ct-manager',
-                expressions=(jump('ct-mark'),),
-            )
-            await nft_main.rule(
-                'add',
-                table=self.table_name,
-                chain='ct-manager',
-                expressions=(jump('ct-restore'),),
-            )
+            magic = f'{self.version}|a=setup'
+            for rule in [x async for x in await nft_main.get_rules()]:
+                if rule.get('userdata') == magic:
+                    break
+            else:
+                logging.info(f'fw: install setup rules with magic {magic}')
+                await nft_main.rule(
+                    'add',
+                    table=self.table_name,
+                    chain='ct-restore',
+                    expressions=(meta_mark(),),
+                    userdata=magic,
+                )
+                await nft_main.rule(
+                    'add',
+                    table=self.table_name,
+                    chain='ct-manager',
+                    expressions=(jump('ct-mark'),),
+                    userdata=magic,
+                )
+                await nft_main.rule(
+                    'add',
+                    table=self.table_name,
+                    chain='ct-manager',
+                    expressions=(jump('ct-restore'),),
+                    userdata=magic,
+                )
 
     async def ensure_system_firewall(self, namespace: str) -> None:
         config = self.config
