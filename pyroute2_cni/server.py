@@ -232,8 +232,7 @@ async def main(config: ConfigParser) -> None:
         registry, socket_path=config['api']['socket_path_fd']
     )
     node_name = os.environ['NODE_NAME']
-    service_name = f'{node_name}.{config["mdns"]["service"]}'
-    address_pool = AddressPool(service_name, node_name, config)
+    address_pool = AddressPool(node_name, config)
 
     # load system state
     plugin = load_plugin(config)

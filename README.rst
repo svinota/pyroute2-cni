@@ -131,6 +131,3 @@ To be delivered soon
 
         [plan9]
         port = 8149
-
-        [mdns]
-        service = _9p2r._tcp.local.

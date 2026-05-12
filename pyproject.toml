@@ -7,7 +7,6 @@ module = [
     "pyroute2.*",
     "pytest.*",
     "pytest_asyncio.*",
-    "zeroconf.*",
     "matplotlib",
     "matplotlib.*",
     "networkx",
