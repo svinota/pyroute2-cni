@@ -92,10 +92,6 @@ data:
     socket_path_api = /var/run/pyroute2/api
     socket_path_fd = /var/run/pyroute2/fdpass
 
-    [network]
-    host_if = enp1s0
-    rr_ip = 192.168.124.1
-
     [default]
     prefix = 10.244.0.0
     prefixlen = 16
@@ -113,11 +109,6 @@ data:
     [bgp]
     rr_mode = control-plane
 
-    [mdns]
-    service = _9p2r._tcp.local.
-
-    [topology]
-    template = ""
 
   segment.dot: |
     digraph G {
