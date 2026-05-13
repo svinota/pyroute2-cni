@@ -19,7 +19,7 @@ from pyroute2_cni.address_pool import AddressPool
 from pyroute2_cni.firewall import FirewallManager
 from pyroute2_cni.kubernetes import (
     get_namespace_labels,
-    get_node_labels,
+    get_node_annotations,
     get_pod_tag,
 )
 from pyroute2_cni.protocols import PluginProtocol
@@ -137,12 +137,12 @@ class FRRManager:
                     f' neighbor {peer} peer-group LEAF'
                     for peer in leaf_peer_ips
                 )
-        elif rr_mode == 'node-label':
+        elif rr_mode == 'node-annotation':
             node_name = self.config['network']['node_name']
-            node_rr_label = (
-                get_node_labels(node_name).get('pyroute2.org/rr') or ''
+            node_rr_annotation = (
+                get_node_annotations(node_name).get('pyroute2.org/rr') or ''
             )
-            rr_list = node_rr_label.split('-')
+            rr_list = node_rr_annotation.split('-')
             if rr_list:
                 rr_sections += '\n'.join(
                     f' neighbor {peer} peer-group RR' for peer in rr_list

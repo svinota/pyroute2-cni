@@ -28,9 +28,7 @@ class AddressMetadata:
 
 
 class AddressPool:
-    def __init__(
-        self, node_name: str, config: ConfigParser
-    ) -> None:
+    def __init__(self, node_name: str, config: ConfigParser) -> None:
         self.allocated: dict[tuple[int, int, str, int], AddressMetadata] = {}
         self.node_name = node_name
         self.config = config

@@ -13,9 +13,10 @@ from importlib.metadata import entry_points
 from typing import Any, Callable, Optional
 
 from pydantic import ValidationError
-from pyroute2 import AsyncIPRoute, Plan9ServerSocket
+from pyroute2 import Plan9ServerSocket
 
 from pyroute2_cni.address_pool import AddressPool
+from pyroute2_cni.kubernetes import get_node_ip
 from pyroute2_cni.protocols import PluginProtocol
 from pyroute2_cni.request import CNIRequest
 
@@ -213,20 +214,9 @@ def load_plugin(config: ConfigParser):
 
 async def main(config: ConfigParser) -> None:
     registry: dict[str, CNIRequest] = {}
-    service_ipaddr: str = ''
-
-    async with AsyncIPRoute() as ipr:
-        async for addr in await ipr.addr(
-            'dump', index=await ipr.link_lookup(config['network']['host_if'])
-        ):
-            service_ipaddr = addr.get('address') or ''
-            break
-        else:
-            async for route in await ipr.get_default_routes():
-                service_ipaddr = route.get('prefsrc') or ''
-                break
-    config['network']['ipaddr'] = service_ipaddr
     config['network']['node_name'] = os.environ['NODE_NAME']
+    node_ip = get_node_ip(config['network']['node_name'])
+    config['network']['ipaddr'] = node_ip
 
     await run_fd_receiver(
         registry, socket_path=config['api']['socket_path_fd']
@@ -238,7 +228,7 @@ async def main(config: ConfigParser) -> None:
     plugin = load_plugin(config)
     await plugin.resync(address_pool)
     p9_server = Plan9ServerSocket(
-        address=(service_ipaddr, int(config['plan9']['port']))
+        address=(node_ip, int(config['plan9']['port']))
     )
     p9_server.filesystem.create('segments', qtype=0x80)
     cni_server = CNIServer(config, registry, address_pool, plugin, p9_server)

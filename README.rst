@@ -58,19 +58,19 @@ configuration
    Please notice that at the lab stage configuration options format
    may change daily.
 
-**Node labels**
+**Node annotations**
 
 .. code::
 
     apiVersion: v1
     kind: Node
     metadata:
-      labels:
+      annotations:
         ...
         pyroute2.org/rr: 192.168.124.1
       name: k8s02
 
-* rr: only used if ``config['bgp']['rr_mode'] == 'node-label'`
+* rr: only used if ``config['bgp']['rr_mode'] == 'node-annotation'`
 
 **Namespace labels**
 
