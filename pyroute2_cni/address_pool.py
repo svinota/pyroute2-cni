@@ -1,4 +1,3 @@
-import asyncio
 import logging
 import struct
 from configparser import ConfigParser
@@ -38,7 +37,6 @@ class AddressPool:
             )
         )
         self.k8s = self._load_k8s_client()
-        self.lock = asyncio.Lock()
 
     def _load_k8s_client(self) -> k8s_client.CustomObjectsApi:
         try:
@@ -187,25 +185,24 @@ class AddressPool:
         live_pod_ips: dict[str, str],
         gateway_ip: str | None = None,
     ) -> int:
-        async with self.lock:
-            removed = 0
-            for item in self._block_items(network, vrf_table, vxlan_id):
-                logging.info(f'Block item: {item}')
-                allocations = dict(item['allocations'])
-                for ip, ref in tuple(allocations.items()):
-                    keep = (
-                        ref == 'gateway'
-                        and gateway_ip is not None
-                        and ip == gateway_ip
-                    ) or (live_pod_ips.get(ref) == ip)
-                    logging.info(f'>>> Block ip: {ip} : {ref} : {keep}')
-                    if keep:
-                        continue
-                    allocations.pop(ip, None)
-                    removed += 1
-                if allocations != item['allocations']:
-                    self._patch_block_status(item, allocations)
-            return removed
+        removed = 0
+        for item in self._block_items(network, vrf_table, vxlan_id):
+            logging.info(f'Block item: {item}')
+            allocations = dict(item['allocations'])
+            for ip, ref in tuple(allocations.items()):
+                keep = (
+                    ref == 'gateway'
+                    and gateway_ip is not None
+                    and ip == gateway_ip
+                ) or (live_pod_ips.get(ref) == ip)
+                logging.info(f'>>> Block ip: {ip} : {ref} : {keep}')
+                if keep:
+                    continue
+                allocations.pop(ip, None)
+                removed += 1
+            if allocations != item['allocations']:
+                self._patch_block_status(item, allocations)
+        return removed
 
     def _delete_block(self, name: str) -> None:
         self.k8s.delete_cluster_custom_object(
@@ -214,36 +211,33 @@ class AddressPool:
 
     async def gc_empty_blocks(self, limit: int = 1, keep: int = 0) -> int:
         logging.info('Starting IPBlock GC')
-        async with self.lock:
-            empty_blocks_by_domain: dict[
-                tuple[int, int], list[dict[str, Any]]
-            ] = {}
-            for item in self._node_block_items():
-                if item['allocated'] != 0:
-                    continue
-                domain = (item['vrf_table'], item['vxlan_id'])
-                empty_blocks_by_domain.setdefault(domain, []).append(item)
-            empty_blocks: list[dict[str, Any]] = []
-            for blocks in empty_blocks_by_domain.values():
-                blocks.sort(key=lambda x: x['creation_timestamp'])
-                if len(blocks) > keep:
-                    empty_blocks.extend(blocks[: len(blocks) - keep])
-            empty_blocks.sort(key=lambda x: x['creation_timestamp'])
-            deletions = 0
-            while empty_blocks and deletions < limit:
-                block = empty_blocks.pop(0)
-                logging.info(f'Deleting IPBlock {block["name"]}')
-                try:
-                    self._delete_block(block['name'])
-                    deletions += 1
-                except ApiException as err:
-                    logging.warning(
-                        'failed to delete empty IPBlock %s: %s',
-                        block['name'],
-                        err,
-                    )
-                    break
-            return deletions
+        empty_blocks_by_domain: dict[tuple[int, int], list[dict[str, Any]]] = (
+            {}
+        )
+        for item in self._node_block_items():
+            if item['allocated'] != 0:
+                continue
+            domain = (item['vrf_table'], item['vxlan_id'])
+            empty_blocks_by_domain.setdefault(domain, []).append(item)
+        empty_blocks: list[dict[str, Any]] = []
+        for blocks in empty_blocks_by_domain.values():
+            blocks.sort(key=lambda x: x['creation_timestamp'])
+            if len(blocks) > keep:
+                empty_blocks.extend(blocks[: len(blocks) - keep])
+        empty_blocks.sort(key=lambda x: x['creation_timestamp'])
+        deletions = 0
+        while empty_blocks and deletions < limit:
+            block = empty_blocks.pop(0)
+            logging.info(f'Deleting IPBlock {block["name"]}')
+            try:
+                self._delete_block(block['name'])
+                deletions += 1
+            except ApiException as err:
+                logging.warning(
+                    'failed to delete empty IPBlock %s: %s', block['name'], err
+                )
+                break
+        return deletions
 
     def _next_free_block(
         self, network: IPv4Network, vrf_table: int, vxlan_id: int
@@ -414,27 +408,26 @@ class AddressPool:
         return self.allocated.pop(address)
 
     async def release(self, pod_uid: str) -> AddressMetadata:
-        async with self.lock:
-            for item in self._node_block_items():
-                allocations = dict(item['allocations'])
-                for ip, ref in tuple(allocations.items()):
-                    if ref != pod_uid:
-                        continue
-                    try:
-                        metadata = self.unregister_address(pod_uid)
-                    except KeyError:
-                        metadata = AddressMetadata(
-                            item['vrf_table'],
-                            item['vxlan_id'],
-                            self.node_name,
-                            pod_uid,
-                            False,
-                            item['cidr'].compressed,
-                            ip,
-                        )
-                    allocations.pop(ip, None)
-                    self._patch_block_status(item, allocations)
-                    return metadata
+        for item in self._node_block_items():
+            allocations = dict(item['allocations'])
+            for ip, ref in tuple(allocations.items()):
+                if ref != pod_uid:
+                    continue
+                try:
+                    metadata = self.unregister_address(pod_uid)
+                except KeyError:
+                    metadata = AddressMetadata(
+                        item['vrf_table'],
+                        item['vxlan_id'],
+                        self.node_name,
+                        pod_uid,
+                        False,
+                        item['cidr'].compressed,
+                        ip,
+                    )
+                allocations.pop(ip, None)
+                self._patch_block_status(item, allocations)
+                return metadata
         raise KeyError('address not allocated')
 
     def register_address(
@@ -464,49 +457,30 @@ class AddressPool:
         pod_uid: str = '',
         address: int = -1,
     ) -> str:
-        async with self.lock:
-            vrf_table, vxlan_id = self._resolve_domain(vrf_table, vxlan_id)
-            ref = pod_uid or ('gateway' if is_gateway else '')
-            ip = (
-                self._ip_for_address(network, address)
-                if address >= 0
-                else None
-            )
-            block = self._select_block(network, vrf_table, vxlan_id, ip)
-            allocations = dict(block['allocations'])
+        vrf_table, vxlan_id = self._resolve_domain(vrf_table, vxlan_id)
+        ref = pod_uid or ('gateway' if is_gateway else '')
+        ip = self._ip_for_address(network, address) if address >= 0 else None
+        block = self._select_block(network, vrf_table, vxlan_id, ip)
+        allocations = dict(block['allocations'])
 
+        if ip is None:
+            ip = self._find_free_ip(block['cidr'], allocations)
             if ip is None:
-                ip = self._find_free_ip(block['cidr'], allocations)
-                if ip is None:
-                    block = self._create_block(
-                        network,
-                        self._next_free_block(network, vrf_table, vxlan_id),
-                        vrf_table,
-                        vxlan_id,
-                    )
-                    allocations = dict(block['allocations'])
-                    ip = self._find_free_ip(block['cidr'], allocations)
-                    if ip is None:
-                        raise RuntimeError(f'no free IPs in {block["cidr"]}')
-
-            if ip.compressed in allocations:
-                existing = allocations[ip.compressed]
-                if existing and existing != ref:
-                    raise RuntimeError(
-                        f'IP {ip} already allocated to {existing}'
-                    )
-                return self.register_address(
-                    network.compressed,
-                    self.inet_aton(network, ip.compressed),
+                block = self._create_block(
+                    network,
+                    self._next_free_block(network, vrf_table, vxlan_id),
                     vrf_table,
                     vxlan_id,
-                    self.node_name,
-                    is_gateway,
-                    ref,
                 )
+                allocations = dict(block['allocations'])
+                ip = self._find_free_ip(block['cidr'], allocations)
+                if ip is None:
+                    raise RuntimeError(f'no free IPs in {block["cidr"]}')
 
-            allocations[ip.compressed] = ref
-            self._patch_block_status(block, allocations)
+        if ip.compressed in allocations:
+            existing = allocations[ip.compressed]
+            if existing and existing != ref:
+                raise RuntimeError(f'IP {ip} already allocated to {existing}')
             return self.register_address(
                 network.compressed,
                 self.inet_aton(network, ip.compressed),
@@ -516,3 +490,15 @@ class AddressPool:
                 is_gateway,
                 ref,
             )
+
+        allocations[ip.compressed] = ref
+        self._patch_block_status(block, allocations)
+        return self.register_address(
+            network.compressed,
+            self.inet_aton(network, ip.compressed),
+            vrf_table,
+            vxlan_id,
+            self.node_name,
+            is_gateway,
+            ref,
+        )
