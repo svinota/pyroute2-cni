@@ -242,26 +242,6 @@ async def main(config: ConfigParser) -> None:
                 {k: v.model_dump() for k, v in x.items()}
             ).encode('utf-8'),
         )
-    with p9_server.filesystem.create('register_address') as i:
-        i.register_function(
-            address_pool.register_address, dumper=lambda x: b'{}'
-        )
-    with p9_server.filesystem.create('unregister_address') as i:
-        i.register_function(
-            address_pool.unregister_address, dumper=lambda x: b'{}'
-        )
-    with p9_server.filesystem.create('allocated') as i:
-        i.metadata.call_on_read = True
-        i.register_function(
-            lambda: {
-                (
-                    f'{x[0][0]}/{x[0][1]}/'
-                    f'{address_pool.inet_ntoa(x[0][2], x[0][3])}'
-                ): x[1].node
-                for x in address_pool.allocated.items()
-            },
-            loader=lambda x: {},
-        )
 
     p9_task = await p9_server.async_run()
     loop = asyncio.get_event_loop()

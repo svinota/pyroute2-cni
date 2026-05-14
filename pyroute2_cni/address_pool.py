@@ -28,7 +28,6 @@ class AddressMetadata:
 
 class AddressPool:
     def __init__(self, node_name: str, config: ConfigParser) -> None:
-        self.allocated: dict[tuple[int, int, str, int], AddressMetadata] = {}
         self.node_name = node_name
         self.config = config
         self.block_prefixlen = int(
@@ -398,33 +397,21 @@ class AddressPool:
     def inet_ntoa(self, network: str, address: int) -> str:
         return IPv4Network(network)[address].compressed
 
-    def unregister_address(self, pod_uid: str) -> AddressMetadata:
-        address = None
-        for address, metadata in tuple(self.allocated.items()):
-            if metadata.pod_uid == pod_uid:
-                break
-        else:
-            raise KeyError('address not allocated')
-        return self.allocated.pop(address)
-
     async def release(self, pod_uid: str) -> AddressMetadata:
         for item in self._node_block_items():
             allocations = dict(item['allocations'])
             for ip, ref in tuple(allocations.items()):
                 if ref != pod_uid:
                     continue
-                try:
-                    metadata = self.unregister_address(pod_uid)
-                except KeyError:
-                    metadata = AddressMetadata(
-                        item['vrf_table'],
-                        item['vxlan_id'],
-                        self.node_name,
-                        pod_uid,
-                        False,
-                        item['cidr'].compressed,
-                        ip,
-                    )
+                metadata = AddressMetadata(
+                    item['vrf_table'],
+                    item['vxlan_id'],
+                    self.node_name,
+                    pod_uid,
+                    False,
+                    item['cidr'].compressed,
+                    ip,
+                )
                 allocations.pop(ip, None)
                 self._patch_block_status(item, allocations)
                 return metadata
@@ -440,13 +427,7 @@ class AddressPool:
         is_gateway: bool = False,
         pod_uid: str = '',
     ) -> str:
-        ret = self.inet_ntoa(network, address)
-        self.allocated[(vrf_table, vxlan_id, network, address)] = (
-            AddressMetadata(
-                vrf_table, vxlan_id, node, pod_uid, is_gateway, network, ret
-            )
-        )
-        return ret
+        return self.inet_ntoa(network, address)
 
     async def allocate(
         self,
