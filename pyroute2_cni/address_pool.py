@@ -233,7 +233,13 @@ class AddressPool:
         )
         for item in self._node_block_items():
             domain = (item['vrf_table'], item['vxlan_id'])
-            if domain not in live_domains:
+            service_vrf_max = (
+                int(self.config['default']['service_vrf_max']) or 1024
+            )
+            if (
+                item['vrf_table'] > service_vrf_max
+                and domain not in live_domains
+            ):
                 orphaned_blocks.append(item)
                 continue
             if item['allocated'] != 0:
