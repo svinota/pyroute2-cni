@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -244,12 +245,24 @@ async def main(config: ConfigParser) -> None:
         )
 
     p9_task = await p9_server.async_run()
+    namespace_watch_queue: asyncio.Queue[str | None] = asyncio.Queue()
+    namespace_watch_task = asyncio.create_task(
+        plugin.watch_namespaces(namespace_watch_queue)
+    )
     loop = asyncio.get_event_loop()
     for signal_num in (signal.SIGTERM, signal.SIGINT, signal.SIGQUIT):
         loop.add_signal_handler(
-            signal_num, partial(handle_signal, [p9_task], signal_num)
+            signal_num,
+            partial(
+                handle_signal, [p9_task, namespace_watch_task], signal_num
+            ),
         )
-    await p9_task
+    try:
+        await p9_task
+    finally:
+        namespace_watch_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await namespace_watch_task
 
 
 def run():

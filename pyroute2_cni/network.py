@@ -3,6 +3,7 @@ import errno
 import logging
 import os
 import socket
+import threading
 from configparser import ConfigParser
 from dataclasses import asdict, dataclass
 from ipaddress import IPv4Network
@@ -10,6 +11,7 @@ from pathlib import Path
 from string import Template
 from typing import Any
 
+from kubernetes.client.exceptions import ApiException
 from pyroute2 import AsyncIPRoute, NetlinkError, Plan9ServerSocket
 from sdn_fixtures.main import ensure
 
@@ -639,6 +641,146 @@ class Plugin(PluginProtocol):
                 self.leaf_peer_ips,
                 self.is_control_plane,
             )
+
+    async def cleanup_namespace(
+        self, namespace: str, annotations: dict[str, str]
+    ) -> None:
+        logging.info(f'namespace DEL event: {namespace}')
+        vrf_table = int(
+            annotations.get('pyroute2.org/vrf', self.config['default']['vrf'])
+        )
+        service_vrf_max = int(self.config['default']['service_vrf_max']) or 1024
+        if vrf_table <= service_vrf_max:
+            logging.info(
+                'skip namespace cleanup for %s: vrf=%s <= service_vrf_max=%s',
+                namespace,
+                vrf_table,
+                service_vrf_max,
+            )
+            return
+        try:
+            await self.firewall.remove_system_firewall(namespace, annotations)
+            logging.info(f'namespace firewall removed: {namespace}')
+        except Exception as e:
+            logging.warning(f'firewall cleanup failed for {namespace}: {e}')
+
+        async with AsyncIPRoute() as ipr:
+            br_ifname = f'br-{vrf_table}'
+            vrf_ifname = f'vrf-{vrf_table}'
+            br_idx = await ipr.link_lookup(ifname=br_ifname)
+            if br_idx:
+                await ipr.link('del', index=br_idx[0])
+                logging.info(f'namespace bridge removed: {br_ifname}')
+            vrf_idx = await ipr.link_lookup(ifname=vrf_ifname)
+            if vrf_idx:
+                await ipr.link('del', index=vrf_idx[0])
+                logging.info(f'namespace vrf removed: {vrf_ifname}')
+
+    def _watch_namespace_worker(
+        self,
+        queue: asyncio.Queue[tuple[str, dict[str, str]] | None],
+        loop: asyncio.AbstractEventLoop,
+        stop_event: threading.Event,
+    ) -> None:
+        try:
+            k8s_config.load_incluster_config()
+        except Exception as e:
+            logging.error(f'error starting namespace watch: {e}')
+            loop.call_soon_threadsafe(queue.put_nowait, None)
+            return
+
+        from kubernetes import watch as k8s_watch
+
+        v1 = k8s_client.CoreV1Api()
+        watcher = k8s_watch.Watch()
+        resource_version = ''
+        try:
+            try:
+                ns_list = v1.list_namespace()
+                resource_version = (
+                    getattr(ns_list.metadata, 'resource_version', None) or ''
+                )
+                logging.info(
+                    'namespace watch starting at resource_version=%s',
+                    resource_version,
+                )
+            except Exception as e:
+                logging.warning(
+                    'namespace watch initial list failed, continuing: %s', e
+                )
+
+            while not stop_event.is_set():
+                try:
+                    for event in watcher.stream(
+                        v1.list_namespace,
+                        timeout_seconds=30,
+                        resource_version=resource_version or None,
+                    ):
+                        if stop_event.is_set():
+                            break
+                        event_type = event.get('type')
+                        obj = event.get('object')
+                        metadata = (
+                            getattr(obj, 'metadata', None) if obj else None
+                        )
+                        rv = (
+                            getattr(metadata, 'resource_version', None)
+                            if metadata
+                            else None
+                        )
+                        if rv:
+                            resource_version = rv
+                        logging.info(
+                            'namespace watch event: type=%s name=%s rv=%s',
+                            event_type,
+                            getattr(metadata, 'name', None),
+                            rv,
+                        )
+                        if event_type != 'DELETED':
+                            continue
+                        if not obj or not metadata:
+                            continue
+                        annotations = metadata.annotations or {}
+                        loop.call_soon_threadsafe(
+                            queue.put_nowait, (metadata.name, annotations)
+                        )
+                except ApiException as e:
+                    logging.warning(
+                        'namespace watch api exception, restarting from rv=%s: %s',
+                        resource_version,
+                        e,
+                    )
+                except Exception as e:
+                    logging.warning(
+                        'namespace watch failed, restarting from rv=%s: %s',
+                        resource_version,
+                        e,
+                    )
+        finally:
+            watcher.stop()
+            loop.call_soon_threadsafe(queue.put_nowait, None)
+
+    async def watch_namespaces(
+        self, queue: asyncio.Queue[tuple[str, dict[str, str]] | None]
+    ) -> None:
+        loop = asyncio.get_running_loop()
+        stop_event = threading.Event()
+        worker = threading.Thread(
+            target=self._watch_namespace_worker,
+            args=(queue, loop, stop_event),
+            daemon=True,
+        )
+        worker.start()
+        try:
+            while True:
+                namespace = await queue.get()
+                if namespace is None:
+                    break
+                name, annotations = namespace
+                await self.cleanup_namespace(name, annotations)
+        finally:
+            stop_event.set()
+            worker.join(timeout=5)
 
     async def cleanup(
         self,

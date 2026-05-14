@@ -326,3 +326,54 @@ class FirewallManager:
                 )
 
             logging.info('fw: done')
+
+    async def remove_system_firewall(
+        self, namespace: str, annotations: dict[str, str]
+    ) -> None:
+        config = self.config
+        prefixlen = annotations.get(
+            'pyroute2.org/prefixlen', config['default']['prefixlen']
+        )
+        prefix = annotations.get(
+            'pyroute2.org/prefix', config['default']['prefix']
+        )
+        vrf_table = int(
+            annotations.get('pyroute2.org/vrf', config['default']['vrf'])
+        )
+        vrf_bridge_name = f'br-{vrf_table}'
+
+        async with AsyncIPRoute() as ipr_main:
+            default_route = await ipr_main.route('get', dst='1.1.1.1')
+            default_link = default_route[0].get('oif')
+            vrf_bridge_index = await ipr_main.link_lookup(
+                ifname=vrf_bridge_name
+            )
+
+        async with AsyncNFTables() as nft_main:
+            magic = f'{self.version}|p={prefix}/{prefixlen}'
+            for rule in [x async for x in await nft_main.get_rules()]:
+                if rule.get('userdata') == magic:
+                    await nft_main.rule(
+                        'delete',
+                        table=self.table_name,
+                        chain='nat',
+                        handle=rule.get('handle'),
+                    )
+
+            if vrf_bridge_index:
+                magic = f'{self.version}|b={vrf_bridge_index[0]}|t={vrf_table}'
+                for rule in [x async for x in await nft_main.get_rules()]:
+                    if rule.get('userdata') == magic:
+                        await nft_main.rule(
+                            'delete',
+                            table=self.table_name,
+                            chain='ct-mark',
+                            handle=rule.get('handle'),
+                        )
+
+        async with AsyncIPRoute() as ipr_main:
+            for rule in [x async for x in await ipr_main.get_rules()]:
+                if rule.get('fwmark') == vrf_table:
+                    await ipr_main.rule(
+                        'delete', fwmark=vrf_table, table=vrf_table
+                    )
