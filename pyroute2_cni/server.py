@@ -227,7 +227,11 @@ async def main(config: ConfigParser) -> None:
 
     # load system state
     plugin = load_plugin(config)
-    await plugin.resync(address_pool)
+    try:
+        await plugin.resync(address_pool)
+    except FileNotFoundError as e:
+        logging.error('FRR reload socket never appeared: %s', e)
+        raise SystemExit(1)
     p9_server = Plan9ServerSocket(
         address=(node_ip, int(config['plan9']['port']))
     )

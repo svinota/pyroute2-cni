@@ -4,6 +4,7 @@ import logging
 import os
 import socket
 import threading
+import time
 from configparser import ConfigParser
 from dataclasses import asdict, dataclass
 from ipaddress import IPv4Network
@@ -144,7 +145,7 @@ class FRRManager:
             node_rr_annotation = (
                 get_node_annotations(node_name).get('pyroute2.org/rr') or ''
             )
-            rr_list = node_rr_annotation.split('-')
+            rr_list = node_rr_annotation.split(';')
             if rr_list:
                 rr_sections += '\n'.join(
                     f' neighbor {peer} peer-group RR' for peer in rr_list
@@ -171,14 +172,29 @@ class FRRManager:
             self.render(vrfs, rr_peer_ips, leaf_peer_ips, is_control_plane),
             encoding='utf-8',
         )
-        reader, writer = await asyncio.open_unix_connection(self.reload_sock)
-        try:
-            writer.write(b'restart\n')
-            await writer.drain()
-            await reader.read()
-        finally:
-            writer.close()
-            await writer.wait_closed()
+        deadline = time.monotonic() + 30
+        while True:
+            try:
+                reader, writer = await asyncio.open_unix_connection(
+                    self.reload_sock
+                )
+            except FileNotFoundError:
+                if time.monotonic() >= deadline:
+                    raise
+                logging.warning(
+                    'FRR reload socket %s not found, retrying in 1s',
+                    self.reload_sock,
+                )
+                await asyncio.sleep(1)
+                continue
+            try:
+                writer.write(b'restart\n')
+                await writer.drain()
+                await reader.read()
+                return
+            finally:
+                writer.close()
+                await writer.wait_closed()
 
 
 class Plugin(PluginProtocol):
@@ -649,7 +665,9 @@ class Plugin(PluginProtocol):
         vrf_table = int(
             annotations.get('pyroute2.org/vrf', self.config['default']['vrf'])
         )
-        service_vrf_max = int(self.config['default']['service_vrf_max']) or 1024
+        service_vrf_max = (
+            int(self.config['default']['service_vrf_max']) or 1024
+        )
         if vrf_table <= service_vrf_max:
             logging.info(
                 'skip namespace cleanup for %s: vrf=%s <= service_vrf_max=%s',
@@ -746,13 +764,13 @@ class Plugin(PluginProtocol):
                         )
                 except ApiException as e:
                     logging.warning(
-                        'namespace watch api exception, restarting from rv=%s: %s',
+                        'namespace watch api exception, restarting rv=%s: %s',
                         resource_version,
                         e,
                     )
                 except Exception as e:
                     logging.warning(
-                        'namespace watch failed, restarting from rv=%s: %s',
+                        'namespace watch failed, restarting rv=%s: %s',
                         resource_version,
                         e,
                     )
