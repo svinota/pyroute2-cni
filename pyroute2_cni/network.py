@@ -18,7 +18,7 @@ from kubernetes import config as k8s_config
 from pyroute2_cni.address_pool import AddressPool
 from pyroute2_cni.firewall import FirewallManager
 from pyroute2_cni.kubernetes import (
-    get_namespace_labels,
+    get_namespace_annotations,
     get_node_annotations,
     get_pod_tag,
 )
@@ -401,7 +401,7 @@ class Plugin(PluginProtocol):
         pod_name: None | str = None,
         net_ns_fd: int = 0,
     ) -> SegmentInfo:
-        labels = get_namespace_labels(namespace)
+        annotations = get_namespace_annotations(namespace)
         async with AsyncIPRoute() as ipr_main:
             if 'host_if' in config['network']:
                 host_ifname = config['network']['host_if']
@@ -427,20 +427,22 @@ class Plugin(PluginProtocol):
                 ].get('ifname')
             host_order = host_src.split('.')[-1]
             info = SegmentInfo(
-                prefix=labels.get(
+                prefix=annotations.get(
                     'pyroute2.org/prefix', config['default']['prefix']
                 ),
                 prefixlen=int(
-                    labels.get(
+                    annotations.get(
                         'pyroute2.org/prefixlen',
                         config['default']['prefixlen'],
                     )
                 ),
                 vrf_table=int(
-                    labels.get('pyroute2.org/vrf', config['default']['vrf'])
+                    annotations.get(
+                        'pyroute2.org/vrf', config['default']['vrf']
+                    )
                 ),
                 vxlan_id=int(
-                    labels.get(
+                    annotations.get(
                         'pyroute2.org/vxlan', config['default']['vxlan']
                     )
                 ),
@@ -452,19 +454,19 @@ class Plugin(PluginProtocol):
                 host_ipaddr=config['network']['ipaddr'],
             )
             srv6end = Template(
-                labels.get(
+                annotations.get(
                     'pyroute2.org/srv6end', config['default']['srv6end']
                 )
             )
             info.srv6end = srv6end.substitute(asdict(info))
             srv6endDT4 = Template(
-                labels.get(
+                annotations.get(
                     'pyroute2.org/srv6endDT4', config['default']['srv6endDT4']
                 )
             )
             info.srv6endDT4 = srv6endDT4.substitute(asdict(info))
             srv6local = Template(
-                labels.get(
+                annotations.get(
                     'pyroute2.org/srv6local', config['default']['srv6local']
                 )
             )
@@ -563,16 +565,18 @@ class Plugin(PluginProtocol):
         )
         for ns in v1.list_namespace().items:
             await self.ensure_system_firewall(ns.metadata.name)
-            labels = ns.metadata.labels or {}
-            vrf_table = labels.get('pyroute2.org/vrf')
+            annotations = ns.metadata.annotations or {}
+            vrf_table = annotations.get('pyroute2.org/vrf')
             if vrf_table is None:
                 continue
-            prefix = labels.get('pyroute2.org/prefix') or default_prefix
+            prefix = annotations.get('pyroute2.org/prefix') or default_prefix
             prefixlen = (
-                labels.get('pyroute2.org/prefixlen') or default_prefixlen
+                annotations.get('pyroute2.org/prefixlen') or default_prefixlen
             )
             vrf_table = int(vrf_table)
-            vxlan_id = int(labels.get('pyroute2.org/vxlan', default_vxlan))
+            vxlan_id = int(
+                annotations.get('pyroute2.org/vxlan', default_vxlan)
+            )
             network = IPv4Network(f'{prefix}/{prefixlen}')
             networks.add((network, vrf_table, vxlan_id))
             self.vrfs.add(vrf_table, vxlan_id)

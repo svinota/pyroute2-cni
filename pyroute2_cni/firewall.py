@@ -6,7 +6,7 @@ from pyroute2.netlink.nfnetlink.nftsocket import Cmp, Meta, Regs
 from pyroute2.nftables.expressions import genex, ipv4addr, masq
 from pyroute2.nftables.main import AsyncNFTables
 
-from .kubernetes import get_namespace_labels
+from .kubernetes import get_namespace_annotations
 
 
 def ct_state_match(state):
@@ -256,13 +256,15 @@ class FirewallManager:
 
     async def ensure_system_firewall(self, namespace: str) -> None:
         config = self.config
-        labels = get_namespace_labels(namespace)
-        prefixlen = labels.get(
+        annotations = get_namespace_annotations(namespace)
+        prefixlen = annotations.get(
             'pyroute2.org/prefixlen', config['default']['prefixlen']
         )
-        prefix = labels.get('pyroute2.org/prefix', config['default']['prefix'])
+        prefix = annotations.get(
+            'pyroute2.org/prefix', config['default']['prefix']
+        )
         vrf_table = int(
-            labels.get('pyroute2.org/vrf', config['default']['vrf'])
+            annotations.get('pyroute2.org/vrf', config['default']['vrf'])
         )
         vrf_bridge_name = f'br-{vrf_table}'
         async with AsyncIPRoute() as ipr_main:

@@ -72,14 +72,14 @@ configuration
 
 * rr: only used if ``config['bgp']['rr_mode'] == 'node-annotation'`
 
-**Namespace labels**
+**Namespace annotations**
 
 .. code::
 
     apiVersion: v1
     kind: Namespace
     metadata:
-      labels:
+      annotations:
         ...
         pyroute2.org/prefix: "10.1.0.0"
         pyroute2.org/prefixlen: "16"

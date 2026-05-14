@@ -36,6 +36,11 @@ def get_namespace_labels(name: str) -> dict[str, str]:
     return metadata.labels or {}
 
 
+def get_namespace_annotations(name: str) -> dict[str, str]:
+    metadata = get_namespace(name).metadata
+    return metadata.annotations or {}
+
+
 def get_node_labels(name: str) -> dict[str, str]:
     metadata = get_node(name).metadata
     return metadata.labels or {}
