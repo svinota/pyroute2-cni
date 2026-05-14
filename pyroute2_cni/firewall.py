@@ -343,8 +343,6 @@ class FirewallManager:
         vrf_bridge_name = f'br-{vrf_table}'
 
         async with AsyncIPRoute() as ipr_main:
-            default_route = await ipr_main.route('get', dst='1.1.1.1')
-            default_link = default_route[0].get('oif')
             vrf_bridge_index = await ipr_main.link_lookup(
                 ifname=vrf_bridge_name
             )

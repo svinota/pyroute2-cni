@@ -35,14 +35,16 @@ class AddressPool:
                 'ipblocklen', self.config['default']['prefixlen']
             )
         )
-        self.k8s = self._load_k8s_client()
+        self.k8s_custom_api, self.k8s_v1 = self._load_k8s_clients()
 
-    def _load_k8s_client(self) -> k8s_client.CustomObjectsApi:
+    def _load_k8s_clients(
+        self,
+    ) -> tuple[k8s_client.CustomObjectsApi, k8s_client.CoreV1Api]:
         try:
             k8s_config.load_incluster_config()
         except Exception:
             k8s_config.load_kube_config()
-        return k8s_client.CustomObjectsApi()
+        return (k8s_client.CustomObjectsApi(), k8s_client.CoreV1Api())
 
     def _domain_defaults(self) -> tuple[int, int]:
         return (
@@ -76,7 +78,7 @@ class AddressPool:
         return max(cidr.num_addresses - 2, 0)
 
     def _raw_block_items(self) -> list[dict[str, Any]]:
-        response = self.k8s.list_cluster_custom_object(
+        response = self.k8s_custom_api.list_cluster_custom_object(
             IPBLOCK_GROUP, IPBLOCK_VERSION, IPBLOCK_PLURAL
         )
         return response.get('items', [])
@@ -144,7 +146,7 @@ class AddressPool:
     def _all_block_cidrs(
         self, network: IPv4Network, vrf_table: int, vxlan_id: int
     ) -> set[IPv4Network]:
-        response = self.k8s.list_cluster_custom_object(
+        response = self.k8s_custom_api.list_cluster_custom_object(
             IPBLOCK_GROUP, IPBLOCK_VERSION, IPBLOCK_PLURAL
         )
         cidrs: set[IPv4Network] = set()
@@ -204,20 +206,50 @@ class AddressPool:
         return removed
 
     def _delete_block(self, name: str) -> None:
-        self.k8s.delete_cluster_custom_object(
+        self.k8s_custom_api.delete_cluster_custom_object(
             IPBLOCK_GROUP, IPBLOCK_VERSION, IPBLOCK_PLURAL, name
         )
 
     async def gc_empty_blocks(self, limit: int = 1, keep: int = 0) -> int:
         logging.info('Starting IPBlock GC')
+        live_domains: set[tuple[int, int]] = set()
+        default_vxlan = self._domain_defaults()[1]
+        for ns in self.k8s_v1.list_namespace().items:
+            metadata = ns.metadata
+            if metadata is None:
+                continue
+            annotations = metadata.annotations or {}
+            vrf_table = annotations.get('pyroute2.org/vrf')
+            if vrf_table is None:
+                continue
+            vxlan_id = int(
+                annotations.get('pyroute2.org/vxlan', default_vxlan)
+            )
+            live_domains.add((int(vrf_table), vxlan_id))
+
+        orphaned_blocks: list[dict[str, Any]] = []
         empty_blocks_by_domain: dict[tuple[int, int], list[dict[str, Any]]] = (
             {}
         )
         for item in self._node_block_items():
+            domain = (item['vrf_table'], item['vxlan_id'])
+            if domain not in live_domains:
+                orphaned_blocks.append(item)
+                continue
             if item['allocated'] != 0:
                 continue
-            domain = (item['vrf_table'], item['vxlan_id'])
             empty_blocks_by_domain.setdefault(domain, []).append(item)
+
+        for block in orphaned_blocks:
+            logging.info(f'Deleting orphaned IPBlock {block["name"]}')
+            try:
+                self._delete_block(block['name'])
+            except ApiException as err:
+                logging.warning(
+                    'failed to delete orphaned IPBlock %s: %s',
+                    block['name'],
+                    err,
+                )
         empty_blocks: list[dict[str, Any]] = []
         for blocks in empty_blocks_by_domain.values():
             blocks.sort(key=lambda x: x['creation_timestamp'])
@@ -275,7 +307,7 @@ class AddressPool:
         try:
             created = cast(
                 dict[str, Any],
-                self.k8s.create_cluster_custom_object(
+                self.k8s_custom_api.create_cluster_custom_object(
                     IPBLOCK_GROUP, IPBLOCK_VERSION, IPBLOCK_PLURAL, body
                 ),
             )
@@ -324,7 +356,7 @@ class AddressPool:
             },
         }
         logging.info(f'Patching: {allocations}')
-        self.k8s.replace_cluster_custom_object_status(
+        self.k8s_custom_api.replace_cluster_custom_object_status(
             IPBLOCK_GROUP, IPBLOCK_VERSION, IPBLOCK_PLURAL, name, body
         )
 
