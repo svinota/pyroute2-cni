@@ -1,16 +1,16 @@
 pyroute2-cni
 ------------
 
-A lab project to test Kubernetes integration with eVPN-VXLAN / SRv6 / VRF
+A lab project to test Kubernetes integration with EVPN-VXLAN / SRv6 / VRF
 
-requirements
+Requirements
 ============
 
-* kubernetes 1.31
-* VM: Ubuntu 24.04, one NIC
-* vrf kernel module
+* Kubernetes >= 1.31
+* VM: Ubuntu 24.04 with one NIC
+* VRF kernel module
 
-install
+Install
 =======
 
 .. code::
@@ -18,9 +18,9 @@ install
     curl -fsSL https://raw.githubusercontent.com/svinota/pyroute2-cni/refs/heads/main/kubernetes/install.sh | bash
 
 This waits for the CRD to become established before applying the namespace,
-RBAC, config, and DaemonSet.
+RBAC, ConfigMap, and DaemonSet.
 
-maintenance
+Maintenance
 ===========
 
 Allocated IP blocks:
@@ -49,14 +49,14 @@ Useful vtysh commands:
 
     # show bgp l2vpn evpn summary
     # show bgp l2vpn evpn route
+    # show evpn mac vni all
     # show ip route vrf {{vrf-name}}
 
-configuration
+Configuration
 =============
 
 .. warning::
-   Please notice that at the lab stage configuration options format
-   may change daily.
+   At this stage breaking changes in the configuration might occur.
 
 **Node annotations**
 
@@ -67,7 +67,7 @@ configuration
     metadata:
       annotations:
         ...
-        pyroute2.org/rr: 192.168.124.1
+        pyroute2.org/rr: "192.168.124.1;192.168.124.2"
       name: k8s02
 
 * rr: only used if ``config['bgp']['rr_mode'] == 'node-annotation'`
@@ -85,20 +85,15 @@ configuration
         pyroute2.org/prefixlen: "16"
         pyroute2.org/vrf: "1000"
         pyroute2.org/vxlan: "200"
-        pyroute2.org/rr: "192.168.0.115"
       name: test
 
 * prefix: the prefix to use in the namespace
 * prefixlen: the network mask bits
-* vrf: the VRF to use for the namespace; see also ``End.DT4 vrftable``;
+* vrf: the VRF to use for the namespace; see also ``End.DT4 vrf_table``;
   → creates interface ``vrf-{int}`` in the host netns
 * vxlan: VXLAN id of the transport between nodes;
   → creates interface ``vxlan-{int}`` in the host netns
 
-
-**Pod labels**
-
-To be delivered soon
 
 **ConfigMap**
 
@@ -126,7 +121,7 @@ To be delivered soon
 
         [bgp]
         # control-plane: deploy internal RRs
-        # node-label: use an external RR, specified per node
+        # node-annotation: use an external RR, specified per node
         rr_mode = control-plane
 
         [plan9]

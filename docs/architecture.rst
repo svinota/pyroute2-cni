@@ -40,14 +40,14 @@ Plugin
 ------
 
 * `/opt/cni/bin/pyroute2-cni-plugin`
-* a static binary that only forwards info the the server container
+* a static binary that only forwards info to the server container
 
 The plugin workflow:
 
 1. executed by kubelet
-2. get CNI json from `stdin`
-3. get env variables
-4. parse the variables and open `CNI_NETNS` → get open FD
+2. get CNI JSON from `stdin`
+3. get environment variables
+4. parse the variables and open `CNI_NETNS` → obtain an open FD
 5. obtain a new request id from the server
 6. send the FD to the server
 7. send the CNI and env data to the server
@@ -57,17 +57,17 @@ The plugin workflow:
 Server
 ------
 
-* a pod from the daemonset
+* a pod from the DaemonSet
 * image:  `ghcr.io/svinota/pyroute2-cni:{version}`
-* uses host network namespace
-* mount host file system to expose communication sockets
+* uses the host network namespace
+* mounts the host file system to expose communication sockets
 
 The server workflow:
 
 1. await request init
 2. allocate and send a new request id
 3. collect netns FD, CNI data and env variables from all the communication sockets
-4. ensure the infrastructure on the node
+4. ensure the node infrastructure
 5. create a veth pair, setup the container network
 6. send CNI response to the plugin
 
@@ -101,7 +101,7 @@ The server workflow:
       |                     |                     |
       |                     |                     |  - - - - - -  `request ready`
       |                     |                     |
-      |                     |                     |    `await setup_container_network()`
+      |                     |                     |    `await resync()`
       |                     |                     |
       |                     |                     |     1. `ensure firewall`
       |                     |                     |     2. `ensure sysctl for VRF, SRv6, ...`
