@@ -205,6 +205,33 @@ class AddressPool:
                 self._patch_block_status(item, allocations)
         return removed
 
+    async def restore_live_allocations(
+        self,
+        network: IPv4Network,
+        vrf_table: int,
+        vxlan_id: int,
+        live_pod_ips: dict[str, str],
+    ) -> int:
+        restored = 0
+        for item in self._block_items(network, vrf_table, vxlan_id):
+            allocations = dict(item['allocations'])
+            for pod_uid, pod_ip in live_pod_ips.items():
+                if pod_ip in allocations:
+                    continue
+                try:
+                    if (
+                        self._block_for_ip(network, IPv4Address(pod_ip))
+                        != item['cidr']
+                    ):
+                        continue
+                except ValueError:
+                    continue
+                allocations[pod_ip] = pod_uid
+                restored += 1
+            if allocations != item['allocations']:
+                self._patch_block_status(item, allocations)
+        return restored
+
     def _delete_block(self, name: str) -> None:
         self.k8s_custom_api.delete_cluster_custom_object(
             IPBLOCK_GROUP, IPBLOCK_VERSION, IPBLOCK_PLURAL, name

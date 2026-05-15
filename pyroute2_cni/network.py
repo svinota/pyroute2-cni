@@ -624,6 +624,9 @@ class Plugin(PluginProtocol):
                         is_gateway=True,
                         address=address_pool.inet_aton(network, gateway_ip),
                     )
+                    await address_pool.restore_live_allocations(
+                        network, vrf_table, vxlan_id, live_pod_ips
+                    )
                     await address_pool.prune_stale_allocations(
                         network, vrf_table, vxlan_id, live_pod_ips, gateway_ip
                     )
