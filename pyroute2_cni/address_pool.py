@@ -240,6 +240,12 @@ class AddressPool:
     async def gc_empty_blocks(self, limit: int = 1, keep: int = 0) -> int:
         logging.info('Starting IPBlock GC')
         live_domains: set[tuple[int, int]] = set()
+        live_domains.add(
+            (
+                int(self.config['default']['vrf']),
+                int(self.config['default']['vxlan']),
+            )
+        )
         default_vxlan = self._domain_defaults()[1]
         for ns in self.k8s_v1.list_namespace().items:
             metadata = ns.metadata
@@ -260,13 +266,7 @@ class AddressPool:
         )
         for item in self._node_block_items():
             domain = (item['vrf_table'], item['vxlan_id'])
-            service_vrf_max = (
-                int(self.config['default']['service_vrf_max']) or 1024
-            )
-            if (
-                item['vrf_table'] > service_vrf_max
-                and domain not in live_domains
-            ):
+            if domain not in live_domains:
                 orphaned_blocks.append(item)
                 continue
             if item['allocated'] != 0:
