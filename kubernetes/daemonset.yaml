@@ -48,7 +48,7 @@ spec:
       containers:
 
       - name: pyroute2-frr
-        image: ghcr.io/svinota/pyroute2-frr:0.0.1
+        image: ghcr.io/svinota/pyroute2-frr:0.0.2
         securityContext:
           privileged: true
         volumeMounts:
@@ -58,7 +58,7 @@ spec:
           mountPath: /etc/frr
 
       - name: pyroute2-cni
-        image: ghcr.io/svinota/pyroute2-cni:0.0.449
+        image: ghcr.io/svinota/pyroute2-cni:0.0.452
         resources:
           requests:
             cpu: "100m"
