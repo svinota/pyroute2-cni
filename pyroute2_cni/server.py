@@ -21,7 +21,7 @@ from pyroute2_cni.kubernetes import get_node_ip
 from pyroute2_cni.protocols import PluginProtocol
 from pyroute2_cni.request import CNIRequest
 
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.INFO)
 
 
 class CNIProtocol(asyncio.Protocol):
@@ -215,9 +215,6 @@ def load_plugin(config: ConfigParser):
 
 async def main(config: ConfigParser) -> None:
     registry: dict[str, CNIRequest] = {}
-    config['network']['node_name'] = os.environ['NODE_NAME']
-    node_ip = get_node_ip(config['network']['node_name'])
-    config['network']['ipaddr'] = node_ip
 
     await run_fd_receiver(
         registry, socket_path=config['api']['socket_path_fd']
@@ -233,7 +230,7 @@ async def main(config: ConfigParser) -> None:
         logging.error('FRR reload socket never appeared: %s', e)
         raise SystemExit(1)
     p9_server = Plan9ServerSocket(
-        address=(node_ip, int(config['plan9']['port']))
+        address=(config['network']['ipaddr'], int(config['plan9']['port']))
     )
     p9_server.filesystem.create('segments', qtype=0x80)
     cni_server = CNIServer(config, registry, address_pool, plugin, p9_server)
@@ -269,15 +266,24 @@ async def main(config: ConfigParser) -> None:
             await namespace_watch_task
 
 
-def run():
-    config = ConfigParser()
-    config.read('config/server.ini')
+def config_set_defaults(config: ConfigParser) -> None:
     if 'topology' not in config:
         config['topology'] = {}
     with open('config/segment.dot', 'rb') as dot:
         config['topology']['template'] = dot.read().decode('utf-8')
     if 'network' not in config:
         config['network'] = {}
+    if 'default' not in config:
+        config['default'] = {}
+    config['network']['node_name'] = os.environ['NODE_NAME']
+    node_ip = get_node_ip(config['network']['node_name'])
+    config['network']['ipaddr'] = node_ip
+
+
+def run():
+    config = ConfigParser()
+    config.read('config/server.ini')
+    config_set_defaults(config)
 
     if len(sys.argv) > 1:
         config['plan9']['port'] = sys.argv[1]
