@@ -41,9 +41,9 @@ class AddressPool:
         self,
     ) -> tuple[k8s_client.CustomObjectsApi, k8s_client.CoreV1Api]:
         try:
-            k8s_config.load_incluster_config()
+            k8s_config.load_incluster_config()  # type: ignore[attr-defined]
         except Exception:
-            k8s_config.load_kube_config()
+            k8s_config.load_kube_config()  # type: ignore[attr-defined]
         return (k8s_client.CustomObjectsApi(), k8s_client.CoreV1Api())
 
     def _domain_defaults(self) -> tuple[int, int]:

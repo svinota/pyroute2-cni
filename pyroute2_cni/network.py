@@ -14,7 +14,7 @@ from typing import Any
 
 from kubernetes.client.exceptions import ApiException
 from pyroute2 import AsyncIPRoute, NetlinkError, Plan9ServerSocket
-from sdn_fixtures.main import ensure
+from sdn_fixtures.main import ensure  # type: ignore
 
 from kubernetes import client as k8s_client
 from kubernetes import config as k8s_config
@@ -274,14 +274,14 @@ class Plugin(PluginProtocol):
         self,
         namespace: str,
         pool: AddressPool,
-        request: None | CNIRequest = None,
+        request: CNIRequest | None = None,
         mask: int = 0xFFFFFFFF,
-        p9server: None | Plan9ServerSocket = None,
+        p9server: Plan9ServerSocket | None = None,
     ) -> SegmentInfo:
         config = self.config
-        pod_uid: None | str = None
-        pod_name: None | str = None
-        net_ns_fd: None | int = 0
+        pod_uid: str | None = None
+        pod_name: str | None = None
+        net_ns_fd: int = 0
         max_attempts: int = 5
         has_vrf: bool = False
         if request is not None:
@@ -303,7 +303,11 @@ class Plugin(PluginProtocol):
         template = Template(config['topology']['template'])
         topology = template.substitute(asdict(info))
         logging.info(f'topology\n{topology}')
-        if request is not None and p9server is not None:
+        if (
+            request is not None
+            and p9server is not None
+            and pod_name is not None
+        ):
             base: str = f'segments/{namespace}'
             try:
                 p9server.filesystem.walk(base)
@@ -500,7 +504,7 @@ class Plugin(PluginProtocol):
                     pod_uid=pod_uid,
                 )
                 info.veth_ipaddr = f'{address}/{info.prefixlen}'
-                info.pod_name = pod_name
+                info.pod_name = pod_name or ''
 
             # reconcile the bridge anyways
             dump_link = [
@@ -551,7 +555,7 @@ class Plugin(PluginProtocol):
 
         # 1. list network namespaces -> bridges & vxlan
         try:
-            k8s_config.load_incluster_config()
+            k8s_config.load_incluster_config()  # type: ignore[attr-defined]
         except Exception as e:
             logging.error(f'error listing namespaces: {e}')
             return
@@ -582,22 +586,25 @@ class Plugin(PluginProtocol):
             )
         )
         for ns in v1.list_namespace().items:
-            await self.ensure_system_firewall(ns.metadata.name)
-            annotations = ns.metadata.annotations or {}
-            vrf_table = annotations.get('pyroute2.org/vrf')
-            if vrf_table is None:
+            metadata = ns.metadata
+            if metadata is None or metadata.name is None:
+                continue
+            await self.ensure_system_firewall(metadata.name)
+            annotations = metadata.annotations or {}
+            vrf_table_raw = annotations.get('pyroute2.org/vrf')
+            if vrf_table_raw is None:
                 continue
             prefix = annotations.get('pyroute2.org/prefix') or default_prefix
             prefixlen = (
                 annotations.get('pyroute2.org/prefixlen') or default_prefixlen
             )
-            vrf_table = int(vrf_table)
+            vrf_table_int = int(vrf_table_raw)
             vxlan_id = int(
                 annotations.get('pyroute2.org/vxlan', default_vxlan)
             )
             network = IPv4Network(f'{prefix}/{prefixlen}')
-            networks.add((network, vrf_table, vxlan_id))
-            self.vrfs.add(vrf_table, vxlan_id)
+            networks.add((network, vrf_table_int, vxlan_id))
+            self.vrfs.add(vrf_table_int, vxlan_id)
 
         for network, vrf_table, vxlan_id in networks:
             br_ifname = f'br-{vrf_table}'
@@ -704,13 +711,13 @@ class Plugin(PluginProtocol):
         stop_event: threading.Event,
     ) -> None:
         try:
-            k8s_config.load_incluster_config()
+            k8s_config.load_incluster_config()  # type: ignore[attr-defined]
         except Exception as e:
             logging.error(f'error starting namespace watch: {e}')
             loop.call_soon_threadsafe(queue.put_nowait, None)
             return
 
-        from kubernetes import watch as k8s_watch
+        from kubernetes import watch as k8s_watch  # type: ignore[attr-defined]
 
         v1 = k8s_client.CoreV1Api()
         watcher = k8s_watch.Watch()
