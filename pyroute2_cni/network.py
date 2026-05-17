@@ -675,6 +675,11 @@ class Plugin(PluginProtocol):
         vrf_table = int(
             annotations.get('pyroute2.org/vrf', self.config['default']['vrf'])
         )
+        vxlan = int(
+            annotations.get(
+                'pyroute2.org/vxlan', self.config['default']['vxlan']
+            )
+        )
         service_vrf_max = (
             int(self.config['default']['service_vrf_max']) or 1024
         )
@@ -695,10 +700,18 @@ class Plugin(PluginProtocol):
         async with AsyncIPRoute() as ipr:
             br_ifname = f'br-{vrf_table}'
             vrf_ifname = f'vrf-{vrf_table}'
+            vxlan_ifname = f'vxlan-{vxlan}'
+
+            vxlan_idx = await ipr.link_lookup(ifname=vxlan_ifname)
+            if vxlan_idx:
+                await ipr.link('del', index=vxlan_idx[0])
+                logging.info(f'namespace vxlan removed: {br_ifname}')
+
             br_idx = await ipr.link_lookup(ifname=br_ifname)
             if br_idx:
                 await ipr.link('del', index=br_idx[0])
                 logging.info(f'namespace bridge removed: {br_ifname}')
+
             vrf_idx = await ipr.link_lookup(ifname=vrf_ifname)
             if vrf_idx:
                 await ipr.link('del', index=vrf_idx[0])
