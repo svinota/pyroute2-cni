@@ -30,7 +30,7 @@ image-clean:
 
 .PHONY: ghcr-clean
 ghcr-clean:
-	for i in `gh api -H 'Accept: application/vnd.github+json' /user/packages/container/pyroute2-cni/versions --jq '.[].id' | sed 1d`; do gh api -H 'Accept: application/vnd.github+json' -X DELETE /user/packages/container/pyroute2-cni/versions/$$i; done
+	for i in `gh api -H 'Accept: application/vnd.github+json' /user/packages/container/pyroute2-cni/versions --jq '.[] | [.id, .metadata.container.tags[0]] | @csv' | awk -F, 'NR==FNR {tags[$$1]; next} {tag=$$2; gsub(/"/, "", tag); if (!(tag in tags)) print($$1":"tag)}' tags -`; do echo -n "DEL `echo $$i | sed 's/.*://'`: "; gh api -H 'Accept: application/vnd.github+json' -X DELETE /user/packages/container/pyroute2-cni/versions/`echo $$i | sed 's/:.*//'`; echo $$?; done
 
 .PHONY: version
 version:
