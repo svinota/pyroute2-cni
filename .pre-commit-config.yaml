@@ -1,4 +1,4 @@
-files: '^(noxfile.py|pyroute2_cni|learning|learning/my_plugin)'
+files: '^(noxfile.py|pyroute2_cni|tests|learning|learning/my_plugin)'
 repos:
 -   repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v4.5.0

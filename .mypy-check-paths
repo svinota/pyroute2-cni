@@ -4,3 +4,4 @@ pyroute2_cni/network.py
 pyroute2_cni/request.py
 pyroute2_cni/server.py
 pyroute2_cni/protocols.py
+tests/test_functional/test_basic.py

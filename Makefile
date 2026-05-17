@@ -54,3 +54,11 @@ patch:
 
 .PHONY: deploy
 deploy: build patch
+
+.PHONY: nox
+nox:
+	$(call nox,-e ${session})
+
+.PHONY: format
+format:
+	$(call nox,-e linter)
