@@ -13,12 +13,43 @@ Requirements
 Install
 =======
 
+Standard Kubernetes install.
+
 .. code::
 
     curl -fsSL https://raw.githubusercontent.com/svinota/pyroute2-cni/refs/heads/main/kubernetes/install.sh | bash
 
 This waits for the CRD to become established before applying the namespace,
 RBAC, ConfigMap, and DaemonSet.
+
+Talos install. When using Talos, it is important to guard `nodeIP` with
+`validSubnets`, otherwise kubelet will interfere with CNI bridges:
+
+.. code::
+
+    #
+    # controlplane.yaml
+    #
+    kubelet:
+        nodeIP:
+            validSubnets:
+                - 192.168.124.0/24
+    cluster:
+        ...
+        controlPlane:
+            endpoint: https://192.168.124.37:6443
+        ...
+        network:
+            ...
+            cni:
+                name: custom
+                urls:
+                    - https://github.com/svinota/pyroute2-cni/raw/refs/heads/main/kubernetes/crd.yaml
+                    - https://github.com/svinota/pyroute2-cni/raw/refs/heads/main/kubernetes/namespace.yaml
+                    - https://github.com/svinota/pyroute2-cni/raw/refs/heads/main/kubernetes/rbac.yaml
+                    - https://github.com/svinota/pyroute2-cni/raw/refs/heads/main/kubernetes/config.yaml
+                    - https://github.com/svinota/pyroute2-cni/raw/refs/heads/main/kubernetes/daemonset.yaml
+
 
 Maintenance
 ===========
