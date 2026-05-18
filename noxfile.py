@@ -7,7 +7,7 @@ import nox
 
 nox.options.envdir = f'./.nox-{getpass.getuser()}'
 nox.options.reuse_existing_virtualenvs = False
-nox.options.sessions = ['linter', 'tests_unit', 'tests_mock']
+nox.options.sessions = ['linter', 'test_unit', 'test_mock', 'test_cluster']
 
 
 def load_global_config():
@@ -85,12 +85,6 @@ def setup_venv_common(session, flavour='dev', config=None):
     return os.path.abspath(session.create_tmp())
 
 
-def setup_venv_tests(session, config=None):
-    tmpdir = setup_venv_common(session, flavour='dev', config=config)
-    session.install('-r', 'requirements.dev.txt')
-    return tmpdir
-
-
 def setup_venv_docs(session, config=None):
     tmpdir = setup_venv_common(session, flavour='docs', config=config)
     session.run('cp', '-a', 'docs', tmpdir, external=True)
@@ -153,7 +147,7 @@ def linter(session, config):
 @add_session_config
 def test_unit(session, config):
     '''Run unit tests.'''
-    setup_venv_tests(session, config=config)
+    setup_venv_common(session, flavour='dev', config=config)
     session.run(
         *options('tests/test_unit', config), env={'PYTHONPATH': os.getcwd()}
     )
@@ -163,7 +157,7 @@ def test_unit(session, config):
 @add_session_config
 def test_mock(session, config):
     '''Run mock-backed tests.'''
-    setup_venv_tests(session, config=config)
+    setup_venv_common(session, flavour='dev', config=config)
     session.run(
         *options('tests/test_mock', config), env={'PYTHONPATH': os.getcwd()}
     )
@@ -173,7 +167,7 @@ def test_mock(session, config):
 @add_session_config
 def test_cluster(session, config):
     '''Run live cluster functional tests.'''
-    setup_venv_tests(session, config=config)
+    setup_venv_common(session, flavour='dev', config=config)
     session.run(
         *options('tests/test_functional', config),
         env={'PYTHONPATH': os.getcwd()},

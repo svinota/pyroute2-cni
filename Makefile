@@ -55,8 +55,8 @@ patch:
 .PHONY: deploy
 deploy: build patch
 
-.PHONY: nox
-nox:
+.PHONY: test nox
+test nox:
 	$(call nox,-e ${session})
 
 .PHONY: format

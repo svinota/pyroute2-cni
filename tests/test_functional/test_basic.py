@@ -1,15 +1,12 @@
+import os
+import time
+import uuid
 from dataclasses import dataclass, field
 
 import pytest
 from kubernetes.stream import stream
 
-from kubernetes import client
-from tests.test_functional.k8s import (
-    load_client,
-    test_image,
-    unique_name,
-    wait_for,
-)
+from kubernetes import client, config
 
 
 @dataclass(frozen=True)
@@ -42,7 +39,8 @@ class NamespaceEnv:
 
 @pytest.fixture
 def env_namespace():
-    v1 = load_client()
+    config.load_kube_config()
+    v1 = client.CoreV1Api()
     namespace = NamespaceEnv(v1, unique_name('test-ns'))
     try:
         v1.create_namespace(namespace.manifest)
@@ -89,7 +87,7 @@ def test_pod_create_delete(env_pods):
     )
     frr_output = _check_frr_status(env_pods.v1)
     if '1 packets received' in cmd_output:
-            cmd_matches += 1
+        cmd_matches += 1
     for pod in env_pods.pods:
         if pod.mac in frr_output:
             frr_matches += 1
@@ -130,6 +128,7 @@ def _get_mac(v1: client.CoreV1Api, name: str, namespace: str) -> str:
             tokens = line.split()
             return tokens[tokens.index('link/ether') + 1]
     return ''
+
 
 def _pod_gone(v1: client.CoreV1Api, namespace: str, name: str) -> bool:
     try:
@@ -217,7 +216,9 @@ def _create_test_pod(name: str) -> client.V1Pod:
             containers=[
                 client.V1Container(
                     name='sleep',
-                    image=test_image(),
+                    image=os.environ.get(
+                        'PYROUTE2_CNI_TEST_IMAGE', 'busybox:1.36'
+                    ),
                     command=[
                         'sh',
                         '-c',
@@ -237,3 +238,22 @@ def _namespace_gone(v1: client.CoreV1Api, name: str) -> bool:
     except client.exceptions.ApiException as err:
         return err.status == 404
     return False
+
+
+def unique_name(prefix: str) -> str:
+    return f'{prefix}-{uuid.uuid4().hex[:8]}'
+
+
+def wait_for(condition, timeout: float = 60.0, interval: float = 1.0) -> None:
+    deadline = time.time() + timeout
+    last_error = None
+    while time.time() < deadline:
+        try:
+            if condition():
+                return
+        except Exception as err:  # pragma: no cover - diagnostic path
+            last_error = err
+        time.sleep(interval)
+    if last_error is not None:
+        raise AssertionError(f'timed out waiting: {last_error}')
+    raise AssertionError('timed out waiting')
