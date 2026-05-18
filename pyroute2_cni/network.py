@@ -95,13 +95,7 @@ class FRRManager:
         self.output_path = Path('/etc/frr/frr.conf')
         self.reload_sock = '/var/run/frr/reload.sock'
 
-    def render(
-        self,
-        vrfs: list[VRFEntry],
-        rr_peer_ips: list[str],
-        leaf_peer_ips: list[str],
-        is_control_plane: bool,
-    ) -> str:
+    def render(self, vrfs: list[VRFEntry], peer_ips: list[str]) -> str:
         vrf_sections = []
         vrf_router_sections = []
         for item in vrfs:
@@ -124,22 +118,14 @@ class FRRManager:
         bgp_config = (
             self.config['bgp'] if self.config.has_section('bgp') else {}
         )
-        rr_mode = bgp_config.get('rr_mode', 'control-plane')
-        rr_sections = ''
-        leaf_sections = ''
-        cluster_id = ''
+        rr_mode = bgp_config.get('rr_mode', 'mesh')
+        peer_records = ''
         router_id = self.config['network']['ipaddr']
 
-        if rr_mode == 'control-plane':
-            if is_control_plane:
-                cluster_id = f' bgp cluster-id {router_id}\n'
-                rr_sections += '\n'.join(
-                    f' neighbor {peer} peer-group RR' for peer in rr_peer_ips
-                )
-                leaf_sections = '\n'.join(
-                    f' neighbor {peer} peer-group LEAF'
-                    for peer in leaf_peer_ips
-                )
+        if rr_mode == 'mesh':
+            peer_records += '\n'.join(
+                f' neighbor {peer} peer-group PR2' for peer in peer_ips
+            )
         elif rr_mode == 'node-annotation':
             node_name = self.config['network']['node_name']
             node_rr_annotation = (
@@ -147,30 +133,21 @@ class FRRManager:
             )
             rr_list = node_rr_annotation.split(';')
             if rr_list:
-                rr_sections += '\n'.join(
-                    f' neighbor {peer} peer-group RR' for peer in rr_list
+                peer_records += '\n'.join(
+                    f' neighbor {peer} peer-group PR2' for peer in rr_list
                 )
 
         template = Template(self.template_path.read_text(encoding='utf-8'))
         return template.substitute(
             router_id=router_id,
-            cluster_id=cluster_id,
-            rr_sections=rr_sections,
-            leaf_sections=leaf_sections,
+            peer_records=peer_records,
             vrf_sections='\n!\n'.join(vrf_sections),
             vrf_router_sections='\n!\n'.join(vrf_router_sections),
         )
 
-    async def reload(
-        self,
-        vrfs: list[VRFEntry],
-        rr_peer_ips: list[str],
-        leaf_peer_ips: list[str],
-        is_control_plane: bool,
-    ) -> None:
+    async def reload(self, vrfs: list[VRFEntry], peer_ips: list[str]) -> None:
         self.output_path.write_text(
-            self.render(vrfs, rr_peer_ips, leaf_peer_ips, is_control_plane),
-            encoding='utf-8',
+            self.render(vrfs, peer_ips), encoding='utf-8'
         )
         deadline = time.monotonic() + 30
         while True:
@@ -203,8 +180,7 @@ class Plugin(PluginProtocol):
         self.frr = FRRManager('/pyroute2-cni/templates/frr.conf.tpl', config)
         self.firewall = FirewallManager(config)
         self.vrfs = VRFRegistry()
-        self.rr_peer_ips: list[str] = []
-        self.leaf_peer_ips: list[str] = []
+        self.peer_ips: list[str] = []
         self.is_control_plane = False
 
     @staticmethod
@@ -227,24 +203,16 @@ class Plugin(PluginProtocol):
         )
 
     def refresh_frr_peers(self, v1: k8s_client.CoreV1Api) -> None:
-        rr_peer_ips = []
-        leaf_peer_ips = []
+        peer_ips = []
         local_node_name = self.config['network']['node_name']
         for node in v1.list_node().items:
-            is_control_plane = self._is_control_plane_node(node)
             if node.metadata and node.metadata.name == local_node_name:
-                if is_control_plane:
-                    self.is_control_plane = True
                 continue
             peer_ip = self._node_peer_ip(node)
             if peer_ip is None:
                 continue
-            if is_control_plane:
-                rr_peer_ips.append(peer_ip)
-            else:
-                leaf_peer_ips.append(peer_ip)
-        self.rr_peer_ips = sorted(set(rr_peer_ips))
-        self.leaf_peer_ips = sorted(set(leaf_peer_ips))
+            peer_ips.append(peer_ip)
+        self.peer_ips = sorted(set(peer_ips))
 
     async def reconcile_routes(
         self,
@@ -294,12 +262,7 @@ class Plugin(PluginProtocol):
         if self.frr is not None and self.vrfs.add(
             info.vrf_table, info.vxlan_id
         ):
-            await self.frr.reload(
-                self.vrfs.items(),
-                self.rr_peer_ips,
-                self.leaf_peer_ips,
-                self.is_control_plane,
-            )
+            await self.frr.reload(self.vrfs.items(), self.peer_ips)
         template = Template(config['topology']['template'])
         topology = template.substitute(asdict(info))
         logging.info(f'topology\n{topology}')
@@ -661,12 +624,7 @@ class Plugin(PluginProtocol):
 
         await address_pool.gc_empty_blocks()
         if self.frr is not None:
-            await self.frr.reload(
-                self.vrfs.items(),
-                self.rr_peer_ips,
-                self.leaf_peer_ips,
-                self.is_control_plane,
-            )
+            await self.frr.reload(self.vrfs.items(), self.peer_ips)
 
     async def cleanup_namespace(
         self, namespace: str, annotations: dict[str, str]

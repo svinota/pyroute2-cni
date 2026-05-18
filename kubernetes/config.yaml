@@ -11,24 +11,16 @@ data:
     !
     router bgp 65000
      bgp router-id $router_id
-    $cluster_id
-     neighbor RR peer-group
-     neighbor RR remote-as internal
-    $rr_sections
-
-     neighbor LEAF peer-group
-     neighbor LEAF remote-as internal
-    $leaf_sections
+     neighbor PR2 peer-group
+     neighbor PR2 remote-as internal
+    $peer_records
      !
      address-family ipv4 unicast
       network $router_id/32
      exit-address-family
      !
      address-family l2vpn evpn
-      neighbor RR activate
-      neighbor LEAF activate
-      neighbor LEAF route-reflector-client
-
+      neighbor PR2 activate
       advertise-all-vni
       advertise-svi-ip
      exit-address-family
@@ -107,7 +99,7 @@ data:
     port = 8149
 
     [bgp]
-    rr_mode = control-plane
+    rr_mode = mesh
 
 
   segment.dot: |
