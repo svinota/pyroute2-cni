@@ -6,9 +6,12 @@ A lab project to test Kubernetes integration with EVPN-VXLAN / SRv6 / VRF
 Requirements
 ============
 
-* Kubernetes >= 1.31
-* VM: Ubuntu 24.04 with one NIC
-* VRF kernel module
+* Kubernetes 1.31+
+* Ubuntu 24.04+ or Talos 1.13.0+
+* Linux VRF kernel module
+
+If `config['bgp']['rr_mode'] == 'node-annotation'`, you also need external
+BGP RRs. By default, the CNI starts its own RRs on the control plane nodes.
 
 Install
 =======
