@@ -73,19 +73,68 @@ class VRFEntry:
     vni: int
 
 
+@dataclass
+class NamespaceDomain:
+    vrf: int
+    vxlan: int
+    namespaces: set[str]
+    prefixes: list[IPv4Network]
+
+
 class VRFRegistry:
     def __init__(self) -> None:
-        self._vrfs: dict[tuple[int, int], VRFEntry] = {}
+        self._vrfs: dict[tuple[int, int], NamespaceDomain] = {}
+        self._namespace_domains: dict[str, tuple[int, int]] = {}
 
-    def add(self, vrf_table: int, vxlan_id: int) -> bool:
+    def add(
+        self,
+        vrf_table: int,
+        vxlan_id: int,
+        namespace: str,
+        prefix: IPv4Network,
+    ) -> bool:
         key = (vrf_table, vxlan_id)
-        if key in self._vrfs:
+        existing_key = self._namespace_domains.get(namespace)
+        if existing_key is not None and existing_key != key:
+            raise ValueError(
+                f'namespace {namespace} moved from {existing_key} to {key}'
+            )
+        domain = self._vrfs.get(key)
+        if domain is None:
+            domain = NamespaceDomain(
+                vrf=vrf_table, vxlan=vxlan_id, namespaces=set(), prefixes=[]
+            )
+            self._vrfs[key] = domain
+        domain.namespaces.add(namespace)
+        self._namespace_domains[namespace] = key
+        if prefix not in domain.prefixes:
+            domain.prefixes.append(prefix)
+        return len(domain.namespaces) == 1
+
+    def remove(self, vrf_table: int, vxlan_id: int, namespace: str) -> bool:
+        key = (vrf_table, vxlan_id)
+        domain = self._vrfs.get(key)
+        if domain is None:
             return False
-        self._vrfs[key] = VRFEntry(vrf=f'vrf-{vrf_table}', vni=vxlan_id)
+        domain.namespaces.discard(namespace)
+        self._namespace_domains.pop(namespace, None)
+        if domain.namespaces:
+            return False
+        del self._vrfs[key]
         return True
 
+    def get(self, vrf_table: int, vxlan_id: int) -> NamespaceDomain | None:
+        return self._vrfs.get((vrf_table, vxlan_id))
+
     def items(self) -> list[VRFEntry]:
-        return list(self._vrfs.values())
+        return [
+            VRFEntry(vrf=f'vrf-{d.vrf}', vni=d.vxlan)
+            for d in self._vrfs.values()
+        ]
+
+    def clear(self) -> None:
+        self._vrfs.clear()
+        self._namespace_domains.clear()
 
 
 class FRRManager:
@@ -175,8 +224,11 @@ class FRRManager:
 
 
 class Plugin(PluginProtocol):
-    def __init__(self, config: ConfigParser) -> None:
+    def __init__(
+        self, config: ConfigParser, address_pool: AddressPool
+    ) -> None:
         self.config = config
+        self.address_pool = address_pool
         self.frr = FRRManager('/pyroute2-cni/templates/frr.conf.tpl', config)
         self.firewall = FirewallManager(config)
         self.vrfs = VRFRegistry()
@@ -239,10 +291,13 @@ class Plugin(PluginProtocol):
         await self.firewall.setup()
         await self.firewall.ensure_system_firewall(namespace)
 
+    async def reconcile_registry(self) -> None:
+        if self.frr is not None:
+            await self.frr.reload(self.vrfs.items(), self.peer_ips)
+
     async def ensure_segment(
         self,
         namespace: str,
-        pool: AddressPool,
         request: CNIRequest | None = None,
         mask: int = 0xFFFFFFFF,
         p9server: Plan9ServerSocket | None = None,
@@ -258,10 +313,13 @@ class Plugin(PluginProtocol):
             pod_name = get_pod_tag(request, 'name')
             net_ns_fd = request.netns
         info = await self.allocate_segment(
-            namespace, pool, config, pod_uid, pod_name, net_ns_fd
+            namespace, config, pod_uid, pod_name, net_ns_fd
         )
         if self.frr is not None and self.vrfs.add(
-            info.vrf_table, info.vxlan_id
+            info.vrf_table,
+            info.vxlan_id,
+            namespace,
+            IPv4Network(f'{info.prefix}/{info.prefixlen}'),
         ):
             await self.frr.reload(self.vrfs.items(), self.peer_ips)
             if self.on_frr_ready is not None and len(self.vrfs.items()) > 0:
@@ -295,7 +353,7 @@ class Plugin(PluginProtocol):
                         table = info.vrf_table
                     await self.reconcile_routes(
                         ipr,
-                        pool.block_cidrs(
+                        self.address_pool.block_cidrs(
                             IPv4Network(f'{info.prefix}/{info.prefixlen}'),
                             info.vrf_table,
                             info.vxlan_id,
@@ -383,7 +441,6 @@ class Plugin(PluginProtocol):
     async def allocate_segment(
         self,
         namespace: str,
-        pool: AddressPool,
         config: ConfigParser,
         pod_uid: None | str = None,
         pod_name: None | str = None,
@@ -463,7 +520,7 @@ class Plugin(PluginProtocol):
                 info.vrf_announce = False
             network = IPv4Network(f'{info.prefix}/{info.prefixlen}')
             if pod_uid is not None:
-                address = await pool.allocate(
+                address = await self.address_pool.allocate(
                     network=network,
                     vrf_table=info.vrf_table,
                     vxlan_id=info.vxlan_id,
@@ -490,7 +547,7 @@ class Plugin(PluginProtocol):
                     info.br_ipaddr = f'{msg.get("address")}/{info.prefixlen}'
                     break
             if not info.br_ipaddr:
-                address = await pool.allocate(
+                address = await self.address_pool.allocate(
                     network=network,
                     vrf_table=info.vrf_table,
                     vxlan_id=info.vxlan_id,
@@ -501,8 +558,9 @@ class Plugin(PluginProtocol):
 
         return info
 
-    async def resync(self, address_pool: AddressPool) -> None:
+    async def resync(self) -> None:
         config = self.config
+        self.vrfs.clear()
 
         # trigger the VRF module
         async with AsyncIPRoute() as ipr_main:
@@ -517,7 +575,7 @@ class Plugin(PluginProtocol):
                 ipr_main.link, present=False, index=vrf1['index']
             )
 
-        await self.ensure_segment('kube-system', address_pool, mask=1)
+        await self.ensure_segment('kube-system', mask=1)
 
         # 1. list network namespaces -> bridges & vxlan
         try:
@@ -528,7 +586,7 @@ class Plugin(PluginProtocol):
 
         v1 = k8s_client.CoreV1Api()
         self.refresh_frr_peers(v1)
-        node_name = address_pool.node_name
+        node_name = self.address_pool.node_name
         live_pod_ips = {
             pod.metadata.uid: pod.status.pod_ip
             for pod in v1.list_pod_for_all_namespaces(
@@ -570,13 +628,13 @@ class Plugin(PluginProtocol):
             )
             network = IPv4Network(f'{prefix}/{prefixlen}')
             networks.add((network, vrf_table_int, vxlan_id))
-            self.vrfs.add(vrf_table_int, vxlan_id)
+            self.vrfs.add(vrf_table_int, vxlan_id, metadata.name, network)
 
         for network, vrf_table, vxlan_id in networks:
             br_ifname = f'br-{vrf_table}'
             gateway_ip = None
             async with AsyncIPRoute() as ipr:
-                block_cidrs = address_pool.block_cidrs(
+                block_cidrs = self.address_pool.block_cidrs(
                     network, vrf_table, vxlan_id
                 )
                 br_idx = await ipr.link_lookup(ifname=br_ifname)
@@ -590,17 +648,19 @@ class Plugin(PluginProtocol):
                 ]
                 if bridge_addr:
                     gateway_ip = bridge_addr[0].get('address')
-                    await address_pool.allocate(
+                    await self.address_pool.allocate(
                         network=network,
                         vrf_table=vrf_table,
                         vxlan_id=vxlan_id,
                         is_gateway=True,
-                        address=address_pool.inet_aton(network, gateway_ip),
+                        address=self.address_pool.inet_aton(
+                            network, gateway_ip
+                        ),
                     )
-                    await address_pool.restore_live_allocations(
+                    await self.address_pool.restore_live_allocations(
                         network, vrf_table, vxlan_id, live_pod_ips
                     )
-                    await address_pool.prune_stale_allocations(
+                    await self.address_pool.prune_stale_allocations(
                         network, vrf_table, vxlan_id, live_pod_ips, gateway_ip
                     )
 
@@ -625,7 +685,7 @@ class Plugin(PluginProtocol):
                         raise
                 await self.reconcile_routes(ipr, block_cidrs, br_ifname, table)
 
-        await address_pool.gc_empty_blocks()
+        await self.address_pool.gc_empty_blocks()
         if self.frr is not None:
             await self.frr.reload(self.vrfs.items(), self.peer_ips)
 
@@ -652,11 +712,21 @@ class Plugin(PluginProtocol):
                 service_vrf_max,
             )
             return
+        domain = self.vrfs.get(vrf_table, vxlan)
+        if domain is not None and namespace not in domain.namespaces:
+            return
+        keep_domain = False
+        if domain is not None:
+            keep_domain = len(domain.namespaces) > 1
+        self.vrfs.remove(vrf_table, vxlan, namespace)
         try:
             await self.firewall.remove_system_firewall(namespace, annotations)
             logging.info(f'namespace firewall removed: {namespace}')
         except Exception as e:
             logging.warning(f'firewall cleanup failed for {namespace}: {e}')
+
+        if keep_domain:
+            return
 
         async with AsyncIPRoute() as ipr:
             br_ifname = f'br-{vrf_table}'
@@ -680,7 +750,7 @@ class Plugin(PluginProtocol):
 
     def _watch_namespace_worker(
         self,
-        queue: asyncio.Queue[tuple[str, dict[str, str]] | None],
+        queue: asyncio.Queue[tuple[str, str, dict[str, str]] | None],
         loop: asyncio.AbstractEventLoop,
         stop_event: threading.Event,
     ) -> None:
@@ -738,13 +808,14 @@ class Plugin(PluginProtocol):
                             getattr(metadata, 'name', None),
                             rv,
                         )
-                        if event_type != 'DELETED':
+                        if event_type not in {'ADDED', 'MODIFIED', 'DELETED'}:
                             continue
                         if not obj or not metadata:
                             continue
                         annotations = metadata.annotations or {}
                         loop.call_soon_threadsafe(
-                            queue.put_nowait, (metadata.name, annotations)
+                            queue.put_nowait,
+                            (event_type, metadata.name, annotations),
                         )
                 except ApiException as e:
                     logging.warning(
@@ -763,7 +834,7 @@ class Plugin(PluginProtocol):
             loop.call_soon_threadsafe(queue.put_nowait, None)
 
     async def watch_namespaces(
-        self, queue: asyncio.Queue[tuple[str, dict[str, str]] | None]
+        self, queue: asyncio.Queue[tuple[str, str, dict[str, str]] | None]
     ) -> None:
         loop = asyncio.get_running_loop()
         stop_event = threading.Event()
@@ -778,8 +849,16 @@ class Plugin(PluginProtocol):
                 namespace = await queue.get()
                 if namespace is None:
                     break
-                name, annotations = namespace
-                await self.cleanup_namespace(name, annotations)
+                event_type, name, annotations = namespace
+                if event_type == 'DELETED':
+                    await self.cleanup_namespace(name, annotations)
+                else:
+                    try:
+                        await self.ensure_segment(name, mask=1)
+                    except ValueError as e:
+                        logging.warning('namespace watch rejected: %s', e)
+                        continue
+                    await self.reconcile_registry()
         finally:
             stop_event.set()
             worker.join(timeout=5)
@@ -788,7 +867,6 @@ class Plugin(PluginProtocol):
         self,
         data: dict[str, Any],
         request: CNIRequest,
-        pool: AddressPool,
         p9server: Plan9ServerSocket,
     ) -> dict[str, Any]:
         '''
@@ -796,12 +874,12 @@ class Plugin(PluginProtocol):
         '''
         pod_uid = get_pod_tag(request, 'uid')
         try:
-            await pool.release(pod_uid)
+            await self.address_pool.release(pod_uid)
         except KeyError:
             # just ignore non existent addresses for now
             logging.error(f'pod_uid {pod_uid} not registered')
         try:
-            await pool.gc_empty_blocks()
+            await self.address_pool.gc_empty_blocks()
         except Exception as e:
             logging.warning(f'empty IPBlock gc failed: {e}')
         return data
@@ -810,7 +888,6 @@ class Plugin(PluginProtocol):
         self,
         data: dict[str, Any],
         request: CNIRequest,
-        pool: AddressPool,
         p9server: Plan9ServerSocket,
     ) -> dict[str, Any]:
         '''
@@ -820,9 +897,7 @@ class Plugin(PluginProtocol):
         logging.info(f'request {request.rid} ready')
 
         namespace = get_pod_tag(request, 'namespace', default='default')
-        info = await self.ensure_segment(
-            namespace, pool, request, p9server=p9server
-        )
+        info = await self.ensure_segment(namespace, request, p9server=p9server)
         await self.ensure_system_firewall(namespace)
 
         data['interfaces'] = [

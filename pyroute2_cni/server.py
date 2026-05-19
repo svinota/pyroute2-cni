@@ -36,13 +36,11 @@ class CNIProtocol(asyncio.Protocol):
         on_con_lost: asyncio.Future,
         registry: dict[str, CNIRequest],
         config: ConfigParser,
-        address_pool: AddressPool,
         plugin: PluginProtocol,
         p9server: Plan9ServerSocket,
     ):
         self.on_con_lost = on_con_lost
         self.registry = registry
-        self.pool = address_pool
         self.config = config
         self.plugin = plugin
         self.p9server = p9server
@@ -85,7 +83,6 @@ class CNIProtocol(asyncio.Protocol):
                         self.plugin.setup,
                         response,
                         self.registry[request.rid],
-                        self.pool,
                         self.p9server,
                     )
                 )
@@ -97,7 +94,6 @@ class CNIProtocol(asyncio.Protocol):
                         self.plugin.cleanup,
                         response,
                         self.registry[request.rid],
-                        self.pool,
                         self.p9server,
                     )
                 )
@@ -119,10 +115,9 @@ class CNIProtocol(asyncio.Protocol):
         func: Callable,
         data: dict[str, Any],
         request: CNIRequest,
-        pool: AddressPool,
         p9server: Plan9ServerSocket,
     ) -> None:
-        self.cni_response(await func(data, request, pool, p9server))
+        self.cni_response(await func(data, request, p9server))
 
 
 class CNIServer:
@@ -133,7 +128,6 @@ class CNIServer:
         self,
         config: ConfigParser,
         registry: dict[str, CNIRequest],
-        address_pool: AddressPool,
         plugin: PluginProtocol,
         p9server: Plan9ServerSocket,
         use_event_loop: Optional[asyncio.AbstractEventLoop] = None,
@@ -143,7 +137,6 @@ class CNIServer:
         self.path = config['api']['socket_path_api']
         self.registry = registry
         self.config = config
-        self.address_pool = address_pool
         self.plugin = plugin
         self.p9server = p9server
 
@@ -153,7 +146,6 @@ class CNIServer:
                 self.connection_lost,
                 self.registry,
                 self.config,
-                self.address_pool,
                 self.plugin,
                 self.p9server,
             ),
@@ -290,11 +282,11 @@ def handle_signal(tasks: list[asyncio.Task], signal_num) -> None:
         task.cancel()
 
 
-def load_plugin(config: ConfigParser):
+def load_plugin(config: ConfigParser, address_pool: AddressPool):
     for ep in entry_points(group='pyroute2.cni'):
         if ep.name == 'network':
             plugin = ep.load()
-            return plugin(config)
+            return plugin(config, address_pool)
     raise RuntimeError('No plugin found for the network plugin')
 
 
@@ -315,10 +307,10 @@ async def main(config: ConfigParser) -> None:
     address_pool = AddressPool(node_name, config)
 
     # load system state
-    plugin = load_plugin(config)
+    plugin = load_plugin(config, address_pool)
     plugin.on_frr_ready = ready.set
     try:
-        await plugin.resync(address_pool)
+        await plugin.resync()
     except FileNotFoundError as e:
         logging.error('FRR reload socket never appeared: %s', e)
         raise SystemExit(1)
@@ -326,7 +318,7 @@ async def main(config: ConfigParser) -> None:
         address=(config['network']['ipaddr'], int(config['plan9']['port']))
     )
     p9_server.filesystem.create('segments', qtype=0x80)
-    cni_server = CNIServer(config, registry, address_pool, plugin, p9_server)
+    cni_server = CNIServer(config, registry, plugin, p9_server)
     await cni_server.setup_endpoint()
     with p9_server.filesystem.create('registry') as i:
         i.metadata.call_on_read = True
@@ -339,7 +331,9 @@ async def main(config: ConfigParser) -> None:
         )
 
     p9_task = await p9_server.async_run()
-    namespace_watch_queue: asyncio.Queue[str | None] = asyncio.Queue()
+    namespace_watch_queue: asyncio.Queue[
+        tuple[str, str, dict[str, str]] | None
+    ] = asyncio.Queue()
     namespace_watch_task = asyncio.create_task(
         plugin.watch_namespaces(namespace_watch_queue)
     )
