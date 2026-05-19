@@ -178,10 +178,26 @@ def http_response(code: int, content: str) -> bytes:
     return headers + body
 
 
-async def readiness_handler(
+def render_metrics(
+    ready: asyncio.Event, registry: dict[str, CNIRequest]
+) -> str:
+    ready_value = 1 if ready.is_set() else 0
+    registry_entries = len(registry)
+    return (
+        '# HELP pyroute2_cni_ready Whether the server is ready\n'
+        '# TYPE pyroute2_cni_ready gauge\n'
+        f'pyroute2_cni_ready {ready_value}\n'
+        '# HELP pyroute2_cni_registry_entries Number of tracked CNI requests\n'
+        '# TYPE pyroute2_cni_registry_entries gauge\n'
+        f'pyroute2_cni_registry_entries {registry_entries}\n'
+    )
+
+
+async def http_handler(
     reader: asyncio.StreamReader,
     writer: asyncio.StreamWriter,
     ready: asyncio.Event,
+    registry: dict[str, CNIRequest],
 ) -> None:
     try:
         request_line = await reader.readline()
@@ -201,6 +217,8 @@ async def readiness_handler(
                 response = http_response(200, 'ok\n')
             case ('GET', '/readyz'):
                 response = http_response(503, 'starting\n')
+            case ('GET', '/metrics'):
+                response = http_response(200, render_metrics(ready, registry))
             case ('GET', _):
                 response = http_response(404, 'not found\n')
             case _:
@@ -216,11 +234,12 @@ async def readiness_handler(
 
 async def run_readiness_server(
     ready: asyncio.Event,
+    registry: dict[str, CNIRequest],
     host: str = READINESS_HOST,
     port: int = READINESS_PORT,
 ) -> asyncio.AbstractServer:
     return await asyncio.start_server(
-        lambda r, w: readiness_handler(r, w, ready), host=host, port=port
+        lambda r, w: http_handler(r, w, ready, registry), host=host, port=port
     )
 
 
@@ -288,6 +307,7 @@ async def main(config: ConfigParser) -> None:
     )
     readiness_server = await run_readiness_server(
         ready,
+        registry,
         host=config['readiness'].get('host', READINESS_HOST),
         port=config['readiness'].getint('port', fallback=READINESS_PORT),
     )
