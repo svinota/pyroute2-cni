@@ -10,7 +10,7 @@ from dataclasses import asdict, dataclass
 from ipaddress import IPv4Network
 from pathlib import Path
 from string import Template
-from typing import Any
+from typing import Any, Callable
 
 from kubernetes.client.exceptions import ApiException
 from pyroute2 import AsyncIPRoute, NetlinkError, Plan9ServerSocket
@@ -182,6 +182,7 @@ class Plugin(PluginProtocol):
         self.vrfs = VRFRegistry()
         self.peer_ips: list[str] = []
         self.is_control_plane = False
+        self.on_frr_ready: Callable[[], None] | None = None
 
     @staticmethod
     def _node_peer_ip(node: Any) -> str | None:
@@ -263,6 +264,8 @@ class Plugin(PluginProtocol):
             info.vrf_table, info.vxlan_id
         ):
             await self.frr.reload(self.vrfs.items(), self.peer_ips)
+            if self.on_frr_ready is not None and len(self.vrfs.items()) > 0:
+                self.on_frr_ready()
         template = Template(config['topology']['template'])
         topology = template.substitute(asdict(info))
         logging.info(f'topology\n{topology}')

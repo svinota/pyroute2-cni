@@ -160,3 +160,7 @@ Configuration
 
         [plan9]
         port = 8149
+
+        [readiness]
+        host = 0.0.0.0
+        port = 24800

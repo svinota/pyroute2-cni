@@ -23,6 +23,9 @@ from pyroute2_cni.request import CNIRequest
 
 logging.basicConfig(level=logging.INFO)
 
+READINESS_HOST = '0.0.0.0'
+READINESS_PORT = 24800
+
 
 class CNIProtocol(asyncio.Protocol):
 
@@ -158,6 +161,63 @@ class CNIServer:
         )
 
 
+async def readiness_handler(
+    reader: asyncio.StreamReader,
+    writer: asyncio.StreamWriter,
+    ready: asyncio.Event,
+) -> None:
+    try:
+        request_line = await reader.readline()
+        if not request_line:
+            return
+        method, path, _ = (
+            request_line.decode('ascii').rstrip('\r\n').split(' ')
+        )
+        while True:
+            line = await reader.readline()
+            if line in (b'\r\n', b'\n', b''):
+                break
+        if method != 'GET' or path != '/readyz':
+            body = b'not found\n'
+            headers = (
+                b'HTTP/1.1 404 Not Found\r\n'
+                + b'Content-Type: text/plain\r\n'
+                + f'Content-Length: {len(body)}\r\n'.encode('ascii')
+                + b'Connection: close\r\n\r\n'
+            )
+            writer.write(headers + body)
+            await writer.drain()
+            return
+        if ready.is_set():
+            body = b'ok\n'
+            status = b'HTTP/1.1 200 OK\r\n'
+        else:
+            body = b'starting\n'
+            status = b'HTTP/1.1 503 Service Unavailable\r\n'
+        headers = (
+            status
+            + b'Content-Type: text/plain\r\n'
+            + f'Content-Length: {len(body)}\r\n'.encode('ascii')
+            + b'Connection: close\r\n\r\n'
+        )
+        writer.write(headers + body)
+        await writer.drain()
+    finally:
+        writer.close()
+        with contextlib.suppress(Exception):
+            await writer.wait_closed()
+
+
+async def run_readiness_server(
+    ready: asyncio.Event,
+    host: str = READINESS_HOST,
+    port: int = READINESS_PORT,
+) -> asyncio.AbstractServer:
+    return await asyncio.start_server(
+        lambda r, w: readiness_handler(r, w, ready), host=host, port=port
+    )
+
+
 def cni_request_handler(sock_dgram, registry):
     '''
     Receive JSON CNI config and CNI_NETNS file descriptor.
@@ -215,15 +275,22 @@ def load_plugin(config: ConfigParser):
 
 async def main(config: ConfigParser) -> None:
     registry: dict[str, CNIRequest] = {}
+    ready = asyncio.Event()
 
     await run_fd_receiver(
         registry, socket_path=config['api']['socket_path_fd']
+    )
+    readiness_server = await run_readiness_server(
+        ready,
+        host=config['readiness'].get('host', READINESS_HOST),
+        port=config['readiness'].getint('port', fallback=READINESS_PORT),
     )
     node_name = os.environ['NODE_NAME']
     address_pool = AddressPool(node_name, config)
 
     # load system state
     plugin = load_plugin(config)
+    plugin.on_frr_ready = ready.set
     try:
         await plugin.resync(address_pool)
     except FileNotFoundError as e:
@@ -262,6 +329,8 @@ async def main(config: ConfigParser) -> None:
         await p9_task
     finally:
         namespace_watch_task.cancel()
+        readiness_server.close()
+        await readiness_server.wait_closed()
         with contextlib.suppress(asyncio.CancelledError):
             await namespace_watch_task
 
@@ -273,11 +342,15 @@ def config_set_defaults(config: ConfigParser) -> None:
         config['topology']['template'] = dot.read().decode('utf-8')
     if 'network' not in config:
         config['network'] = {}
+    if 'readiness' not in config:
+        config['readiness'] = {}
     if 'default' not in config:
         config['default'] = {}
     config['network']['node_name'] = os.environ['NODE_NAME']
     node_ip = get_node_ip(config['network']['node_name'])
     config['network']['ipaddr'] = node_ip
+    config['readiness'].setdefault('host', READINESS_HOST)
+    config['readiness'].setdefault('port', str(READINESS_PORT))
 
 
 def run():

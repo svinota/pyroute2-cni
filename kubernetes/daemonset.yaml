@@ -58,13 +58,23 @@ spec:
           mountPath: /etc/frr
 
       - name: pyroute2-cni
-        image: ghcr.io/svinota/pyroute2-cni:0.0.461
+        image: ghcr.io/svinota/pyroute2-cni:0.0.462
         resources:
           requests:
             cpu: "100m"
             memory: "100Mi"
+        ports:
+        - name: readiness
+          containerPort: 24800
+          protocol: TCP
         securityContext:
           privileged: true
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: readiness
+          periodSeconds: 5
+          timeoutSeconds: 1
         env:
         - name: POD_NAME
           valueFrom:
