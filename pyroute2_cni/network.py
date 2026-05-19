@@ -149,7 +149,7 @@ class FRRManager:
         self.output_path.write_text(
             self.render(vrfs, peer_ips), encoding='utf-8'
         )
-        deadline = time.monotonic() + 30
+        deadline = time.monotonic() + 120
         while True:
             try:
                 reader, writer = await asyncio.open_unix_connection(
