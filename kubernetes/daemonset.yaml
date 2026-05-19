@@ -48,7 +48,7 @@ spec:
       containers:
 
       - name: pyroute2-frr
-        image: ghcr.io/svinota/pyroute2-frr:0.0.2
+        image: ghcr.io/svinota/pyroute2-frr:0.0.5
         securityContext:
           privileged: true
         volumeMounts:

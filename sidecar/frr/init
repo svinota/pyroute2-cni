@@ -3,7 +3,7 @@ set -euo pipefail
 
 SOCK=/var/run/frr/reload.sock
 FRR_CONF=/etc/frr/frr.conf
-FRR_START=/usr/lib/frr/frrinit.sh
+FRR_WATCH=/usr/lib/frr/watchfrr
 STOP=0
 SOCAT_PID=
 
@@ -22,7 +22,12 @@ cleanup() {
 trap cleanup TERM INT
 
 rm -f "$SOCK"
-"$FRR_START" start
+$FRR_WATCH \
+    -i 5 \
+    -t 20 \
+    --min-restart-interval 5 \
+    --max-restart-interval 20 \
+    zebra staticd bgpd &
 
 while [[ "$STOP" -eq 0 ]]; do
   socat -u "UNIX-LISTEN:$SOCK,fork,unlink-close" EXEC:/handle-command &

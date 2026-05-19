@@ -10,7 +10,7 @@ case "$cmd" in
     echo OK
     ;;
   restart)
-    /usr/lib/frr/frrinit.sh restart
+    /usr/lib/frr/watchfrr.sh restart bgpd
     echo OK
     ;;
   *)
