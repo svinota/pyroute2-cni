@@ -58,7 +58,7 @@ spec:
           mountPath: /etc/frr
 
       - name: pyroute2-cni
-        image: ghcr.io/svinota/pyroute2-cni:0.0.463
+        image: ghcr.io/svinota/pyroute2-cni:0.0.464
         resources:
           requests:
             cpu: "100m"
@@ -74,6 +74,12 @@ spec:
             path: /readyz
             port: readiness
           periodSeconds: 5
+          timeoutSeconds: 1
+        livenessProbe:
+          httpGet:
+            path: /livez
+            port: readiness
+          periodSeconds: 10
           timeoutSeconds: 1
         env:
         - name: POD_NAME

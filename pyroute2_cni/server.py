@@ -161,6 +161,23 @@ class CNIServer:
         )
 
 
+def http_response(code: int, content: str) -> bytes:
+    codes = {
+        200: 'OK',
+        404: 'Not Found',
+        405: 'Method Not Allowed',
+        503: 'Service Unavailable',
+    }
+    body = content.encode('utf-8')
+    headers = (
+        f'HTTP/1.1 {code} {codes[code]}\r\n'.encode('utf-8')
+        + b'Content-Type: text/plain\r\n'
+        + f'Content-Length: {len(body)}\r\n'.encode('utf-8')
+        + b'Connection: close\r\n\r\n'
+    )
+    return headers + body
+
+
 async def readiness_handler(
     reader: asyncio.StreamReader,
     writer: asyncio.StreamWriter,
@@ -177,31 +194,20 @@ async def readiness_handler(
             line = await reader.readline()
             if line in (b'\r\n', b'\n', b''):
                 break
-        if method != 'GET' or path != '/readyz':
-            body = b'not found\n'
-            headers = (
-                b'HTTP/1.1 404 Not Found\r\n'
-                + b'Content-Type: text/plain\r\n'
-                + f'Content-Length: {len(body)}\r\n'.encode('ascii')
-                + b'Connection: close\r\n\r\n'
-            )
-            writer.write(headers + body)
-            await writer.drain()
-            return
-        if ready.is_set():
-            body = b'ok\n'
-            status = b'HTTP/1.1 200 OK\r\n'
-        else:
-            body = b'starting\n'
-            status = b'HTTP/1.1 503 Service Unavailable\r\n'
-        headers = (
-            status
-            + b'Content-Type: text/plain\r\n'
-            + f'Content-Length: {len(body)}\r\n'.encode('ascii')
-            + b'Connection: close\r\n\r\n'
-        )
-        writer.write(headers + body)
+        match (method, path):
+            case ('GET', '/livez'):
+                response = http_response(200, 'ok\n')
+            case ('GET', '/readyz') if ready.is_set():
+                response = http_response(200, 'ok\n')
+            case ('GET', '/readyz'):
+                response = http_response(503, 'starting\n')
+            case ('GET', _):
+                response = http_response(404, 'not found\n')
+            case _:
+                response = http_response(405, '')
+        writer.write(response)
         await writer.drain()
+        return
     finally:
         writer.close()
         with contextlib.suppress(Exception):
