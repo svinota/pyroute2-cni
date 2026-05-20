@@ -7,9 +7,9 @@ class PluginProtocol(Protocol):
     async def resync(self) -> None: ...
 
     async def cleanup(
-        self, data: dict[str, Any], request: CNIRequest, p9server: Any
+        self, data: dict[str, Any], request: CNIRequest
     ) -> dict[str, Any]: ...
 
     async def setup(
-        self, data: dict[str, Any], request: CNIRequest, p9server: Any
+        self, data: dict[str, Any], request: CNIRequest
     ) -> dict[str, Any]: ...

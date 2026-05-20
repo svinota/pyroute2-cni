@@ -13,7 +13,7 @@ from string import Template
 from typing import Any, Callable
 
 from kubernetes.client.exceptions import ApiException
-from pyroute2 import AsyncIPRoute, NetlinkError, Plan9ServerSocket
+from pyroute2 import AsyncIPRoute, NetlinkError
 from sdn_fixtures.main import ensure  # type: ignore
 
 from kubernetes import client as k8s_client
@@ -300,7 +300,6 @@ class Plugin(PluginProtocol):
         namespace: str,
         request: CNIRequest | None = None,
         mask: int = 0xFFFFFFFF,
-        p9server: Plan9ServerSocket | None = None,
     ) -> SegmentInfo:
         config = self.config
         enable_srv6 = config.getboolean(
@@ -330,18 +329,6 @@ class Plugin(PluginProtocol):
         template = Template(config['topology']['template'])
         topology = template.substitute(asdict(info))
         logging.info(f'topology\n{topology}')
-        if (
-            request is not None
-            and p9server is not None
-            and pod_name is not None
-        ):
-            base: str = f'segments/{namespace}'
-            try:
-                p9server.filesystem.walk(base)
-            except KeyError:
-                p9server.filesystem.create(base, qtype=0x80)
-            with p9server.filesystem.create(f'{base}/{pod_name}.dot') as i:
-                i.data.write(topology.encode('utf-8'))
         attempts = max_attempts
         while attempts:
             attempts -= 1
@@ -869,10 +856,7 @@ class Plugin(PluginProtocol):
             worker.join(timeout=5)
 
     async def cleanup(
-        self,
-        data: dict[str, Any],
-        request: CNIRequest,
-        p9server: Plan9ServerSocket,
+        self, data: dict[str, Any], request: CNIRequest
     ) -> dict[str, Any]:
         '''
         Run network cleanup
@@ -890,10 +874,7 @@ class Plugin(PluginProtocol):
         return data
 
     async def setup(
-        self,
-        data: dict[str, Any],
-        request: CNIRequest,
-        p9server: Plan9ServerSocket,
+        self, data: dict[str, Any], request: CNIRequest
     ) -> dict[str, Any]:
         '''
         Run network setup
@@ -902,7 +883,7 @@ class Plugin(PluginProtocol):
         logging.info(f'request {request.rid} ready')
 
         namespace = get_pod_tag(request, 'namespace', default='default')
-        info = await self.ensure_segment(namespace, request, p9server=p9server)
+        info = await self.ensure_segment(namespace, request)
         await self.ensure_system_firewall(namespace)
 
         data['interfaces'] = [

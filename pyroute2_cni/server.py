@@ -6,7 +6,6 @@ import os
 import signal
 import socket
 import struct
-import sys
 import uuid
 from configparser import ConfigParser
 from functools import partial
@@ -14,14 +13,13 @@ from importlib.metadata import entry_points
 from typing import Any, Callable, Optional
 
 from pydantic import ValidationError
-from pyroute2 import Plan9ServerSocket
 
 from pyroute2_cni.address_pool import AddressPool
 from pyroute2_cni.kubernetes import get_node_ip
 from pyroute2_cni.protocols import PluginProtocol
 from pyroute2_cni.request import CNIRequest
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.DEBUG)
 
 READINESS_HOST = '0.0.0.0'
 READINESS_PORT = 24800
@@ -37,13 +35,11 @@ class CNIProtocol(asyncio.Protocol):
         registry: dict[str, CNIRequest],
         config: ConfigParser,
         plugin: PluginProtocol,
-        p9server: Plan9ServerSocket,
     ):
         self.on_con_lost = on_con_lost
         self.registry = registry
         self.config = config
         self.plugin = plugin
-        self.p9server = p9server
 
     def error(self, spec: str):
         return self.transport.write(spec.encode('utf-8'))
@@ -80,10 +76,7 @@ class CNIProtocol(asyncio.Protocol):
                 loop = asyncio.get_event_loop()
                 loop.create_task(
                     self.cni_response_task(
-                        self.plugin.setup,
-                        response,
-                        self.registry[request.rid],
-                        self.p9server,
+                        self.plugin.setup, response, self.registry[request.rid]
                     )
                 )
             elif command == 'DEL':
@@ -94,7 +87,6 @@ class CNIProtocol(asyncio.Protocol):
                         self.plugin.cleanup,
                         response,
                         self.registry[request.rid],
-                        self.p9server,
                     )
                 )
             else:
@@ -111,13 +103,9 @@ class CNIProtocol(asyncio.Protocol):
         return self.transport.write(json.dumps(data).encode('utf-8'))
 
     async def cni_response_task(
-        self,
-        func: Callable,
-        data: dict[str, Any],
-        request: CNIRequest,
-        p9server: Plan9ServerSocket,
+        self, func: Callable, data: dict[str, Any], request: CNIRequest
     ) -> None:
-        self.cni_response(await func(data, request, p9server))
+        self.cni_response(await func(data, request))
 
 
 class CNIServer:
@@ -129,7 +117,6 @@ class CNIServer:
         config: ConfigParser,
         registry: dict[str, CNIRequest],
         plugin: PluginProtocol,
-        p9server: Plan9ServerSocket,
         use_event_loop: Optional[asyncio.AbstractEventLoop] = None,
     ):
         self.event_loop = use_event_loop or asyncio.get_event_loop()
@@ -138,16 +125,11 @@ class CNIServer:
         self.registry = registry
         self.config = config
         self.plugin = plugin
-        self.p9server = p9server
 
     async def setup_endpoint(self):
         self.endpoint = await self.event_loop.create_unix_server(
             lambda: CNIProtocol(
-                self.connection_lost,
-                self.registry,
-                self.config,
-                self.plugin,
-                self.p9server,
+                self.connection_lost, self.registry, self.config, self.plugin
             ),
             path=self.path,
         )
@@ -314,23 +296,8 @@ async def main(config: ConfigParser) -> None:
     except FileNotFoundError as e:
         logging.error('FRR reload socket never appeared: %s', e)
         raise SystemExit(1)
-    p9_server = Plan9ServerSocket(
-        address=(config['network']['ipaddr'], int(config['plan9']['port']))
-    )
-    p9_server.filesystem.create('segments', qtype=0x80)
-    cni_server = CNIServer(config, registry, plugin, p9_server)
+    cni_server = CNIServer(config, registry, plugin)
     await cni_server.setup_endpoint()
-    with p9_server.filesystem.create('registry') as i:
-        i.metadata.call_on_read = True
-        i.register_function(
-            lambda: registry,
-            loader=lambda x: {},
-            dumper=lambda x: json.dumps(
-                {k: v.model_dump() for k, v in x.items()}
-            ).encode('utf-8'),
-        )
-
-    p9_task = await p9_server.async_run()
     namespace_watch_queue: asyncio.Queue[
         tuple[str, str, dict[str, str]] | None
     ] = asyncio.Queue()
@@ -341,12 +308,10 @@ async def main(config: ConfigParser) -> None:
     for signal_num in (signal.SIGTERM, signal.SIGINT, signal.SIGQUIT):
         loop.add_signal_handler(
             signal_num,
-            partial(
-                handle_signal, [p9_task, namespace_watch_task], signal_num
-            ),
+            partial(handle_signal, [namespace_watch_task], signal_num),
         )
     try:
-        await p9_task
+        await namespace_watch_task
     finally:
         namespace_watch_task.cancel()
         readiness_server.close()
@@ -377,9 +342,6 @@ def run():
     config = ConfigParser()
     config.read('config/server.ini')
     config_set_defaults(config)
-
-    if len(sys.argv) > 1:
-        config['plan9']['port'] = sys.argv[1]
     try:
         asyncio.run(main(config=config))
     except asyncio.exceptions.CancelledError:
