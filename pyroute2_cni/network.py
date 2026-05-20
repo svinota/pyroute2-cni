@@ -303,6 +303,9 @@ class Plugin(PluginProtocol):
         p9server: Plan9ServerSocket | None = None,
     ) -> SegmentInfo:
         config = self.config
+        enable_srv6 = config.getboolean(
+            'default', 'enable_srv6', fallback=False
+        )
         pod_uid: str | None = None
         pod_name: str | None = None
         net_ns_fd: int = 0
@@ -377,13 +380,15 @@ class Plugin(PluginProtocol):
                     continue
                 raise
 
-            set_sysctl(
-                {
-                    'net.ipv6.conf.all.seg6_enabled': 1,
-                    f'net.ipv6.conf.{info.host_ifname}.seg6_enabled': 1,
-                    'net.ipv4.conf.all.rp_filter': 0,  # asymmetric SRv6
-                }
-            )
+            sysctls = {'net.ipv4.conf.all.rp_filter': 0}
+            if enable_srv6:
+                sysctls.update(
+                    {
+                        'net.ipv6.conf.all.seg6_enabled': 1,
+                        f'net.ipv6.conf.{info.host_ifname}.seg6_enabled': 1,
+                    }
+                )
+            set_sysctl(sysctls)
             if has_vrf:
                 set_sysctl(
                     {
@@ -402,7 +407,7 @@ class Plugin(PluginProtocol):
             attempts -= 1
             try:
                 async with AsyncIPRoute() as ipr:
-                    if info.vrf_announce and info.srv6endDT4:
+                    if enable_srv6 and info.vrf_announce and info.srv6endDT4:
                         await ipr.route(
                             'replace',
                             dst=info.srv6endDT4,
