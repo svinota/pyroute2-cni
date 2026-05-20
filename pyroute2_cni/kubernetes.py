@@ -1,9 +1,21 @@
 import logging
+from dataclasses import dataclass
 from typing import Any
 
 from kubernetes import client as k8s_client
 from kubernetes import config as k8s_config
 from pyroute2_cni.request import CNIRequest
+
+
+@dataclass
+class K8SMetadataMock:
+    labels: dict[str, str] = {}
+    annotations: dict[str, str] = {}
+
+
+@dataclass
+class K8SMock:
+    metadata: K8SMetadataMock = K8SMetadataMock()
 
 
 def _load_incluster_config() -> None:
@@ -24,7 +36,7 @@ def _read_k8s_object(kind: str, name: str) -> Any:
             obj = v1.read_node(name=name)
     except Exception as e:
         logging.error(f'error R reading {kind} {name}: {e}')
-        return {}
+        return K8SMock()
     return obj
 
 
