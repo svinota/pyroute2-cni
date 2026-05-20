@@ -199,6 +199,7 @@ class FRRManager:
             self.render(vrfs, peer_ips), encoding='utf-8'
         )
         deadline = time.monotonic() + 120
+        read_timeout = 30
         while True:
             try:
                 reader, writer = await asyncio.open_unix_connection(
@@ -216,8 +217,13 @@ class FRRManager:
             try:
                 writer.write(b'restart\n')
                 await writer.drain()
-                await reader.read()
+                await asyncio.wait_for(reader.read(), timeout=read_timeout)
                 return
+            except asyncio.TimeoutError as e:
+                raise TimeoutError(
+                    f'FRR reload timed out after {read_timeout}s on '
+                    f'{self.reload_sock}'
+                ) from e
             finally:
                 writer.close()
                 await writer.wait_closed()
