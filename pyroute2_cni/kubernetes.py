@@ -1,6 +1,5 @@
 import logging
-from dataclasses import dataclass
-from dataclasses import field
+from dataclasses import dataclass, field
 from typing import Any
 
 from kubernetes import client as k8s_client

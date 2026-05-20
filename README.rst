@@ -164,3 +164,6 @@ Configuration
         [readiness]
         host = 0.0.0.0
         port = 24800
+
+        [logging]
+        level = INFO

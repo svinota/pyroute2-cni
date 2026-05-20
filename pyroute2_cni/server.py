@@ -19,10 +19,9 @@ from pyroute2_cni.kubernetes import get_node_ip
 from pyroute2_cni.protocols import PluginProtocol
 from pyroute2_cni.request import CNIRequest
 
-logging.basicConfig(level=logging.DEBUG)
-
 READINESS_HOST = '0.0.0.0'
 READINESS_PORT = 24800
+DEFAULT_LOG_LEVEL = 'INFO'
 
 
 class CNIProtocol(asyncio.Protocol):
@@ -329,6 +328,8 @@ def config_set_defaults(config: ConfigParser) -> None:
         config['network'] = {}
     if 'readiness' not in config:
         config['readiness'] = {}
+    if 'logging' not in config:
+        config['logging'] = {}
     if 'default' not in config:
         config['default'] = {}
     config['network']['node_name'] = os.environ['NODE_NAME']
@@ -336,12 +337,20 @@ def config_set_defaults(config: ConfigParser) -> None:
     config['network']['ipaddr'] = node_ip
     config['readiness'].setdefault('host', READINESS_HOST)
     config['readiness'].setdefault('port', str(READINESS_PORT))
+    config['logging'].setdefault('level', DEFAULT_LOG_LEVEL)
 
 
 def run():
     config = ConfigParser()
     config.read('config/server.ini')
     config_set_defaults(config)
+    logging.basicConfig(
+        level=getattr(
+            logging,
+            config.get('logging', 'level', fallback=DEFAULT_LOG_LEVEL).upper(),
+            logging.INFO,
+        )
+    )
     try:
         asyncio.run(main(config=config))
     except asyncio.exceptions.CancelledError:
