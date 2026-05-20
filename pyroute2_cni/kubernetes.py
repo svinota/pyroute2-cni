@@ -1,5 +1,6 @@
 import logging
 from dataclasses import dataclass
+from dataclasses import field
 from typing import Any
 
 from kubernetes import client as k8s_client
@@ -9,13 +10,13 @@ from pyroute2_cni.request import CNIRequest
 
 @dataclass
 class K8SMetadataMock:
-    labels: dict[str, str] = {}
-    annotations: dict[str, str] = {}
+    labels: dict[str, str] = field(default_factory=dict)
+    annotations: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
 class K8SMock:
-    metadata: K8SMetadataMock = K8SMetadataMock()
+    metadata: K8SMetadataMock = field(default_factory=K8SMetadataMock)
 
 
 def _load_incluster_config() -> None:
