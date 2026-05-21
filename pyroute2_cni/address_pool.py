@@ -1,4 +1,7 @@
+import asyncio
 import logging
+import random
+import re
 import struct
 from configparser import ConfigParser
 from dataclasses import dataclass
@@ -13,6 +16,11 @@ from kubernetes import config as k8s_config  # type: ignore[attr-defined]
 IPBLOCK_GROUP = 'ipam.pyroute2.org'
 IPBLOCK_VERSION = 'v1alpha1'
 IPBLOCK_PLURAL = 'ipblocks'
+IPBLOCK_NAME_RE = re.compile(r'^vrf\d+-vx\d+-\d+-\d+-\d+-\d+-\d+-\d+-\d+$')
+
+
+class IPBlockConflict(RuntimeError):
+    pass
 
 
 @dataclass
@@ -64,15 +72,8 @@ class AddressPool:
     def _block_name(
         self, cidr: IPv4Network, vrf_table: int, vxlan_id: int
     ) -> str:
-        safe_node = ''.join(
-            x if x.isalnum() or x == '-' else '-'
-            for x in self.node_name.lower()
-        )
         safe_cidr = str(cidr.network_address).replace('.', '-')
-        return (
-            f'{safe_node}-vrf{vrf_table}-vx{vxlan_id}-'
-            f'{safe_cidr}-{cidr.prefixlen}'
-        )
+        return f'vrf{vrf_table}-vx{vxlan_id}-{safe_cidr}-{cidr.prefixlen}'
 
     def _block_capacity(self, cidr: IPv4Network) -> int:
         return max(cidr.num_addresses - 2, 0)
@@ -81,7 +82,15 @@ class AddressPool:
         response = self.k8s_custom_api.list_cluster_custom_object(
             IPBLOCK_GROUP, IPBLOCK_VERSION, IPBLOCK_PLURAL
         )
-        return response.get('items', [])
+        result: list[dict[str, Any]] = []
+        for item in response.get('items', []):
+            metadata = item.get('metadata') or {}
+            name = metadata.get('name') or item.get('name') or ''
+            if not IPBLOCK_NAME_RE.match(name):
+                logging.warning('skipping legacy IPBlock %s', name)
+                continue
+            result.append(item)
+        return result
 
     def _parse_block(self, item: dict[str, Any]) -> dict[str, Any]:
         metadata = item.get('metadata') or {}
@@ -117,20 +126,17 @@ class AddressPool:
             'creation_timestamp': metadata.get('creationTimestamp', ''),
         }
 
-    def _block_items(
+    def _cluster_block_items(
         self, network: IPv4Network, vrf_table: int, vxlan_id: int
     ) -> list[dict[str, Any]]:
         '''
-        List normalized IPBlocks for this node and domain within `network`.
+        List normalized IPBlocks for this domain within `network`.
 
-        Only blocks owned by this node, matching `vrf_table` / `vxlan_id`,
-        and contained in `network` are returned.
+        Claims are cluster-wide; node name is informational only.
         '''
         result: list[dict[str, Any]] = []
         for item in self._raw_block_items():
             block = self._parse_block(item)
-            if block['node_name'] != self.node_name:
-                continue
             if (
                 block['vrf_table'] != vrf_table
                 or block['vxlan_id'] != vxlan_id
@@ -187,7 +193,13 @@ class AddressPool:
         gateway_ip: str | None = None,
     ) -> int:
         removed = 0
-        for item in self._block_items(network, vrf_table, vxlan_id):
+        for item in self._node_block_items():
+            if (
+                item['vrf_table'] != vrf_table
+                or item['vxlan_id'] != vxlan_id
+                or not item['cidr'].subnet_of(network)
+            ):
+                continue
             logging.info(f'Block item: {item}')
             allocations = dict(item['allocations'])
             for ip, ref in tuple(allocations.items()):
@@ -213,7 +225,13 @@ class AddressPool:
         live_pod_ips: dict[str, str],
     ) -> int:
         restored = 0
-        for item in self._block_items(network, vrf_table, vxlan_id):
+        for item in self._node_block_items():
+            if (
+                item['vrf_table'] != vrf_table
+                or item['vxlan_id'] != vxlan_id
+                or not item['cidr'].subnet_of(network)
+            ):
+                continue
             allocations = dict(item['allocations'])
             for pod_uid, pod_ip in live_pod_ips.items():
                 if pod_ip in allocations:
@@ -347,8 +365,14 @@ class AddressPool:
             return self._parse_block(created)
         except ApiException as err:
             if err.status == 409:
-                return self._get_block_by_cidr(
-                    network, cidr, vrf_table, vxlan_id
+                for item in self._cluster_block_items(
+                    network, vrf_table, vxlan_id
+                ):
+                    if item['cidr'] == cidr:
+                        return item
+                raise IPBlockConflict(
+                    f'IPBlock {cidr} already exists for '
+                    f'{vrf_table}/{vxlan_id}'
                 )
             raise
 
@@ -359,7 +383,7 @@ class AddressPool:
         vrf_table: int,
         vxlan_id: int,
     ) -> dict[str, Any]:
-        for item in self._block_items(network, vrf_table, vxlan_id):
+        for item in self._cluster_block_items(network, vrf_table, vxlan_id):
             if item['cidr'] == cidr:
                 return item
         raise KeyError(f'IPBlock {cidr} not found')
@@ -422,7 +446,7 @@ class AddressPool:
         vxlan_id: int,
     ) -> dict[str, Any]:
         block_cidr = self._block_for_ip(network, ip)
-        for item in self._block_items(network, vrf_table, vxlan_id):
+        for item in self._cluster_block_items(network, vrf_table, vxlan_id):
             if item['cidr'] == block_cidr:
                 return item
         return self._create_block(network, block_cidr, vrf_table, vxlan_id)
@@ -434,7 +458,7 @@ class AddressPool:
         vxlan_id: int,
         ip: IPv4Address | None = None,
     ) -> dict[str, Any]:
-        blocks = self._block_items(network, vrf_table, vxlan_id)
+        blocks = self._cluster_block_items(network, vrf_table, vxlan_id)
         if ip is not None:
             block_cidr = self._block_for_ip(network, ip)
             for item in blocks:
@@ -512,16 +536,32 @@ class AddressPool:
         if ip is None:
             ip = self._find_free_ip(block['cidr'], allocations)
             if ip is None:
-                block = self._create_block(
-                    network,
-                    self._next_free_block(network, vrf_table, vxlan_id),
-                    vrf_table,
-                    vxlan_id,
-                )
-                allocations = dict(block['allocations'])
-                ip = self._find_free_ip(block['cidr'], allocations)
-                if ip is None:
-                    raise RuntimeError(f'no free IPs in {block["cidr"]}')
+                max_attempts = 5
+                for attempt in range(max_attempts):
+                    try:
+                        block = self._create_block(
+                            network,
+                            self._next_free_block(
+                                network, vrf_table, vxlan_id
+                            ),
+                            vrf_table,
+                            vxlan_id,
+                        )
+                        allocations = dict(block['allocations'])
+                        ip = self._find_free_ip(block['cidr'], allocations)
+                        if ip is None:
+                            raise RuntimeError(
+                                f'no free IPs in {block["cidr"]}'
+                            )
+                        break
+                    except IPBlockConflict:
+                        if attempt + 1 >= max_attempts:
+                            raise
+                        await asyncio.sleep(0.1 + random.random() * 0.4)
+                        continue
+
+        if ip is None:
+            raise RuntimeError('no free IPs')
 
         if ip.compressed in allocations:
             existing = allocations[ip.compressed]
