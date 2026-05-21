@@ -652,7 +652,7 @@ class Plugin(PluginProtocol):
                 if bridge_addr:
                     gateway_ip = bridge_addr[0].get('address')
                     try:
-                        await self.address_pool.allocate(
+                        await self.address_pool.restore(
                             network=network,
                             vrf_table=vrf_table,
                             vxlan_id=vxlan_id,

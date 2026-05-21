@@ -610,3 +610,56 @@ class AddressPool:
             is_gateway,
             ref,
         )
+
+    async def restore(
+        self,
+        network: IPv4Network,
+        vrf_table: int | None = None,
+        vxlan_id: int | None = None,
+        is_gateway: bool = False,
+        pod_uid: str = '',
+        address: int = -1,
+    ) -> str:
+        vrf_table, vxlan_id = self._resolve_domain(vrf_table, vxlan_id)
+        ref = pod_uid or ('gateway' if is_gateway else '')
+        ip = self._ip_for_address(network, address) if address >= 0 else None
+        block = self._select_block(network, vrf_table, vxlan_id, ip)
+        allocations = dict(block['allocations'])
+
+        if ip is None:
+            ip = self._find_free_ip(block['cidr'], allocations)
+            if ip is None:
+                raise RuntimeError('no free IPs')
+
+        if ip.compressed in allocations:
+            existing = allocations[ip.compressed]
+            if existing and existing != ref:
+                logging.warning(
+                    'reconciling stale allocation for %s: %s -> %s',
+                    ip,
+                    existing,
+                    ref,
+                )
+                allocations[ip.compressed] = ref
+                self._patch_block_status(block, allocations)
+            return self.register_address(
+                network.compressed,
+                self.inet_aton(network, ip.compressed),
+                vrf_table,
+                vxlan_id,
+                self.node_name,
+                is_gateway,
+                ref,
+            )
+
+        allocations[ip.compressed] = ref
+        self._patch_block_status(block, allocations)
+        return self.register_address(
+            network.compressed,
+            self.inet_aton(network, ip.compressed),
+            vrf_table,
+            vxlan_id,
+            self.node_name,
+            is_gateway,
+            ref,
+        )
