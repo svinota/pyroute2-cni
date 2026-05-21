@@ -52,6 +52,7 @@ class SegmentInfo:
     vrf_ifname: str = ''
     br_ifname: str = ''
     vxlan_ifname: str = ''
+    vxlan_local: str = ''
     veth_mac: str = ''
     pod_name: str = ''
     srv6end: str = ''
@@ -444,7 +445,8 @@ class Plugin(PluginProtocol):
         pod_name: None | str = None,
         net_ns_fd: int = 0,
     ) -> SegmentInfo:
-        annotations = get_namespace_annotations(namespace)
+        namespace_annotations = get_namespace_annotations(namespace)
+        node_annotations = get_node_annotations(config['network']['node_name'])
         async with AsyncIPRoute() as ipr_main:
             if 'host_if' in config['network']:
                 host_ifname = config['network']['host_if']
@@ -470,24 +472,27 @@ class Plugin(PluginProtocol):
                 ].get('ifname')
             host_order = host_src.split('.')[-1]
             info = SegmentInfo(
-                prefix=annotations.get(
+                prefix=namespace_annotations.get(
                     'pyroute2.org/prefix', config['default']['prefix']
                 ),
                 prefixlen=int(
-                    annotations.get(
+                    namespace_annotations.get(
                         'pyroute2.org/prefixlen',
                         config['default']['prefixlen'],
                     )
                 ),
                 vrf_table=int(
-                    annotations.get(
+                    namespace_annotations.get(
                         'pyroute2.org/vrf', config['default']['vrf']
                     )
                 ),
                 vxlan_id=int(
-                    annotations.get(
+                    namespace_annotations.get(
                         'pyroute2.org/vxlan', config['default']['vxlan']
                     )
+                ),
+                vxlan_local=node_annotations.get(
+                    'pyroute2.org/vxlan-local', config['network']['ipaddr']
                 ),
                 host_link=host_link,
                 host_ifname=host_ifname,
@@ -497,19 +502,19 @@ class Plugin(PluginProtocol):
                 host_ipaddr=config['network']['ipaddr'],
             )
             srv6end = Template(
-                annotations.get(
+                namespace_annotations.get(
                     'pyroute2.org/srv6end', config['default']['srv6end']
                 )
             )
             info.srv6end = srv6end.substitute(asdict(info))
             srv6endDT4 = Template(
-                annotations.get(
+                namespace_annotations.get(
                     'pyroute2.org/srv6endDT4', config['default']['srv6endDT4']
                 )
             )
             info.srv6endDT4 = srv6endDT4.substitute(asdict(info))
             srv6local = Template(
-                annotations.get(
+                namespace_annotations.get(
                     'pyroute2.org/srv6local', config['default']['srv6local']
                 )
             )
