@@ -102,7 +102,7 @@ def test_namespace_create_delete(env_namespace):
         assert ns.metadata is not None
         assert ns.metadata.annotations is not None
         assert ns.metadata.annotations.get('pyroute2.org/vrf') == '5000'
-        assert ns.metadata.annotations.get('pyroute2.org/vxlan') == '2000'
+        assert ns.metadata.annotations.get('pyroute2.org/l2vni') == '2000'
     finally:
         pass
 
@@ -186,7 +186,7 @@ def _create_test_namespace(name: str) -> client.V1Namespace:
             name=name,
             annotations={
                 'pyroute2.org/vrf': '5000',
-                'pyroute2.org/vxlan': '2000',
+                'pyroute2.org/l2vni': '2000',
                 'pyroute2.org/prefix': '10.2.3.0',
                 'pyroute2.org/prefixlen': '24',
             },

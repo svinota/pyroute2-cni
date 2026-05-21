@@ -26,7 +26,7 @@ class IPBlockConflict(RuntimeError):
 @dataclass
 class AddressMetadata:
     vrf_table: int
-    vxlan_id: int
+    l2vni: int
     node: str
     pod_uid: str
     is_gateway: bool
@@ -61,19 +61,19 @@ class AddressPool:
         )
 
     def _resolve_domain(
-        self, vrf_table: int | None = None, vxlan_id: int | None = None
+        self, vrf_table: int | None = None, l2vni: int | None = None
     ) -> tuple[int, int]:
         default_vrf, default_vxlan = self._domain_defaults()
         return (
             default_vrf if vrf_table is None else int(vrf_table),
-            default_vxlan if vxlan_id is None else int(vxlan_id),
+            default_vxlan if l2vni is None else int(l2vni),
         )
 
     def _block_name(
-        self, cidr: IPv4Network, vrf_table: int, vxlan_id: int
+        self, cidr: IPv4Network, vrf_table: int, l2vni: int
     ) -> str:
         safe_cidr = str(cidr.network_address).replace('.', '-')
-        return f'vrf{vrf_table}-vx{vxlan_id}-{safe_cidr}-{cidr.prefixlen}'
+        return f'vrf{vrf_table}-vx{l2vni}-{safe_cidr}-{cidr.prefixlen}'
 
     def _block_capacity(self, cidr: IPv4Network) -> int:
         return max(cidr.num_addresses - 2, 0)
@@ -108,14 +108,14 @@ class AddressPool:
         allocated = status.get('allocated')
         if allocated is None:
             allocated = len(allocations)
-        vrf_table, vxlan_id = self._resolve_domain(
+        vrf_table, l2vni = self._resolve_domain(
             spec.get('vrfTable'), spec.get('vxlanId')
         )
         return {
             'name': name,
             'node_name': spec.get('nodeName') or '',
             'vrf_table': vrf_table,
-            'vxlan_id': vxlan_id,
+            'l2vni': l2vni,
             'cidr': block,
             'allocations': allocations,
             'allocated': int(allocated),
@@ -127,7 +127,7 @@ class AddressPool:
         }
 
     def _cluster_block_items(
-        self, network: IPv4Network, vrf_table: int, vxlan_id: int
+        self, network: IPv4Network, vrf_table: int, l2vni: int
     ) -> list[dict[str, Any]]:
         '''
         List normalized IPBlocks for this domain within `network`.
@@ -137,10 +137,7 @@ class AddressPool:
         result: list[dict[str, Any]] = []
         for item in self._raw_block_items():
             block = self._parse_block(item)
-            if (
-                block['vrf_table'] != vrf_table
-                or block['vxlan_id'] != vxlan_id
-            ):
+            if block['vrf_table'] != vrf_table or block['l2vni'] != l2vni:
                 continue
             if block['cidr'].subnet_of(network):
                 result.append(block)
@@ -150,7 +147,7 @@ class AddressPool:
         return result
 
     def _all_block_cidrs(
-        self, network: IPv4Network, vrf_table: int, vxlan_id: int
+        self, network: IPv4Network, vrf_table: int, l2vni: int
     ) -> set[IPv4Network]:
         response = self.k8s_custom_api.list_cluster_custom_object(
             IPBLOCK_GROUP, IPBLOCK_VERSION, IPBLOCK_PLURAL
@@ -163,7 +160,7 @@ class AddressPool:
                 continue
             item_vrf = int(spec.get('vrfTable', self._domain_defaults()[0]))
             item_vxlan = int(spec.get('vxlanId', self._domain_defaults()[1]))
-            if item_vrf != vrf_table or item_vxlan != vxlan_id:
+            if item_vrf != vrf_table or item_vxlan != l2vni:
                 continue
             block = IPv4Network(cidr)
             if block.subnet_of(network):
@@ -171,9 +168,9 @@ class AddressPool:
         return cidrs
 
     def block_cidrs(
-        self, network: IPv4Network, vrf_table: int, vxlan_id: int
+        self, network: IPv4Network, vrf_table: int, l2vni: int
     ) -> set[IPv4Network]:
-        return self._all_block_cidrs(network, vrf_table, vxlan_id)
+        return self._all_block_cidrs(network, vrf_table, l2vni)
 
     def _node_block_items(self) -> list[dict[str, Any]]:
         result: list[dict[str, Any]] = []
@@ -188,7 +185,7 @@ class AddressPool:
         self,
         network: IPv4Network,
         vrf_table: int,
-        vxlan_id: int,
+        l2vni: int,
         live_pod_ips: dict[str, str],
         gateway_ip: str | None = None,
     ) -> int:
@@ -196,7 +193,7 @@ class AddressPool:
         for item in self._node_block_items():
             if (
                 item['vrf_table'] != vrf_table
-                or item['vxlan_id'] != vxlan_id
+                or item['l2vni'] != l2vni
                 or not item['cidr'].subnet_of(network)
             ):
                 continue
@@ -228,14 +225,14 @@ class AddressPool:
         self,
         network: IPv4Network,
         vrf_table: int,
-        vxlan_id: int,
+        l2vni: int,
         live_pod_ips: dict[str, str],
     ) -> int:
         restored = 0
         for item in self._node_block_items():
             if (
                 item['vrf_table'] != vrf_table
-                or item['vxlan_id'] != vxlan_id
+                or item['l2vni'] != l2vni
                 or not item['cidr'].subnet_of(network)
             ):
                 continue
@@ -275,10 +272,10 @@ class AddressPool:
         live_domains.add(
             (
                 int(self.config['default']['vrf']),
-                int(self.config['default']['vxlan']),
+                int(self.config['default']['l2vni']),
             )
         )
-        default_vxlan = self._domain_defaults()[1]
+        default_l2vni = self._domain_defaults()[1]
         for ns in self.k8s_v1.list_namespace().items:
             metadata = ns.metadata
             if metadata is None:
@@ -287,17 +284,15 @@ class AddressPool:
             vrf_table = annotations.get('pyroute2.org/vrf')
             if vrf_table is None:
                 continue
-            vxlan_id = int(
-                annotations.get('pyroute2.org/vxlan', default_vxlan)
-            )
-            live_domains.add((int(vrf_table), vxlan_id))
+            l2vni = int(annotations.get('pyroute2.org/l2vni', default_l2vni))
+            live_domains.add((int(vrf_table), l2vni))
 
         orphaned_blocks: list[dict[str, Any]] = []
         empty_blocks_by_domain: dict[tuple[int, int], list[dict[str, Any]]] = (
             {}
         )
         for item in self._node_block_items():
-            domain = (item['vrf_table'], item['vxlan_id'])
+            domain = (item['vrf_table'], item['l2vni'])
             if domain not in live_domains:
                 orphaned_blocks.append(item)
                 continue
@@ -336,9 +331,9 @@ class AddressPool:
         return deletions
 
     def _next_free_block(
-        self, network: IPv4Network, vrf_table: int, vxlan_id: int
+        self, network: IPv4Network, vrf_table: int, l2vni: int
     ) -> IPv4Network:
-        used = self._all_block_cidrs(network, vrf_table, vxlan_id)
+        used = self._all_block_cidrs(network, vrf_table, l2vni)
         for block in network.subnets(new_prefix=self.block_prefixlen):
             if block not in used:
                 return block
@@ -349,24 +344,24 @@ class AddressPool:
         network: IPv4Network,
         cidr: IPv4Network,
         vrf_table: int,
-        vxlan_id: int,
+        l2vni: int,
     ) -> dict[str, Any]:
         body = {
             'apiVersion': f'{IPBLOCK_GROUP}/{IPBLOCK_VERSION}',
             'kind': 'IPBlock',
             'metadata': {
-                'name': self._block_name(cidr, vrf_table, vxlan_id),
+                'name': self._block_name(cidr, vrf_table, l2vni),
                 'labels': {
                     'pyroute2.org/node': self.node_name,
                     'pyroute2.org/vrf': str(vrf_table),
-                    'pyroute2.org/vxlan': str(vxlan_id),
+                    'pyroute2.org/l2vni': str(l2vni),
                 },
             },
             'spec': {
                 'cidr': cidr.compressed,
                 'nodeName': self.node_name,
                 'vrfTable': vrf_table,
-                'vxlanId': vxlan_id,
+                'vxlanId': l2vni,
             },
         }
         try:
@@ -380,13 +375,13 @@ class AddressPool:
         except ApiException as err:
             if err.status == 409:
                 for item in self._cluster_block_items(
-                    network, vrf_table, vxlan_id
+                    network, vrf_table, l2vni
                 ):
                     if item['cidr'] == cidr:
                         return item
                 raise IPBlockConflict(
                     f'IPBlock {cidr} already exists for '
-                    f'{vrf_table}/{vxlan_id}'
+                    f'{vrf_table}/{l2vni}'
                 )
             raise
 
@@ -395,9 +390,9 @@ class AddressPool:
         network: IPv4Network,
         cidr: IPv4Network,
         vrf_table: int,
-        vxlan_id: int,
+        l2vni: int,
     ) -> dict[str, Any]:
-        for item in self._cluster_block_items(network, vrf_table, vxlan_id):
+        for item in self._cluster_block_items(network, vrf_table, l2vni):
             if item['cidr'] == cidr:
                 return item
         raise KeyError(f'IPBlock {cidr} not found')
@@ -418,7 +413,7 @@ class AddressPool:
                 'cidr': cidr.compressed,
                 'nodeName': self.node_name,
                 'vrfTable': item['vrf_table'],
-                'vxlanId': item['vxlan_id'],
+                'vxlanId': item['l2vni'],
             },
             'status': {
                 'allocated': len(allocations),
@@ -453,26 +448,22 @@ class AddressPool:
         return block
 
     def _ensure_block_for_ip(
-        self,
-        network: IPv4Network,
-        ip: IPv4Address,
-        vrf_table: int,
-        vxlan_id: int,
+        self, network: IPv4Network, ip: IPv4Address, vrf_table: int, l2vni: int
     ) -> dict[str, Any]:
         block_cidr = self._block_for_ip(network, ip)
-        for item in self._cluster_block_items(network, vrf_table, vxlan_id):
+        for item in self._cluster_block_items(network, vrf_table, l2vni):
             if item['cidr'] == block_cidr:
                 return item
-        return self._create_block(network, block_cidr, vrf_table, vxlan_id)
+        return self._create_block(network, block_cidr, vrf_table, l2vni)
 
     def _select_block(
         self,
         network: IPv4Network,
         vrf_table: int,
-        vxlan_id: int,
+        l2vni: int,
         ip: IPv4Address | None = None,
     ) -> dict[str, Any]:
-        blocks = self._cluster_block_items(network, vrf_table, vxlan_id)
+        blocks = self._cluster_block_items(network, vrf_table, l2vni)
         if ip is not None:
             block_cidr = self._block_for_ip(network, ip)
             for item in blocks:
@@ -481,7 +472,7 @@ class AddressPool:
                     and item['node_name'] == self.node_name
                 ):
                     return item
-            return self._create_block(network, block_cidr, vrf_table, vxlan_id)
+            return self._create_block(network, block_cidr, vrf_table, l2vni)
 
         for item in blocks:
             if item['node_name'] != self.node_name:
@@ -494,9 +485,9 @@ class AddressPool:
 
         return self._create_block(
             network,
-            self._next_free_block(network, vrf_table, vxlan_id),
+            self._next_free_block(network, vrf_table, l2vni),
             vrf_table,
-            vxlan_id,
+            l2vni,
         )
 
     def inet_aton(self, network: IPv4Network, address: str) -> int:
@@ -516,7 +507,7 @@ class AddressPool:
                     continue
                 metadata = AddressMetadata(
                     item['vrf_table'],
-                    item['vxlan_id'],
+                    item['l2vni'],
                     self.node_name,
                     pod_uid,
                     False,
@@ -533,7 +524,7 @@ class AddressPool:
         network: str,
         address: int,
         vrf_table: int,
-        vxlan_id: int,
+        l2vni: int,
         node: str = '',
         is_gateway: bool = False,
         pod_uid: str = '',
@@ -544,15 +535,15 @@ class AddressPool:
         self,
         network: IPv4Network,
         vrf_table: int | None = None,
-        vxlan_id: int | None = None,
+        l2vni: int | None = None,
         is_gateway: bool = False,
         pod_uid: str = '',
         address: int = -1,
     ) -> str:
-        vrf_table, vxlan_id = self._resolve_domain(vrf_table, vxlan_id)
+        vrf_table, l2vni = self._resolve_domain(vrf_table, l2vni)
         ref = pod_uid or ('gateway' if is_gateway else '')
         ip = self._ip_for_address(network, address) if address >= 0 else None
-        block = self._select_block(network, vrf_table, vxlan_id, ip)
+        block = self._select_block(network, vrf_table, l2vni, ip)
         allocations = dict(block['allocations'])
 
         if ip is None:
@@ -563,11 +554,9 @@ class AddressPool:
                     try:
                         block = self._create_block(
                             network,
-                            self._next_free_block(
-                                network, vrf_table, vxlan_id
-                            ),
+                            self._next_free_block(network, vrf_table, l2vni),
                             vrf_table,
-                            vxlan_id,
+                            l2vni,
                         )
                         allocations = dict(block['allocations'])
                         ip = self._find_free_ip(block['cidr'], allocations)
@@ -593,7 +582,7 @@ class AddressPool:
                 network.compressed,
                 self.inet_aton(network, ip.compressed),
                 vrf_table,
-                vxlan_id,
+                l2vni,
                 self.node_name,
                 is_gateway,
                 ref,
@@ -605,7 +594,7 @@ class AddressPool:
             network.compressed,
             self.inet_aton(network, ip.compressed),
             vrf_table,
-            vxlan_id,
+            l2vni,
             self.node_name,
             is_gateway,
             ref,
@@ -615,15 +604,15 @@ class AddressPool:
         self,
         network: IPv4Network,
         vrf_table: int | None = None,
-        vxlan_id: int | None = None,
+        l2vni: int | None = None,
         is_gateway: bool = False,
         pod_uid: str = '',
         address: int = -1,
     ) -> str:
-        vrf_table, vxlan_id = self._resolve_domain(vrf_table, vxlan_id)
+        vrf_table, l2vni = self._resolve_domain(vrf_table, l2vni)
         ref = pod_uid or ('gateway' if is_gateway else '')
         ip = self._ip_for_address(network, address) if address >= 0 else None
-        block = self._select_block(network, vrf_table, vxlan_id, ip)
+        block = self._select_block(network, vrf_table, l2vni, ip)
         allocations = dict(block['allocations'])
 
         if ip is None:
@@ -646,7 +635,7 @@ class AddressPool:
                 network.compressed,
                 self.inet_aton(network, ip.compressed),
                 vrf_table,
-                vxlan_id,
+                l2vni,
                 self.node_name,
                 is_gateway,
                 ref,
@@ -658,7 +647,7 @@ class AddressPool:
             network.compressed,
             self.inet_aton(network, ip.compressed),
             vrf_table,
-            vxlan_id,
+            l2vni,
             self.node_name,
             is_gateway,
             ref,

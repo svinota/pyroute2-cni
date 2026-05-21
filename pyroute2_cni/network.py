@@ -40,7 +40,7 @@ class SegmentInfo:
     prefix: str
     prefixlen: int
     vrf_table: int
-    vxlan_id: int
+    l2vni: int
     host_link: int
     host_ifname: str
     host_order: int
@@ -65,7 +65,7 @@ class SegmentInfo:
     def __post_init__(self):
         self.vrf_ifname = f'vrf-{self.vrf_table}'
         self.br_ifname = f'br-{self.vrf_table}'
-        self.vxlan_ifname = f'vxlan-{self.vxlan_id}'
+        self.vxlan_ifname = f'vxlan-{self.l2vni}'
 
 
 @dataclass(frozen=True)
@@ -77,7 +77,7 @@ class VRFEntry:
 @dataclass
 class NamespaceDomain:
     vrf: int
-    vxlan: int
+    l2vni: int
     namespaces: set[str]
     prefixes: list[IPv4Network]
 
@@ -88,13 +88,9 @@ class VRFRegistry:
         self._namespace_domains: dict[str, tuple[int, int]] = {}
 
     def add(
-        self,
-        vrf_table: int,
-        vxlan_id: int,
-        namespace: str,
-        prefix: IPv4Network,
+        self, vrf_table: int, l2vni: int, namespace: str, prefix: IPv4Network
     ) -> bool:
-        key = (vrf_table, vxlan_id)
+        key = (vrf_table, l2vni)
         existing_key = self._namespace_domains.get(namespace)
         if existing_key is not None and existing_key != key:
             raise ValueError(
@@ -103,7 +99,7 @@ class VRFRegistry:
         domain = self._vrfs.get(key)
         if domain is None:
             domain = NamespaceDomain(
-                vrf=vrf_table, vxlan=vxlan_id, namespaces=set(), prefixes=[]
+                vrf=vrf_table, l2vni=l2vni, namespaces=set(), prefixes=[]
             )
             self._vrfs[key] = domain
         domain.namespaces.add(namespace)
@@ -112,8 +108,8 @@ class VRFRegistry:
             domain.prefixes.append(prefix)
         return len(domain.namespaces) == 1
 
-    def remove(self, vrf_table: int, vxlan_id: int, namespace: str) -> bool:
-        key = (vrf_table, vxlan_id)
+    def remove(self, vrf_table: int, l2vni: int, namespace: str) -> bool:
+        key = (vrf_table, l2vni)
         domain = self._vrfs.get(key)
         if domain is None:
             return False
@@ -124,12 +120,12 @@ class VRFRegistry:
         del self._vrfs[key]
         return True
 
-    def get(self, vrf_table: int, vxlan_id: int) -> NamespaceDomain | None:
-        return self._vrfs.get((vrf_table, vxlan_id))
+    def get(self, vrf_table: int, l2vni: int) -> NamespaceDomain | None:
+        return self._vrfs.get((vrf_table, l2vni))
 
     def items(self) -> list[VRFEntry]:
         return [
-            VRFEntry(vrf=f'vrf-{d.vrf}', vni=d.vxlan)
+            VRFEntry(vrf=f'vrf-{d.vrf}', vni=d.l2vni)
             for d in self._vrfs.values()
         ]
 
@@ -326,7 +322,7 @@ class Plugin(PluginProtocol):
         )
         if self.frr is not None and self.vrfs.add(
             info.vrf_table,
-            info.vxlan_id,
+            info.l2vni,
             namespace,
             IPv4Network(f'{info.prefix}/{info.prefixlen}'),
         ):
@@ -353,7 +349,7 @@ class Plugin(PluginProtocol):
                         self.address_pool.block_cidrs(
                             IPv4Network(f'{info.prefix}/{info.prefixlen}'),
                             info.vrf_table,
-                            info.vxlan_id,
+                            info.l2vni,
                         ),
                         info.br_ifname,
                         table,
@@ -486,9 +482,9 @@ class Plugin(PluginProtocol):
                         'pyroute2.org/vrf', config['default']['vrf']
                     )
                 ),
-                vxlan_id=int(
+                l2vni=int(
                     namespace_annotations.get(
-                        'pyroute2.org/vxlan', config['default']['vxlan']
+                        'pyroute2.org/l2vni', config['default']['l2vni']
                     )
                 ),
                 vxlan_local=node_annotations.get(
@@ -526,7 +522,7 @@ class Plugin(PluginProtocol):
                 address = await self.address_pool.allocate(
                     network=network,
                     vrf_table=info.vrf_table,
-                    vxlan_id=info.vxlan_id,
+                    l2vni=info.l2vni,
                     pod_uid=pod_uid,
                 )
                 info.veth_ipaddr = f'{address}/{info.prefixlen}'
@@ -553,7 +549,7 @@ class Plugin(PluginProtocol):
                 address = await self.address_pool.allocate(
                     network=network,
                     vrf_table=info.vrf_table,
-                    vxlan_id=info.vxlan_id,
+                    l2vni=info.l2vni,
                     is_gateway=True,
                 )
                 info.br_ipaddr = f'{address}/{info.prefixlen}'
@@ -604,12 +600,12 @@ class Plugin(PluginProtocol):
         default_prefix = config['default']['prefix']
         default_prefixlen = config['default']['prefixlen']
         default_vrf = int(config['default']['vrf'])
-        default_vxlan = int(config['default']['vxlan'])
+        default_l2vni = int(config['default']['l2vni'])
         networks.add(
             (
                 IPv4Network(f'{default_prefix}/{default_prefixlen}'),
                 default_vrf,
-                default_vxlan,
+                default_l2vni,
             )
         )
         for ns in v1.list_namespace().items:
@@ -626,19 +622,17 @@ class Plugin(PluginProtocol):
                 annotations.get('pyroute2.org/prefixlen') or default_prefixlen
             )
             vrf_table_int = int(vrf_table_raw)
-            vxlan_id = int(
-                annotations.get('pyroute2.org/vxlan', default_vxlan)
-            )
+            l2vni = int(annotations.get('pyroute2.org/l2vni', default_l2vni))
             network = IPv4Network(f'{prefix}/{prefixlen}')
-            networks.add((network, vrf_table_int, vxlan_id))
-            self.vrfs.add(vrf_table_int, vxlan_id, metadata.name, network)
+            networks.add((network, vrf_table_int, l2vni))
+            self.vrfs.add(vrf_table_int, l2vni, metadata.name, network)
 
-        for network, vrf_table, vxlan_id in networks:
+        for network, vrf_table, l2vni in networks:
             br_ifname = f'br-{vrf_table}'
             gateway_ip = None
             async with AsyncIPRoute() as ipr:
                 block_cidrs = self.address_pool.block_cidrs(
-                    network, vrf_table, vxlan_id
+                    network, vrf_table, l2vni
                 )
                 br_idx = await ipr.link_lookup(ifname=br_ifname)
                 if not br_idx:
@@ -655,7 +649,7 @@ class Plugin(PluginProtocol):
                         await self.address_pool.restore(
                             network=network,
                             vrf_table=vrf_table,
-                            vxlan_id=vxlan_id,
+                            l2vni=l2vni,
                             is_gateway=True,
                             address=self.address_pool.inet_aton(
                                 network, gateway_ip
@@ -668,10 +662,10 @@ class Plugin(PluginProtocol):
                             err,
                         )
                     await self.address_pool.restore_live_allocations(
-                        network, vrf_table, vxlan_id, live_pod_ips
+                        network, vrf_table, l2vni, live_pod_ips
                     )
                     await self.address_pool.prune_stale_allocations(
-                        network, vrf_table, vxlan_id, live_pod_ips, gateway_ip
+                        network, vrf_table, l2vni, live_pod_ips, gateway_ip
                     )
 
                 table = 254
@@ -706,9 +700,9 @@ class Plugin(PluginProtocol):
         vrf_table = int(
             annotations.get('pyroute2.org/vrf', self.config['default']['vrf'])
         )
-        vxlan = int(
+        l2vni = int(
             annotations.get(
-                'pyroute2.org/vxlan', self.config['default']['vxlan']
+                'pyroute2.org/l2vni', self.config['default']['l2vni']
             )
         )
         service_vrf_max = (
@@ -722,13 +716,13 @@ class Plugin(PluginProtocol):
                 service_vrf_max,
             )
             return
-        domain = self.vrfs.get(vrf_table, vxlan)
+        domain = self.vrfs.get(vrf_table, l2vni)
         if domain is not None and namespace not in domain.namespaces:
             return
         keep_domain = False
         if domain is not None:
             keep_domain = len(domain.namespaces) > 1
-        self.vrfs.remove(vrf_table, vxlan, namespace)
+        self.vrfs.remove(vrf_table, l2vni, namespace)
         try:
             await self.firewall.remove_system_firewall(namespace, annotations)
             logging.info(f'namespace firewall removed: {namespace}')
@@ -741,7 +735,7 @@ class Plugin(PluginProtocol):
         async with AsyncIPRoute() as ipr:
             br_ifname = f'br-{vrf_table}'
             vrf_ifname = f'vrf-{vrf_table}'
-            vxlan_ifname = f'vxlan-{vxlan}'
+            vxlan_ifname = f'vxlan-{l2vni}'
 
             vxlan_idx = await ipr.link_lookup(ifname=vxlan_ifname)
             if vxlan_idx:

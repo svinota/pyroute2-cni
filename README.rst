@@ -118,7 +118,7 @@ Configuration
         pyroute2.org/prefix: "10.1.0.0"
         pyroute2.org/prefixlen: "16"
         pyroute2.org/vrf: "1000"
-        pyroute2.org/vxlan: "200"
+        pyroute2.org/l2vni: "200"
       name: test
 
 * prefix: the prefix to use in the namespace
@@ -150,7 +150,7 @@ Configuration
         [default]
         prefix = 10.244.0.0
         prefixlen = 16
-        vxlan = 42
+        l2vni = 42
         vrf = 42
 
         [bgp]

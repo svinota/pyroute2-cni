@@ -88,7 +88,7 @@ data:
     prefix = 10.244.0.0
     prefixlen = 16
     ipblocklen = 26
-    vxlan = 42
+    l2vni = 42
     vrf = 42
     service_vrf_max = 512
     srv6end = fc00:100:$host_order::$vrf_table:a
@@ -146,7 +146,7 @@ data:
             type=interface,
             kind=vxlan,
             label="$vxlan_ifname",
-            vxlan_id=$vxlan_id,
+            vxlan_id=$l2vni,
             vxlan_learning=0,
             vxlan_port=4789,
             vxlan_local=$host_ipaddr,
