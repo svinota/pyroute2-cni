@@ -16,7 +16,7 @@ from kubernetes import config as k8s_config  # type: ignore[attr-defined]
 IPBLOCK_GROUP = 'ipam.pyroute2.org'
 IPBLOCK_VERSION = 'v1alpha1'
 IPBLOCK_PLURAL = 'ipblocks'
-IPBLOCK_NAME_RE = re.compile(r'^vrf\d+-vx\d+-\d+-\d+-\d+-\d+-\d+-\d+-\d+$')
+IPBLOCK_NAME_RE = re.compile(r'^vrf\d+-vx\d+-\d+-\d+-\d+-\d+-\d+$')
 
 
 class IPBlockConflict(RuntimeError):
@@ -200,6 +200,13 @@ class AddressPool:
                 or not item['cidr'].subnet_of(network)
             ):
                 continue
+            if item['node_name'] != self.node_name:
+                logging.warning(
+                    'skipping foreign IPBlock %s owned by %s during prune',
+                    item['name'],
+                    item['node_name'],
+                )
+                continue
             logging.info(f'Block item: {item}')
             allocations = dict(item['allocations'])
             for ip, ref in tuple(allocations.items()):
@@ -231,6 +238,13 @@ class AddressPool:
                 or item['vxlan_id'] != vxlan_id
                 or not item['cidr'].subnet_of(network)
             ):
+                continue
+            if item['node_name'] != self.node_name:
+                logging.warning(
+                    'skipping foreign IPBlock %s owned by %s during restore',
+                    item['name'],
+                    item['node_name'],
+                )
                 continue
             allocations = dict(item['allocations'])
             for pod_uid, pod_ip in live_pod_ips.items():
@@ -462,12 +476,20 @@ class AddressPool:
         if ip is not None:
             block_cidr = self._block_for_ip(network, ip)
             for item in blocks:
-                if item['cidr'] == block_cidr:
+                if (
+                    item['cidr'] == block_cidr
+                    and item['node_name'] == self.node_name
+                ):
                     return item
             return self._create_block(network, block_cidr, vrf_table, vxlan_id)
 
         for item in blocks:
-            if item['allocated'] < item['capacity']:
+            if item['node_name'] != self.node_name:
+                continue
+            if (
+                self._find_free_ip(item['cidr'], item['allocations'])
+                is not None
+            ):
                 return item
 
         return self._create_block(

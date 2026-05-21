@@ -18,7 +18,7 @@ from sdn_fixtures.main import ensure  # type: ignore
 
 from kubernetes import client as k8s_client
 from kubernetes import config as k8s_config
-from pyroute2_cni.address_pool import AddressPool
+from pyroute2_cni.address_pool import AddressPool, IPBlockConflict
 from pyroute2_cni.firewall import FirewallManager
 from pyroute2_cni.kubernetes import (
     get_namespace_annotations,
@@ -651,15 +651,22 @@ class Plugin(PluginProtocol):
                 ]
                 if bridge_addr:
                     gateway_ip = bridge_addr[0].get('address')
-                    await self.address_pool.allocate(
-                        network=network,
-                        vrf_table=vrf_table,
-                        vxlan_id=vxlan_id,
-                        is_gateway=True,
-                        address=self.address_pool.inet_aton(
-                            network, gateway_ip
-                        ),
-                    )
+                    try:
+                        await self.address_pool.allocate(
+                            network=network,
+                            vrf_table=vrf_table,
+                            vxlan_id=vxlan_id,
+                            is_gateway=True,
+                            address=self.address_pool.inet_aton(
+                                network, gateway_ip
+                            ),
+                        )
+                    except IPBlockConflict as err:
+                        logging.warning(
+                            'skipping bridge gateway restore for %s: %s',
+                            gateway_ip,
+                            err,
+                        )
                     await self.address_pool.restore_live_allocations(
                         network, vrf_table, vxlan_id, live_pod_ips
                     )
