@@ -16,6 +16,7 @@ class K8SMetadataMock:
 @dataclass
 class K8SMock:
     metadata: K8SMetadataMock = field(default_factory=K8SMetadataMock)
+    status: dict[str, str] = field(default_factory=dict)
 
 
 def _load_incluster_config() -> None:
