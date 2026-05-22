@@ -71,7 +71,7 @@ class SegmentInfo:
 
 @dataclass(frozen=True)
 class VRFEntry:
-    vrf: str
+    vrf: int
     l2vni: int
     l3vni: int
 
@@ -141,7 +141,7 @@ class VRFRegistry:
 
     def items(self) -> list[VRFEntry]:
         return [
-            VRFEntry(vrf=f'vrf-{d.vrf}', l2vni=d.l2vni, l3vni=d.l3vni)
+            VRFEntry(vrf=d.vrf, l2vni=d.l2vni, l3vni=d.l3vni)
             for d in self._vrfs.values()
         ]
 
@@ -161,9 +161,8 @@ class FRRManager:
         vrf_sections = []
         vrf_router_sections = []
         for item in vrfs:
-            vrf_sections.append(f'vrf {item.vrf}\n vni {item.l2vni}\nexit-vrf')
-            vrf_router_sections.append(
-                f'router bgp 65000 vrf {item.vrf}\n'
+            section = (
+                f'router bgp 65000 vrf vrf-{item.vrf}\n'
                 f' !\n'
                 f' address-family ipv4 unicast\n'
                 f'  redistribute connected\n'
@@ -173,9 +172,17 @@ class FRRManager:
                 f' !\n'
                 f' address-family l2vpn evpn\n'
                 f'  advertise ipv4 unicast\n'
-                f' exit-address-family\n'
-                f'exit'
             )
+            if item.l3vni > 0:
+                vrf_sections.append(
+                    f'vrf vrf-{item.vrf}\n vni {item.l3vni}\nexit-vrf'
+                )
+                section += (
+                    f'  route-target import 65000:{item.vrf}\n'
+                    f'  route-target export 65000:{item.vrf}\n'
+                )
+            section += ' exit-address-family\n' 'exit'
+            vrf_router_sections.append(section)
 
         bgp_config = (
             self.config['bgp'] if self.config.has_section('bgp') else {}
@@ -374,13 +381,58 @@ class Plugin(PluginProtocol):
                     if not has_vrf and await ipr.link_lookup(info.vrf_ifname):
                         has_vrf = True
 
+                    if has_vrf and info.l3vni > 0:
+                        # 8<--------------------------------------------------
+                        # render FRR config BEFORE adding any links
+                        #
+                        l3vx_ifname = f'l3vx-{info.l3vni}'
+                        l3ibr_ifname = f'l3ibr-{info.l3vni}'
+                        l3vx_idx = await ipr.link_lookup(ifname=l3vx_ifname)
+                        if l3vx_idx:
+                            await ipr.ensure(
+                                ipr.link, present=False, index=l3vx_idx
+                            )
+                        await self.frr.reload(self.vrfs.items(), self.peer_ips)
+                        #
+                        await ipr.ensure(
+                            ipr.link,
+                            present=True,
+                            ifname=l3ibr_ifname,
+                            kind='bridge',
+                            state='up',
+                        )
+                        await ipr.link(
+                            'add',
+                            ifname=l3vx_ifname,
+                            kind='vxlan',
+                            vxlan_link=info.host_link,
+                            vxlan_id=info.l3vni,
+                            vxlan_port=4789,
+                            vxlan_local=info.vxlan_local,
+                            vxlan_learning=0,
+                        )
+                        deadline = time.monotonic() + 60
+                        while time.monotonic() < deadline:
+                            l3vx_idx = await ipr.link_lookup(
+                                ifname=l3vx_ifname
+                            )
+                        if not l3vx_idx:
+                            raise RuntimeError(f'error adding {l3vx_ifname}')
+                        l3ibr_idx = await ipr.link_lookup(ifname=l3ibr_ifname)
+                        vrf_idx = await ipr.link_lookup(ifname=info.vrf_ifname)
+                        await ipr.link('set', index=l3ibr_idx, master=vrf_idx)
+                        await ipr.link('set', index=l3vx_idx, state='up')
+                        await ipr.link('set', index=l3vx_idx, master=l3ibr_idx)
+
                 if net_ns_fd > 0:
                     async with AsyncIPRoute(netns=net_ns_fd) as ipr:
                         info.veth_mac = (await ipr.link('get', ifname='eth0'))[
                             0
                         ].get('address')
                         logging.info(f'info: {asdict(info)}')
-                        await ipr.route('add', gateway=info.br_ipaddr)
+                        await ipr.route(
+                            'add', gateway=info.br_ipaddr.split('/')[0]
+                        )
             except NetlinkError as e:
                 if e.code == errno.EBUSY:
                     await asyncio.sleep(1)

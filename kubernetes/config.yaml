@@ -149,7 +149,7 @@ data:
             vxlan_id=$l2vni,
             vxlan_learning=0,
             vxlan_port=4789,
-            vxlan_local=$host_ipaddr,
+            vxlan_local=$vxlan_local,
         ];
         "vxlan" -> "br0";
         "vxlan" -> "$host_ifname" [style=dashed, dir=none];
