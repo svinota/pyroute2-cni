@@ -23,6 +23,10 @@ class IPBlockConflict(RuntimeError):
     pass
 
 
+class IPBlockStaleResource(RuntimeError):
+    pass
+
+
 @dataclass
 class AddressMetadata:
     vrf_table: int
@@ -422,9 +426,14 @@ class AddressPool:
             },
         }
         logging.info(f'Patching: {allocations}')
-        self.k8s_custom_api.replace_cluster_custom_object_status(
-            IPBLOCK_GROUP, IPBLOCK_VERSION, IPBLOCK_PLURAL, name, body
-        )
+        try:
+            self.k8s_custom_api.replace_cluster_custom_object_status(
+                IPBLOCK_GROUP, IPBLOCK_VERSION, IPBLOCK_PLURAL, name, body
+            )
+        except ApiException as err:
+            if err.status == 409:
+                raise IPBlockStaleResource(f'IPBlock {name} is stale') from err
+            raise
 
     def _find_free_ip(
         self, cidr: IPv4Network, allocations: dict[str, str]
@@ -589,7 +598,17 @@ class AddressPool:
             )
 
         allocations[ip.compressed] = ref
-        self._patch_block_status(block, allocations)
+        try:
+            self._patch_block_status(block, allocations)
+        except IPBlockStaleResource:
+            return await self.restore(
+                network=network,
+                vrf_table=vrf_table,
+                l2vni=l2vni,
+                is_gateway=is_gateway,
+                pod_uid=pod_uid,
+                address=address,
+            )
         return self.register_address(
             network.compressed,
             self.inet_aton(network, ip.compressed),
@@ -630,7 +649,17 @@ class AddressPool:
                     ref,
                 )
                 allocations[ip.compressed] = ref
-                self._patch_block_status(block, allocations)
+                try:
+                    self._patch_block_status(block, allocations)
+                except IPBlockStaleResource:
+                    return await self.restore(
+                        network=network,
+                        vrf_table=vrf_table,
+                        l2vni=l2vni,
+                        is_gateway=is_gateway,
+                        pod_uid=pod_uid,
+                        address=address,
+                    )
             return self.register_address(
                 network.compressed,
                 self.inet_aton(network, ip.compressed),
@@ -642,7 +671,17 @@ class AddressPool:
             )
 
         allocations[ip.compressed] = ref
-        self._patch_block_status(block, allocations)
+        try:
+            self._patch_block_status(block, allocations)
+        except IPBlockStaleResource:
+            return await self.restore(
+                network=network,
+                vrf_table=vrf_table,
+                l2vni=l2vni,
+                is_gateway=is_gateway,
+                pod_uid=pod_uid,
+                address=address,
+            )
         return self.register_address(
             network.compressed,
             self.inet_aton(network, ip.compressed),
