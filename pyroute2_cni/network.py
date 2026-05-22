@@ -212,7 +212,7 @@ class FRRManager:
                 await asyncio.sleep(1)
                 continue
             try:
-                writer.write(b'restart\n')
+                writer.write(b'reload\n')
                 await writer.drain()
                 await asyncio.wait_for(reader.read(), timeout=read_timeout)
                 return
