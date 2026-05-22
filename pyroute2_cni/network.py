@@ -41,6 +41,7 @@ class SegmentInfo:
     prefixlen: int
     vrf_table: int
     l2vni: int
+    l3vni: int
     host_link: int
     host_ifname: str
     host_order: int
@@ -71,13 +72,15 @@ class SegmentInfo:
 @dataclass(frozen=True)
 class VRFEntry:
     vrf: str
-    vni: int
+    l2vni: int
+    l3vni: int
 
 
 @dataclass
 class NamespaceDomain:
     vrf: int
     l2vni: int
+    l3vni: int
     namespaces: set[str]
     prefixes: list[IPv4Network]
 
@@ -88,7 +91,12 @@ class VRFRegistry:
         self._namespace_domains: dict[str, tuple[int, int]] = {}
 
     def add(
-        self, vrf_table: int, l2vni: int, namespace: str, prefix: IPv4Network
+        self,
+        vrf_table: int,
+        l2vni: int,
+        l3vni: int,
+        namespace: str,
+        prefix: IPv4Network,
     ) -> bool:
         key = (vrf_table, l2vni)
         existing_key = self._namespace_domains.get(namespace)
@@ -99,9 +107,17 @@ class VRFRegistry:
         domain = self._vrfs.get(key)
         if domain is None:
             domain = NamespaceDomain(
-                vrf=vrf_table, l2vni=l2vni, namespaces=set(), prefixes=[]
+                vrf=vrf_table,
+                l2vni=l2vni,
+                l3vni=l3vni,
+                namespaces=set(),
+                prefixes=[],
             )
             self._vrfs[key] = domain
+        if domain.l3vni != l3vni:
+            raise ValueError(
+                f'{namespace} l3vni mismatch: {domain.l3vni} != {l3vni}'
+            )
         domain.namespaces.add(namespace)
         self._namespace_domains[namespace] = key
         if prefix not in domain.prefixes:
@@ -125,7 +141,7 @@ class VRFRegistry:
 
     def items(self) -> list[VRFEntry]:
         return [
-            VRFEntry(vrf=f'vrf-{d.vrf}', vni=d.l2vni)
+            VRFEntry(vrf=f'vrf-{d.vrf}', l2vni=d.l2vni, l3vni=d.l3vni)
             for d in self._vrfs.values()
         ]
 
@@ -145,7 +161,7 @@ class FRRManager:
         vrf_sections = []
         vrf_router_sections = []
         for item in vrfs:
-            vrf_sections.append(f'vrf {item.vrf}\n vni {item.vni}\nexit-vrf')
+            vrf_sections.append(f'vrf {item.vrf}\n vni {item.l2vni}\nexit-vrf')
             vrf_router_sections.append(
                 f'router bgp 65000 vrf {item.vrf}\n'
                 f' !\n'
@@ -323,6 +339,7 @@ class Plugin(PluginProtocol):
         if self.frr is not None and self.vrfs.add(
             info.vrf_table,
             info.l2vni,
+            info.l3vni,
             namespace,
             IPv4Network(f'{info.prefix}/{info.prefixlen}'),
         ):
@@ -487,6 +504,11 @@ class Plugin(PluginProtocol):
                         'pyroute2.org/l2vni', config['default']['l2vni']
                     )
                 ),
+                l3vni=int(
+                    namespace_annotations.get(
+                        'pyroute2.org/l3vni', config['default']['l3vni']
+                    )
+                ),
                 vxlan_local=node_annotations.get(
                     'pyroute2.org/vxlan-local', config['network']['ipaddr']
                 ),
@@ -601,11 +623,13 @@ class Plugin(PluginProtocol):
         default_prefixlen = config['default']['prefixlen']
         default_vrf = int(config['default']['vrf'])
         default_l2vni = int(config['default']['l2vni'])
+        default_l3vni = int(config['default']['l3vni'])
         networks.add(
             (
                 IPv4Network(f'{default_prefix}/{default_prefixlen}'),
                 default_vrf,
                 default_l2vni,
+                default_l3vni,
             )
         )
         for ns in v1.list_namespace().items:
@@ -623,11 +647,12 @@ class Plugin(PluginProtocol):
             )
             vrf_table_int = int(vrf_table_raw)
             l2vni = int(annotations.get('pyroute2.org/l2vni', default_l2vni))
+            l3vni = int(annotations.get('pyroute2.org/l3vni', default_l3vni))
             network = IPv4Network(f'{prefix}/{prefixlen}')
-            networks.add((network, vrf_table_int, l2vni))
-            self.vrfs.add(vrf_table_int, l2vni, metadata.name, network)
+            networks.add((network, vrf_table_int, l2vni, l3vni))
+            self.vrfs.add(vrf_table_int, l2vni, l3vni, metadata.name, network)
 
-        for network, vrf_table, l2vni in networks:
+        for network, vrf_table, l2vni, _l3vni in networks:
             br_ifname = f'br-{vrf_table}'
             gateway_ip = None
             async with AsyncIPRoute() as ipr:

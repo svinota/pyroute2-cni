@@ -338,6 +338,9 @@ def config_set_defaults(config: ConfigParser) -> None:
     config['readiness'].setdefault('host', READINESS_HOST)
     config['readiness'].setdefault('port', str(READINESS_PORT))
     config['logging'].setdefault('level', DEFAULT_LOG_LEVEL)
+    config['default'].setdefault('l3vni', "0")
+    config['default'].setdefault('l2vni', "42")
+    config['default'].setdefault('vrf', "42")
 
 
 def run():
