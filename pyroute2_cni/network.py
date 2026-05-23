@@ -385,44 +385,56 @@ class Plugin(PluginProtocol):
                         # 8<--------------------------------------------------
                         # render FRR config BEFORE adding any links
                         #
+                        await self.frr.reload(self.vrfs.items(), self.peer_ips)
+
                         l3vx_ifname = f'l3vx-{info.l3vni}'
                         l3ibr_ifname = f'l3ibr-{info.l3vni}'
-                        l3vx_idx = await ipr.link_lookup(ifname=l3vx_ifname)
-                        if l3vx_idx:
-                            await ipr.ensure(
-                                ipr.link, present=False, index=l3vx_idx
-                            )
-                        await self.frr.reload(self.vrfs.items(), self.peer_ips)
-                        #
-                        await ipr.ensure(
-                            ipr.link,
-                            present=True,
-                            ifname=l3ibr_ifname,
-                            kind='bridge',
-                            state='up',
+
+                        interfaces = dict(
+                            [
+                                (x.get('ifname'), x.get('index'))
+                                async for x in await ipr.link('dump')
+                            ]
                         )
-                        await ipr.link(
-                            'add',
-                            ifname=l3vx_ifname,
-                            kind='vxlan',
-                            vxlan_link=info.host_link,
-                            vxlan_id=info.l3vni,
-                            vxlan_port=4789,
-                            vxlan_local=info.vxlan_local,
-                            vxlan_learning=0,
-                        )
-                        deadline = time.monotonic() + 60
-                        while time.monotonic() < deadline:
-                            l3vx_idx = await ipr.link_lookup(
-                                ifname=l3vx_ifname
+
+                        if l3ibr_ifname not in interfaces:
+                            l3ibr = (
+                                await ipr.ensure(
+                                    ipr.link,
+                                    present=True,
+                                    ifname=l3ibr_ifname,
+                                    kind='bridge',
+                                    state='up',
+                                )
+                            )[0]
+                            interfaces[l3ibr_ifname] = l3ibr['index']
+                            vrf_idx = await ipr.link_lookup(
+                                ifname=info.vrf_ifname
                             )
-                        if not l3vx_idx:
-                            raise RuntimeError(f'error adding {l3vx_ifname}')
-                        l3ibr_idx = await ipr.link_lookup(ifname=l3ibr_ifname)
-                        vrf_idx = await ipr.link_lookup(ifname=info.vrf_ifname)
-                        await ipr.link('set', index=l3ibr_idx, master=vrf_idx)
-                        await ipr.link('set', index=l3vx_idx, state='up')
-                        await ipr.link('set', index=l3vx_idx, master=l3ibr_idx)
+                            await ipr.link(
+                                'set', index=l3ibr['index'], master=vrf_idx
+                            )
+
+                        if l3vx_ifname not in interfaces:
+                            l3vx_idx = (
+                                await ipr.ensure(
+                                    ipr.link,
+                                    present=True,
+                                    ifname=l3vx_ifname,
+                                    kind='vxlan',
+                                    vxlan_link=info.host_link,
+                                    vxlan_id=info.l3vni,
+                                    vxlan_port=4789,
+                                    vxlan_local=info.vxlan_local,
+                                    vxlan_learning=0,
+                                    state='up',
+                                )
+                            )[0]['index']
+                            await ipr.link(
+                                'set',
+                                index=l3vx_idx,
+                                master=interfaces[l3ibr_ifname],
+                            )
 
                 if net_ns_fd > 0:
                     async with AsyncIPRoute(netns=net_ns_fd) as ipr:
@@ -703,6 +715,7 @@ class Plugin(PluginProtocol):
             network = IPv4Network(f'{prefix}/{prefixlen}')
             networks.add((network, vrf_table_int, l2vni, l3vni))
             self.vrfs.add(vrf_table_int, l2vni, l3vni, metadata.name, network)
+            await self.ensure_segment(metadata.name, mask=1)
 
         for network, vrf_table, l2vni, _l3vni in networks:
             br_ifname = f'br-{vrf_table}'
