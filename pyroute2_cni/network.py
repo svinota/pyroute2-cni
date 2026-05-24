@@ -347,6 +347,7 @@ class Plugin(PluginProtocol):
         pod_name: None | str = None,
         net_ns_fd: int = 0,
     ) -> SegmentInfo:
+        raise RuntimeError('disabled path')
         namespace_annotations = get_namespace_annotations(namespace)
         node_annotations = get_node_annotations(config['network']['node_name'])
         async with AsyncIPRoute() as ipr_main:
@@ -472,21 +473,6 @@ class Plugin(PluginProtocol):
         return
         config = self.config
         self.vrfs.clear()
-
-        # trigger the VRF module
-        async with AsyncIPRoute() as ipr_main:
-            (vrf1,) = await ipr_main.ensure(
-                ipr_main.link,
-                present=True,
-                ifname='vrf-1',
-                kind='vrf',
-                vrf_table=1,
-            )
-            await ipr_main.ensure(
-                ipr_main.link, present=False, index=vrf1['index']
-            )
-
-        await self.ensure_segment('kube-system', mask=1)
 
         v1 = k8s_client.CoreV1Api()
         self.refresh_frr_peers(v1)

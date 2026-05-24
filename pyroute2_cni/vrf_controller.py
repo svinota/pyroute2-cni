@@ -1,7 +1,9 @@
 import asyncio
 import logging
+import socket
 import threading
 from configparser import ConfigParser
+from ipaddress import IPv4Network
 
 from kubernetes.client.exceptions import ApiException
 from pyroute2 import AsyncIPRoute
@@ -9,12 +11,16 @@ from pyroute2 import AsyncIPRoute
 from kubernetes import client as k8s_client
 from kubernetes import config as k8s_config
 from kubernetes import watch as k8s_watch  # type: ignore[attr-defined]
+from pyroute2_cni.address_pool import AddressPool
 from pyroute2_cni.vrf_domain import VRFAttachment, VRFDomain, parse_vrf_domain
 
 
-class VRFManager:
-    def __init__(self, config: ConfigParser) -> None:
+class VRFController:
+    def __init__(
+        self, config: ConfigParser, address_pool: AddressPool
+    ) -> None:
         self.config = config
+        self.address_pool = address_pool
         self.vrf_custom_api = k8s_client.CustomObjectsApi()
 
     async def ensure_l2vni(
@@ -55,6 +61,29 @@ class VRFManager:
                     state='up',
                 )
             )[0].get('index')
+            # check IP address on the bridge
+            addresses: list[tuple[str, int]] = [
+                (x.get('address'), x.get('prefixlen'))
+                async for x in await ipr.addr(
+                    'dump', index=l2ibr_idx, family=socket.AF_INET
+                )
+            ]
+            if len(addresses) == 0:
+                prefix = domain.prefix or str(self.config['default']['prefix'])
+                prefixlen = domain.prefixlen or int(
+                    self.config['default']['prefixlen']
+                )
+                network = IPv4Network(f'{prefix}/{prefixlen}')
+                address = await self.address_pool.allocate(
+                    network, domain.vrf, attachment.vni, is_gateway=True
+                )
+                await ipr.ensure(
+                    ipr.addr,
+                    present=True,
+                    index=l2ibr_idx,
+                    address=address,
+                    prefixlen=prefixlen,
+                )
             l2vx_idx = links.get(l2vx_ifname, {}).get('index') or (
                 await ipr.ensure(
                     ipr.link,
@@ -64,7 +93,7 @@ class VRFManager:
                     vxlan_link=links[attachment.dev],
                     vxlan_id=attachment.vni,
                     vxlan_port=attachment.port,
-                    vxlan_local=attachment.local,
+                    vxlan_local=await attachment.fetch_local(),
                     vxlan_learning=0,
                     state='up',
                 )
@@ -120,7 +149,7 @@ class VRFManager:
         domain = VRFDomain(
             name=f'vrf-{default_vrf}',
             vrf=default_vrf,
-            table=default_vrf,
+            table=254,  # the default VRF operates the main table
             prefix=default_prefix,
             prefixlen=default_prefixlen,
             ipblocklen=(
@@ -130,11 +159,7 @@ class VRFManager:
             ),
             attachments=[
                 VRFAttachment(
-                    kind='l2vni',
-                    vni=default_vrf,
-                    dev=host_ifname,
-                    local=host_src,
-                    port=4789,
+                    kind='l2vni', vni=default_vrf, dev=host_ifname, port=4789
                 )
             ],
         )

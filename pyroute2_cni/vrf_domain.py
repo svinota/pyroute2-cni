@@ -2,14 +2,22 @@ from dataclasses import dataclass
 from ipaddress import IPv4Network
 from typing import Any
 
+from pyroute2 import AsyncIPRoute
+
 
 @dataclass(frozen=True)
 class VRFAttachment:
     kind: str
     vni: int
     dev: str
-    local: str
     port: int
+
+    async def fetch_local(self) -> str:
+        async with AsyncIPRoute() as ipr:
+            index = (await ipr.link_lookup(ifname=self.dev))[0]
+            return [x async for x in await ipr.addr('dump', index=index)][
+                0
+            ].get('address')
 
 
 @dataclass(frozen=True)
@@ -62,7 +70,6 @@ class VRFDomain:
                         'type': item.kind,
                         'vni': item.vni,
                         'dev': item.dev,
-                        'local': item.local,
                         'port': item.port,
                     }
                     for item in self.attachments
@@ -79,7 +86,6 @@ def parse_vrf_domain(item: dict[str, Any]) -> VRFDomain:
             kind=str(seg.get('type', '')),
             vni=int(seg.get('vni', 0)),
             dev=str(seg.get('dev', '')),
-            local=str(seg.get('local', '')),
             port=int(seg.get('port', 4789)),
         )
         for seg in spec.get('attachments') or []

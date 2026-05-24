@@ -16,10 +16,10 @@ from pydantic import ValidationError
 
 from pyroute2_cni.address_pool import AddressPool
 from pyroute2_cni.kubernetes import get_node_ip
-from pyroute2_cni.namespace_manager import NamespaceManager
+from pyroute2_cni.namespace_controller import NamespaceController
 from pyroute2_cni.protocols import PluginProtocol
 from pyroute2_cni.request import CNIRequest
-from pyroute2_cni.vrf_manager import VRFManager
+from pyroute2_cni.vrf_controller import VRFController
 
 READINESS_HOST = '0.0.0.0'
 READINESS_PORT = 24800
@@ -306,13 +306,13 @@ async def main(config: ConfigParser) -> None:
     vrf_domain_watch_queue: asyncio.Queue[tuple[str, Any] | None] = (
         asyncio.Queue()
     )
-    namespace_manager = NamespaceManager(config)
-    vrf_manager = VRFManager(config)
+    namespace_controller = NamespaceController(config)
+    vrf_controller = VRFController(config, address_pool)
     namespace_watch_task = asyncio.create_task(
-        namespace_manager.watch(namespace_watch_queue)
+        namespace_controller.watch(namespace_watch_queue)
     )
     vrf_domain_watch_task = asyncio.create_task(
-        vrf_manager.watch(vrf_domain_watch_queue)
+        vrf_controller.watch(vrf_domain_watch_queue)
     )
     loop = asyncio.get_event_loop()
     for signal_num in (signal.SIGTERM, signal.SIGINT, signal.SIGQUIT):

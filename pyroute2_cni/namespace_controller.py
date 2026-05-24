@@ -10,7 +10,7 @@ from kubernetes import config as k8s_config
 from kubernetes import watch as k8s_watch  # type: ignore[attr-defined]
 
 
-class NamespaceManager:
+class NamespaceController:
     def __init__(self, config: ConfigParser) -> None:
         self.config = config
 
