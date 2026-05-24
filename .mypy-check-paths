@@ -1,7 +1,2 @@
-pyroute2_cni/address_pool.py
-pyroute2_cni/kubernetes.py
-pyroute2_cni/network.py
-pyroute2_cni/request.py
-pyroute2_cni/server.py
-pyroute2_cni/protocols.py
+pyroute2_cni/
 tests/test_functional/test_basic.py

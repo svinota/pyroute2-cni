@@ -16,8 +16,10 @@ from pydantic import ValidationError
 
 from pyroute2_cni.address_pool import AddressPool
 from pyroute2_cni.kubernetes import get_node_ip
+from pyroute2_cni.namespace_manager import NamespaceManager
 from pyroute2_cni.protocols import PluginProtocol
 from pyroute2_cni.request import CNIRequest
+from pyroute2_cni.vrf_manager import VRFManager
 
 READINESS_HOST = '0.0.0.0'
 READINESS_PORT = 24800
@@ -284,6 +286,7 @@ async def main(config: ConfigParser) -> None:
         host=config['readiness'].get('host', READINESS_HOST),
         port=config['readiness'].getint('port', fallback=READINESS_PORT),
     )
+    ready.set()
     node_name = os.environ['NODE_NAME']
     address_pool = AddressPool(node_name, config)
 
@@ -297,26 +300,41 @@ async def main(config: ConfigParser) -> None:
         raise SystemExit(1)
     cni_server = CNIServer(config, registry, plugin)
     await cni_server.setup_endpoint()
-    namespace_watch_queue: asyncio.Queue[
-        tuple[str, str, dict[str, str]] | None
-    ] = asyncio.Queue()
+    namespace_watch_queue: asyncio.Queue[tuple[str, str] | None] = (
+        asyncio.Queue()
+    )
+    vrf_domain_watch_queue: asyncio.Queue[tuple[str, Any] | None] = (
+        asyncio.Queue()
+    )
+    namespace_manager = NamespaceManager(config)
+    vrf_manager = VRFManager(config)
     namespace_watch_task = asyncio.create_task(
-        plugin.watch_namespaces(namespace_watch_queue)
+        namespace_manager.watch(namespace_watch_queue)
+    )
+    vrf_domain_watch_task = asyncio.create_task(
+        vrf_manager.watch(vrf_domain_watch_queue)
     )
     loop = asyncio.get_event_loop()
     for signal_num in (signal.SIGTERM, signal.SIGINT, signal.SIGQUIT):
         loop.add_signal_handler(
             signal_num,
-            partial(handle_signal, [namespace_watch_task], signal_num),
+            partial(
+                handle_signal,
+                [namespace_watch_task, vrf_domain_watch_task],
+                signal_num,
+            ),
         )
     try:
-        await namespace_watch_task
+        await asyncio.gather(namespace_watch_task, vrf_domain_watch_task)
     finally:
         namespace_watch_task.cancel()
+        vrf_domain_watch_task.cancel()
         readiness_server.close()
         await readiness_server.wait_closed()
         with contextlib.suppress(asyncio.CancelledError):
             await namespace_watch_task
+        with contextlib.suppress(asyncio.CancelledError):
+            await vrf_domain_watch_task
 
 
 def config_set_defaults(config: ConfigParser) -> None:

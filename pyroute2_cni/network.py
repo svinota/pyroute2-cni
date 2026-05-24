@@ -3,7 +3,6 @@ import errno
 import logging
 import os
 import socket
-import threading
 import time
 from configparser import ConfigParser
 from dataclasses import asdict, dataclass
@@ -12,12 +11,9 @@ from pathlib import Path
 from string import Template
 from typing import Any, Callable
 
-from kubernetes.client.exceptions import ApiException
 from pyroute2 import AsyncIPRoute, NetlinkError
-from sdn_fixtures.main import ensure  # type: ignore
 
 from kubernetes import client as k8s_client
-from kubernetes import config as k8s_config
 from pyroute2_cni.address_pool import AddressPool, IPBlockConflict
 from pyroute2_cni.firewall import FirewallManager
 from pyroute2_cni.kubernetes import (
@@ -273,14 +269,6 @@ class Plugin(PluginProtocol):
                 return addr.address
         return None
 
-    @staticmethod
-    def _is_control_plane_node(node: Any) -> bool:
-        labels = node.metadata.labels or {}
-        return (
-            'node-role.kubernetes.io/control-plane' in labels
-            or 'node-role.kubernetes.io/master' in labels
-        )
-
     def refresh_frr_peers(self, v1: k8s_client.CoreV1Api) -> None:
         peer_ips = []
         local_node_name = self.config['network']['node_name']
@@ -328,14 +316,9 @@ class Plugin(PluginProtocol):
         mask: int = 0xFFFFFFFF,
     ) -> SegmentInfo:
         config = self.config
-        enable_srv6 = config.getboolean(
-            'default', 'enable_srv6', fallback=False
-        )
         pod_uid: str | None = None
         pod_name: str | None = None
         net_ns_fd: int = 0
-        max_attempts: int = 5
-        has_vrf: bool = False
         if request is not None:
             pod_uid = get_pod_tag(request, 'uid')
             pod_name = get_pod_tag(request, 'name')
@@ -343,175 +326,17 @@ class Plugin(PluginProtocol):
         info = await self.allocate_segment(
             namespace, config, pod_uid, pod_name, net_ns_fd
         )
-        if self.frr is not None and self.vrfs.add(
-            info.vrf_table,
-            info.l2vni,
-            info.l3vni,
-            namespace,
-            IPv4Network(f'{info.prefix}/{info.prefixlen}'),
-        ):
-            await self.frr.reload(self.vrfs.items(), self.peer_ips)
-            if self.on_frr_ready is not None and len(self.vrfs.items()) > 0:
-                self.on_frr_ready()
         template = Template(config['topology']['template'])
         topology = template.substitute(asdict(info))
         logging.info(f'topology\n{topology}')
-        attempts = max_attempts
-        while attempts:
-            attempts -= 1
-            try:
-                await ensure(present=True, data=topology, mask=mask)
-                async with AsyncIPRoute() as ipr:
-                    table = 254
-                    service_vrf_max = (
-                        int(config['default']['service_vrf_max']) or 1024
-                    )
-                    if info.vrf_table > service_vrf_max:
-                        table = info.vrf_table
-                    await self.reconcile_routes(
-                        ipr,
-                        self.address_pool.block_cidrs(
-                            IPv4Network(f'{info.prefix}/{info.prefixlen}'),
-                            info.vrf_table,
-                            info.l2vni,
-                        ),
-                        info.br_ifname,
-                        table,
-                    )
-                    if not has_vrf and await ipr.link_lookup(info.vrf_ifname):
-                        has_vrf = True
 
-                    if has_vrf and info.l3vni > 0:
-                        # 8<--------------------------------------------------
-                        # render FRR config BEFORE adding any links
-                        #
-                        await self.frr.reload(self.vrfs.items(), self.peer_ips)
-
-                        l3vx_ifname = f'l3vx-{info.l3vni}'
-                        l3ibr_ifname = f'l3ibr-{info.l3vni}'
-
-                        interfaces = dict(
-                            [
-                                (x.get('ifname'), x.get('index'))
-                                async for x in await ipr.link('dump')
-                            ]
-                        )
-
-                        if l3ibr_ifname not in interfaces:
-                            l3ibr = (
-                                await ipr.ensure(
-                                    ipr.link,
-                                    present=True,
-                                    ifname=l3ibr_ifname,
-                                    kind='bridge',
-                                    state='up',
-                                )
-                            )[0]
-                            interfaces[l3ibr_ifname] = l3ibr['index']
-                            vrf_idx = await ipr.link_lookup(
-                                ifname=info.vrf_ifname
-                            )
-                            await ipr.link(
-                                'set', index=l3ibr['index'], master=vrf_idx
-                            )
-
-                        if l3vx_ifname not in interfaces:
-                            l3vx_idx = (
-                                await ipr.ensure(
-                                    ipr.link,
-                                    present=True,
-                                    ifname=l3vx_ifname,
-                                    kind='vxlan',
-                                    vxlan_link=info.host_link,
-                                    vxlan_id=info.l3vni,
-                                    vxlan_port=4789,
-                                    vxlan_local=info.vxlan_local,
-                                    vxlan_learning=0,
-                                    state='up',
-                                )
-                            )[0]['index']
-                            await ipr.link(
-                                'set',
-                                index=l3vx_idx,
-                                master=interfaces[l3ibr_ifname],
-                            )
-
-                if net_ns_fd > 0:
-                    async with AsyncIPRoute(netns=net_ns_fd) as ipr:
-                        info.veth_mac = (await ipr.link('get', ifname='eth0'))[
-                            0
-                        ].get('address')
-                        logging.info(f'info: {asdict(info)}')
-                        await ipr.route(
-                            'add', gateway=info.br_ipaddr.split('/')[0]
-                        )
-            except NetlinkError as e:
-                if e.code == errno.EBUSY:
-                    await asyncio.sleep(1)
-                    continue
-                raise
-
-            sysctls = {'net.ipv4.conf.all.rp_filter': 0}
-            if enable_srv6:
-                sysctls.update(
-                    {
-                        'net.ipv6.conf.all.seg6_enabled': 1,
-                        f'net.ipv6.conf.{info.host_ifname}.seg6_enabled': 1,
-                    }
+        if net_ns_fd > 0:
+            async with AsyncIPRoute(netns=net_ns_fd) as ipr:
+                info.veth_mac = (await ipr.link('get', ifname='eth0'))[0].get(
+                    'address'
                 )
-            set_sysctl(sysctls)
-            if has_vrf:
-                set_sysctl(
-                    {
-                        'net.vrf.strict_mode': 1,  # SRv6 End.DT4
-                        f'net.ipv4.conf.{info.vrf_ifname}.rp_filter': 0,
-                        'net.ipv4.tcp_l3mdev_accept': 1,  # serve cross VRF
-                        'net.ipv4.udp_l3mdev_accept': 1,  # serve cross VRF
-                    }
-                )
-            break
-        else:
-            raise TimeoutError('could not ensure the segment')
+                logging.info(f'info: {asdict(info)}')
 
-        attempts = max_attempts
-        while attempts:
-            attempts -= 1
-            try:
-                async with AsyncIPRoute() as ipr:
-                    if enable_srv6 and info.vrf_announce and info.srv6endDT4:
-                        await ipr.route(
-                            'replace',
-                            dst=info.srv6endDT4,
-                            dst_len=128,
-                            oif=await ipr.link_lookup(info.vrf_ifname),
-                            encap={
-                                'type': 'seg6local',
-                                'action': 'End.DT4',
-                                'vrf_table': info.vrf_table,
-                            },
-                        )
-                        try:
-                            with open('/var/run/exabgp/exabgp.in', 'w') as f:
-                                cmd = f'announce route {info.srv6endDT4}/128 '
-                                cmd += f'next-hop {info.srv6local}\n'
-                                f.write(cmd)
-                        except (FileNotFoundError, PermissionError):
-                            pass
-                        await ipr.ensure(
-                            ipr.addr,
-                            present=True,
-                            index=info.host_link,
-                            address=info.srv6local,
-                            prefixlen=info.srv6local_prefixlen,
-                        )
-            except NetlinkError as e:
-                if e.code in (errno.EBUSY, errno.EPERM):
-                    await asyncio.sleep(1)
-                    continue
-                raise
-            break
-        else:
-            raise TimeoutError('could not ensure SRv6')
         return info
 
     async def allocate_segment(
@@ -644,6 +469,7 @@ class Plugin(PluginProtocol):
         return info
 
     async def resync(self) -> None:
+        return
         config = self.config
         self.vrfs.clear()
 
@@ -661,13 +487,6 @@ class Plugin(PluginProtocol):
             )
 
         await self.ensure_segment('kube-system', mask=1)
-
-        # 1. list network namespaces -> bridges & vxlan
-        try:
-            k8s_config.load_incluster_config()  # type: ignore[attr-defined]
-        except Exception as e:
-            logging.error(f'error listing namespaces: {e}')
-            return
 
         v1 = k8s_client.CoreV1Api()
         self.refresh_frr_peers(v1)
@@ -696,26 +515,31 @@ class Plugin(PluginProtocol):
                 default_l3vni,
             )
         )
-        for ns in v1.list_namespace().items:
-            metadata = ns.metadata
-            if metadata is None or metadata.name is None:
-                continue
-            await self.ensure_system_firewall(metadata.name)
-            annotations = metadata.annotations or {}
-            vrf_table_raw = annotations.get('pyroute2.org/vrf')
-            if vrf_table_raw is None:
-                continue
-            prefix = annotations.get('pyroute2.org/prefix') or default_prefix
-            prefixlen = (
-                annotations.get('pyroute2.org/prefixlen') or default_prefixlen
-            )
-            vrf_table_int = int(vrf_table_raw)
-            l2vni = int(annotations.get('pyroute2.org/l2vni', default_l2vni))
-            l3vni = int(annotations.get('pyroute2.org/l3vni', default_l3vni))
-            network = IPv4Network(f'{prefix}/{prefixlen}')
-            networks.add((network, vrf_table_int, l2vni, l3vni))
-            self.vrfs.add(vrf_table_int, l2vni, l3vni, metadata.name, network)
-            await self.ensure_segment(metadata.name, mask=1)
+        # for domain in []:
+        #    if domain.network is not None:
+        #        networks.add(
+        #            (domain.network, domain.vrf, domain.l2vni, domain.l3vni)
+        #        )
+        # for ns in v1.list_namespace().items:
+        #    metadata = ns.metadata
+        #    if metadata is None or metadata.name is None:
+        #        continue
+        #    await self.ensure_system_firewall(metadata.name)
+        #    annotations = metadata.annotations or {}
+        #    vrf_table_raw = annotations.get('pyroute2.org/vrf')
+        #    if vrf_table_raw is None:
+        #        continue
+        #    prefix = annotations.get('pyroute2.org/prefix') or default_prefix
+        #    prefixlen = (
+        #        annotations.get('pyroute2.org/prefixlen') or default_prefixlen
+        #    )
+        #    vrf_table_int = int(vrf_table_raw)
+        #    l2vni = int(annotations.get('pyroute2.org/l2vni', default_l2vni))
+        #    l3vni = int(annotations.get('pyroute2.org/l3vni', default_l3vni))
+        #    network = IPv4Network(f'{prefix}/{prefixlen}')
+        #    networks.add((network, vrf_table_int, l2vni, l3vni))
+        #    self.vrfs.add(vrf_table_int, l2vni, l3vni, metadata.name, network)
+        #    await self.ensure_segment(metadata.name, mask=1)
 
         for network, vrf_table, l2vni, _l3vni in networks:
             br_ifname = f'br-{vrf_table}'
@@ -782,180 +606,6 @@ class Plugin(PluginProtocol):
         await self.address_pool.gc_empty_blocks()
         if self.frr is not None:
             await self.frr.reload(self.vrfs.items(), self.peer_ips)
-
-    async def cleanup_namespace(
-        self, namespace: str, annotations: dict[str, str]
-    ) -> None:
-        logging.info(f'namespace DEL event: {namespace}')
-        vrf_table = int(
-            annotations.get('pyroute2.org/vrf', self.config['default']['vrf'])
-        )
-        l2vni = int(
-            annotations.get(
-                'pyroute2.org/l2vni', self.config['default']['l2vni']
-            )
-        )
-        service_vrf_max = (
-            int(self.config['default']['service_vrf_max']) or 1024
-        )
-        if vrf_table <= service_vrf_max:
-            logging.info(
-                'skip namespace cleanup for %s: vrf=%s <= service_vrf_max=%s',
-                namespace,
-                vrf_table,
-                service_vrf_max,
-            )
-            return
-        domain = self.vrfs.get(vrf_table, l2vni)
-        if domain is not None and namespace not in domain.namespaces:
-            return
-        keep_domain = False
-        if domain is not None:
-            keep_domain = len(domain.namespaces) > 1
-        self.vrfs.remove(vrf_table, l2vni, namespace)
-        try:
-            await self.firewall.remove_system_firewall(namespace, annotations)
-            logging.info(f'namespace firewall removed: {namespace}')
-        except Exception as e:
-            logging.warning(f'firewall cleanup failed for {namespace}: {e}')
-
-        if keep_domain:
-            return
-
-        async with AsyncIPRoute() as ipr:
-            br_ifname = f'br-{vrf_table}'
-            vrf_ifname = f'vrf-{vrf_table}'
-            vxlan_ifname = f'vxlan-{l2vni}'
-
-            vxlan_idx = await ipr.link_lookup(ifname=vxlan_ifname)
-            if vxlan_idx:
-                await ipr.link('del', index=vxlan_idx[0])
-                logging.info(f'namespace vxlan removed: {br_ifname}')
-
-            br_idx = await ipr.link_lookup(ifname=br_ifname)
-            if br_idx:
-                await ipr.link('del', index=br_idx[0])
-                logging.info(f'namespace bridge removed: {br_ifname}')
-
-            vrf_idx = await ipr.link_lookup(ifname=vrf_ifname)
-            if vrf_idx:
-                await ipr.link('del', index=vrf_idx[0])
-                logging.info(f'namespace vrf removed: {vrf_ifname}')
-
-    def _watch_namespace_worker(
-        self,
-        queue: asyncio.Queue[tuple[str, str, dict[str, str]] | None],
-        loop: asyncio.AbstractEventLoop,
-        stop_event: threading.Event,
-    ) -> None:
-        try:
-            k8s_config.load_incluster_config()  # type: ignore[attr-defined]
-        except Exception as e:
-            logging.error(f'error starting namespace watch: {e}')
-            loop.call_soon_threadsafe(queue.put_nowait, None)
-            return
-
-        from kubernetes import watch as k8s_watch  # type: ignore[attr-defined]
-
-        v1 = k8s_client.CoreV1Api()
-        watcher = k8s_watch.Watch()
-        resource_version = ''
-        try:
-            try:
-                ns_list = v1.list_namespace()
-                resource_version = (
-                    getattr(ns_list.metadata, 'resource_version', None) or ''
-                )
-                logging.info(
-                    'namespace watch starting at resource_version=%s',
-                    resource_version,
-                )
-            except Exception as e:
-                logging.warning(
-                    'namespace watch initial list failed, continuing: %s', e
-                )
-
-            while not stop_event.is_set():
-                try:
-                    for event in watcher.stream(
-                        v1.list_namespace,
-                        timeout_seconds=30,
-                        resource_version=resource_version or None,
-                    ):
-                        if stop_event.is_set():
-                            break
-                        event_type = event.get('type')
-                        obj = event.get('object')
-                        metadata = (
-                            getattr(obj, 'metadata', None) if obj else None
-                        )
-                        rv = (
-                            getattr(metadata, 'resource_version', None)
-                            if metadata
-                            else None
-                        )
-                        if rv:
-                            resource_version = rv
-                        logging.info(
-                            'namespace watch event: type=%s name=%s rv=%s',
-                            event_type,
-                            getattr(metadata, 'name', None),
-                            rv,
-                        )
-                        if event_type not in {'ADDED', 'MODIFIED', 'DELETED'}:
-                            continue
-                        if not obj or not metadata:
-                            continue
-                        annotations = metadata.annotations or {}
-                        loop.call_soon_threadsafe(
-                            queue.put_nowait,
-                            (event_type, metadata.name, annotations),
-                        )
-                except ApiException as e:
-                    logging.warning(
-                        'namespace watch api exception, restarting rv=%s: %s',
-                        resource_version,
-                        e,
-                    )
-                except Exception as e:
-                    logging.warning(
-                        'namespace watch failed, restarting rv=%s: %s',
-                        resource_version,
-                        e,
-                    )
-        finally:
-            watcher.stop()
-            loop.call_soon_threadsafe(queue.put_nowait, None)
-
-    async def watch_namespaces(
-        self, queue: asyncio.Queue[tuple[str, str, dict[str, str]] | None]
-    ) -> None:
-        loop = asyncio.get_running_loop()
-        stop_event = threading.Event()
-        worker = threading.Thread(
-            target=self._watch_namespace_worker,
-            args=(queue, loop, stop_event),
-            daemon=True,
-        )
-        worker.start()
-        try:
-            while True:
-                namespace = await queue.get()
-                if namespace is None:
-                    break
-                event_type, name, annotations = namespace
-                if event_type == 'DELETED':
-                    await self.cleanup_namespace(name, annotations)
-                else:
-                    try:
-                        await self.ensure_segment(name, mask=1)
-                    except ValueError as e:
-                        logging.warning('namespace watch rejected: %s', e)
-                        continue
-                    await self.reconcile_registry()
-        finally:
-            stop_event.set()
-            worker.join(timeout=5)
 
     async def cleanup(
         self, data: dict[str, Any], request: CNIRequest
