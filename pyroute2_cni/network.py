@@ -1,13 +1,10 @@
-import asyncio
 import errno
 import logging
 import os
 import socket
-import time
 from configparser import ConfigParser
 from dataclasses import asdict, dataclass
 from ipaddress import IPv4Network
-from pathlib import Path
 from string import Template
 from typing import Any, Callable
 
@@ -16,11 +13,7 @@ from pyroute2 import AsyncIPRoute, NetlinkError
 from kubernetes import client as k8s_client
 from pyroute2_cni.address_pool import AddressPool, IPBlockConflict
 from pyroute2_cni.firewall import FirewallManager
-from pyroute2_cni.kubernetes import (
-    get_namespace_annotations,
-    get_node_annotations,
-    get_pod_tag,
-)
+from pyroute2_cni.kubernetes import get_namespace_annotations, get_pod_tag
 from pyroute2_cni.protocols import PluginProtocol
 from pyroute2_cni.request import CNIRequest
 
@@ -63,13 +56,6 @@ class SegmentInfo:
         self.vrf_ifname = f'vrf-{self.vrf_table}'
         self.br_ifname = f'br-{self.vrf_table}'
         self.vxlan_ifname = f'vxlan-{self.l2vni}'
-
-
-@dataclass(frozen=True)
-class VRFEntry:
-    vrf: int
-    l2vni: int
-    l3vni: int
 
 
 @dataclass
@@ -135,114 +121,9 @@ class VRFRegistry:
     def get(self, vrf_table: int, l2vni: int) -> NamespaceDomain | None:
         return self._vrfs.get((vrf_table, l2vni))
 
-    def items(self) -> list[VRFEntry]:
-        return [
-            VRFEntry(vrf=d.vrf, l2vni=d.l2vni, l3vni=d.l3vni)
-            for d in self._vrfs.values()
-        ]
-
     def clear(self) -> None:
         self._vrfs.clear()
         self._namespace_domains.clear()
-
-
-class FRRManager:
-    def __init__(self, template_path: str, config: ConfigParser) -> None:
-        self.template_path = Path(template_path)
-        self.config = config
-        self.output_path = Path('/etc/frr/frr.conf')
-        self.reload_sock = '/var/run/frr/reload.sock'
-
-    def render(self, vrfs: list[VRFEntry], peer_ips: list[str]) -> str:
-        vrf_sections = []
-        vrf_router_sections = []
-        for item in vrfs:
-            section = (
-                f'router bgp 65000 vrf vrf-{item.vrf}\n'
-                f' !\n'
-                f' address-family ipv4 unicast\n'
-                f'  redistribute connected\n'
-                f'  redistribute static\n'
-                f'  redistribute kernel\n'
-                f' exit-address-family\n'
-                f' !\n'
-                f' address-family l2vpn evpn\n'
-                f'  advertise ipv4 unicast\n'
-            )
-            if item.l3vni > 0:
-                vrf_sections.append(
-                    f'vrf vrf-{item.vrf}\n vni {item.l3vni}\nexit-vrf'
-                )
-                section += (
-                    f'  route-target import 65000:{item.vrf}\n'
-                    f'  route-target export 65000:{item.vrf}\n'
-                )
-            section += ' exit-address-family\n' 'exit'
-            vrf_router_sections.append(section)
-
-        bgp_config = (
-            self.config['bgp'] if self.config.has_section('bgp') else {}
-        )
-        rr_mode = bgp_config.get('rr_mode', 'mesh')
-        peer_records = ''
-        router_id = self.config['network']['ipaddr']
-
-        if rr_mode == 'mesh':
-            peer_records += '\n'.join(
-                f' neighbor {peer} peer-group PR2' for peer in peer_ips
-            )
-        elif rr_mode == 'node-annotation':
-            node_name = self.config['network']['node_name']
-            node_rr_annotation = (
-                get_node_annotations(node_name).get('pyroute2.org/rr') or ''
-            )
-            rr_list = node_rr_annotation.split(';')
-            if rr_list:
-                peer_records += '\n'.join(
-                    f' neighbor {peer} peer-group PR2' for peer in rr_list
-                )
-
-        template = Template(self.template_path.read_text(encoding='utf-8'))
-        return template.substitute(
-            router_id=router_id,
-            peer_records=peer_records,
-            vrf_sections='\n!\n'.join(vrf_sections),
-            vrf_router_sections='\n!\n'.join(vrf_router_sections),
-        )
-
-    async def reload(self, vrfs: list[VRFEntry], peer_ips: list[str]) -> None:
-        self.output_path.write_text(
-            self.render(vrfs, peer_ips), encoding='utf-8'
-        )
-        deadline = time.monotonic() + 120
-        read_timeout = 30
-        while True:
-            try:
-                reader, writer = await asyncio.open_unix_connection(
-                    self.reload_sock
-                )
-            except FileNotFoundError:
-                if time.monotonic() >= deadline:
-                    raise
-                logging.warning(
-                    'FRR reload socket %s not found, retrying in 1s',
-                    self.reload_sock,
-                )
-                await asyncio.sleep(1)
-                continue
-            try:
-                writer.write(b'reload\n')
-                await writer.drain()
-                await asyncio.wait_for(reader.read(), timeout=read_timeout)
-                return
-            except asyncio.TimeoutError as e:
-                raise TimeoutError(
-                    f'FRR reload timed out after {read_timeout}s on '
-                    f'{self.reload_sock}'
-                ) from e
-            finally:
-                writer.close()
-                await writer.wait_closed()
 
 
 class Plugin(PluginProtocol):
@@ -251,7 +132,6 @@ class Plugin(PluginProtocol):
     ) -> None:
         self.config = config
         self.address_pool = address_pool
-        self.frr = FRRManager('/pyroute2-cni/templates/frr.conf.tpl', config)
         self.firewall = FirewallManager(config)
         self.vrfs = VRFRegistry()
         self.peer_ips: list[str] = []
@@ -305,16 +185,13 @@ class Plugin(PluginProtocol):
         await self.firewall.setup()
         await self.firewall.ensure_system_firewall(namespace)
 
-    async def reconcile_registry(self) -> None:
-        if self.frr is not None:
-            await self.frr.reload(self.vrfs.items(), self.peer_ips)
-
     async def ensure_segment(
         self,
         namespace: str,
         request: CNIRequest | None = None,
         mask: int = 0xFFFFFFFF,
     ) -> SegmentInfo:
+        raise RuntimeError('disabled path')
         config = self.config
         pod_uid: str | None = None
         pod_name: str | None = None
@@ -349,7 +226,6 @@ class Plugin(PluginProtocol):
     ) -> SegmentInfo:
         raise RuntimeError('disabled path')
         namespace_annotations = get_namespace_annotations(namespace)
-        node_annotations = get_node_annotations(config['network']['node_name'])
         async with AsyncIPRoute() as ipr_main:
             if 'host_if' in config['network']:
                 host_ifname = config['network']['host_if']
@@ -398,9 +274,6 @@ class Plugin(PluginProtocol):
                     namespace_annotations.get(
                         'pyroute2.org/l3vni', config['default']['l3vni']
                     )
-                ),
-                vxlan_local=node_annotations.get(
-                    'pyroute2.org/vxlan-local', config['network']['ipaddr']
                 ),
                 host_link=host_link,
                 host_ifname=host_ifname,
@@ -590,8 +463,6 @@ class Plugin(PluginProtocol):
                 await self.reconcile_routes(ipr, block_cidrs, br_ifname, table)
 
         await self.address_pool.gc_empty_blocks()
-        if self.frr is not None:
-            await self.frr.reload(self.vrfs.items(), self.peer_ips)
 
     async def cleanup(
         self, data: dict[str, Any], request: CNIRequest

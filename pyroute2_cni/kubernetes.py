@@ -81,6 +81,27 @@ def get_node_ip(name: str) -> str:
     return ''
 
 
+def get_custom_objects_api() -> k8s_client.CustomObjectsApi:
+    _load_incluster_config()
+    return k8s_client.CustomObjectsApi()
+
+
+def get_cluster_custom_object(
+    group: str, version: str, plural: str, name: str
+) -> Any:
+    api = get_custom_objects_api()
+    return api.get_cluster_custom_object(group, version, plural, name)
+
+
+def get_namespaced_custom_object(
+    group: str, version: str, namespace: str, plural: str, name: str
+) -> Any:
+    api = get_custom_objects_api()
+    return api.get_namespaced_custom_object(
+        group, version, namespace, plural, name
+    )
+
+
 def get_pod_tag(request: CNIRequest, tag: str, default: str = '') -> str:
     cni_args = request.env.get('CNI_ARGS', '')
     for arg in cni_args.split(';'):

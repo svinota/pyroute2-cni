@@ -12,32 +12,43 @@ from kubernetes import client as k8s_client
 from kubernetes import config as k8s_config
 from kubernetes import watch as k8s_watch  # type: ignore[attr-defined]
 from pyroute2_cni.address_pool import AddressPool
+from pyroute2_cni.frr_manager import FRRManager
 from pyroute2_cni.vrf_domain import VRFAttachment, VRFDomain, parse_vrf_domain
 
 
 class VRFController:
     def __init__(
-        self, config: ConfigParser, address_pool: AddressPool
+        self,
+        config: ConfigParser,
+        address_pool: AddressPool,
+        frr_manager: FRRManager,
     ) -> None:
         self.config = config
         self.address_pool = address_pool
+        self.frr_manager = frr_manager
         self.vrf_custom_api = k8s_client.CustomObjectsApi()
+
+    async def remove_l2vni(
+        self, domain: VRFDomain, attachment: VRFAttachment
+    ) -> None:
+        vrf_ifname = f'vrf-{domain.vrf}'
+        l2vx_ifname = f'l2vx-{attachment.vni}'
+        l2ibr_ifname = f'l2ibr-{attachment.vni}'
+        async with AsyncIPRoute() as ipr:
+            await ipr.ensure(ipr.link, present=False, ifname=vrf_ifname)
+            await ipr.ensure(ipr.link, present=False, ifname=l2ibr_ifname)
+            await ipr.ensure(ipr.link, present=False, ifname=l2vx_ifname)
+        await self.frr_manager.reload(self._vrf_domain_items())
 
     async def ensure_l2vni(
         self, domain: VRFDomain, attachment: VRFAttachment
     ) -> None:
-        # 8<--------------------------------------------------
-        # render FRR config BEFORE adding any links
-        #
-        # await self.frr.reload(self.vrfs.items(), self.peer_ips)
         vrf_table = domain.table or domain.vrf
-
         vrf_ifname = f'vrf-{domain.vrf}'
         l2vx_ifname = f'l2vx-{attachment.vni}'
         l2ibr_ifname = f'l2ibr-{attachment.vni}'
-
+        await self.frr_manager.reload(self._vrf_domain_items())
         logging.info(f'ensure attachment: {attachment}')
-
         async with AsyncIPRoute() as ipr:
             links = dict(
                 [(x.get('ifname'), x) async for x in await ipr.link('dump')]
@@ -61,7 +72,7 @@ class VRFController:
                     state='up',
                 )
             )[0].get('index')
-            # check IP address on the bridge
+
             addresses: list[tuple[str, int]] = [
                 (x.get('address'), x.get('prefixlen'))
                 async for x in await ipr.addr(
@@ -84,6 +95,7 @@ class VRFController:
                     address=address,
                     prefixlen=prefixlen,
                 )
+
             l2vx_idx = links.get(l2vx_ifname, {}).get('index') or (
                 await ipr.ensure(
                     ipr.link,
@@ -109,8 +121,13 @@ class VRFController:
                 case _:
                     pass
 
-    async def cleanup(self, domain: VRFDomain) -> None:
-        pass
+    async def remove(self, domain: VRFDomain) -> None:
+        for attachment in domain.attachments:
+            match attachment.kind:
+                case 'l2vni':
+                    await self.remove_l2vni(domain, attachment)
+                case _:
+                    pass
 
     def _vrf_domain_items(self) -> dict[int, VRFDomain]:
         response = self.vrf_custom_api.list_cluster_custom_object(
@@ -149,7 +166,7 @@ class VRFController:
         domain = VRFDomain(
             name=f'vrf-{default_vrf}',
             vrf=default_vrf,
-            table=254,  # the default VRF operates the main table
+            table=254,
             prefix=default_prefix,
             prefixlen=default_prefixlen,
             ipblocklen=(
@@ -174,7 +191,6 @@ class VRFController:
         return domain
 
     async def resync(self) -> None:
-        # trigger the VRF module
         async with AsyncIPRoute() as ipr_main:
             (vrf1,) = await ipr_main.ensure(
                 ipr_main.link,
@@ -186,13 +202,10 @@ class VRFController:
             await ipr_main.ensure(
                 ipr_main.link, present=False, index=vrf1['index']
             )
-        #
         domains: dict[int, VRFDomain] = self._vrf_domain_items()
-        #
         default_vrf = int(self.config['default']['vrf'])
         if default_vrf not in domains:
             domains[default_vrf] = await self.make_default_vrf()
-        #
         for vrf, domain in domains.items():
             if domain.network is None:
                 continue
@@ -285,7 +298,7 @@ class VRFController:
                 elif event_type == 'MODIFIED':
                     await self.ensure(domain)
                 elif event_type == 'DELETED':
-                    await self.cleanup(domain)
+                    await self.remove(domain)
         finally:
             stop_event.set()
             worker.join(timeout=5)

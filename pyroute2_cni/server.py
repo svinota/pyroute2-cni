@@ -15,6 +15,7 @@ from typing import Any, Callable, Optional
 from pydantic import ValidationError
 
 from pyroute2_cni.address_pool import AddressPool
+from pyroute2_cni.frr_manager import FRRManager
 from pyroute2_cni.kubernetes import get_node_ip
 from pyroute2_cni.namespace_controller import NamespaceController
 from pyroute2_cni.protocols import PluginProtocol
@@ -307,7 +308,8 @@ async def main(config: ConfigParser) -> None:
         asyncio.Queue()
     )
     namespace_controller = NamespaceController(config)
-    vrf_controller = VRFController(config, address_pool)
+    frr_manager = FRRManager('/pyroute2-cni/templates/frr.conf.tpl', config)
+    vrf_controller = VRFController(config, address_pool, frr_manager)
     namespace_watch_task = asyncio.create_task(
         namespace_controller.watch(namespace_watch_queue)
     )
