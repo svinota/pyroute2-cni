@@ -7,7 +7,7 @@ from typing import Any
 from kubernetes.client.exceptions import ApiException
 from pyroute2 import AsyncIPRoute
 
-from pyroute2_cni.kubernetes import get_namespaced_custom_object
+from pyroute2_cni.kubernetes import get_cluster_custom_object
 
 
 @dataclass(frozen=True)
@@ -21,12 +21,8 @@ class VRFAttachment:
         node_name = os.environ.get('NODE_NAME', '')
         if node_name:
             try:
-                obj = get_namespaced_custom_object(
-                    'cni.pyroute2.org',
-                    'v1alpha1',
-                    'pyroute2',
-                    'vrfnodeconfigs',
-                    node_name,
+                obj = get_cluster_custom_object(
+                    'cni.pyroute2.org', 'v1alpha1', 'vrfnodeconfigs', node_name
                 )
                 spec = obj.get('spec') or {}
                 for item in spec.get('interfaces') or []:

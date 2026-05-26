@@ -1,9 +1,4 @@
 pydantic==2.10.6
 kubernetes==35.0.0
-networkx
-matplotlib
 ipaddress
-networkx
-pydot
 git+https://github.com/svinota/pyroute2.git@master
-git+https://github.com/svinota/sdn-fixtures.git@main

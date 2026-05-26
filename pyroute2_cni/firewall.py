@@ -6,7 +6,7 @@ from pyroute2.netlink.nfnetlink.nftsocket import Cmp, Meta, Regs
 from pyroute2.nftables.expressions import genex, ipv4addr, masq
 from pyroute2.nftables.main import AsyncNFTables
 
-from .kubernetes import get_namespace_annotations
+from .vrf_domain import VRFDomain
 
 
 def ct_state_match(state):
@@ -254,19 +254,12 @@ class FirewallManager:
                     userdata=magic,
                 )
 
-    async def ensure_system_firewall(self, namespace: str) -> None:
-        config = self.config
-        annotations = get_namespace_annotations(namespace)
-        prefixlen = annotations.get(
-            'pyroute2.org/prefixlen', config['default']['prefixlen']
-        )
-        prefix = annotations.get(
-            'pyroute2.org/prefix', config['default']['prefix']
-        )
-        vrf_table = int(
-            annotations.get('pyroute2.org/vrf', config['default']['vrf'])
-        )
-        vrf_bridge_name = f'br-{vrf_table}'
+    async def ensure_system_firewall(self, domain: VRFDomain) -> None:
+        prefixlen = domain.prefixlen
+        prefix = domain.prefix
+        vrf_id = domain.vrf
+        vrf_table = domain.table if domain.table is not None else domain.vrf
+        vrf_bridge_name = f'l2ibr-{vrf_id}'
         async with AsyncIPRoute() as ipr_main:
             default_route = await ipr_main.route('get', dst='1.1.1.1')
             default_link = default_route[0].get('oif')
@@ -276,10 +269,10 @@ class FirewallManager:
             )
             # install RPDB rule -- complement to the CT mark
             for rule in [x async for x in await ipr_main.get_rules()]:
-                if rule.get('fwmark') == vrf_table:
+                if rule.get('fwmark') == vrf_id:
                     break
             else:
-                await ipr_main.rule('add', fwmark=vrf_table, table=vrf_table)
+                await ipr_main.rule('add', fwmark=vrf_id, table=vrf_table)
 
         async with AsyncNFTables() as nft_main:
 
@@ -307,7 +300,7 @@ class FirewallManager:
             if not vrf_bridge_index:
                 return
 
-            magic = f'{self.version}|b={vrf_bridge_index[0]}|t={vrf_table}'
+            magic = f'{self.version}|b={vrf_bridge_index[0]}|t={vrf_id}'
             for rule in [x async for x in await nft_main.get_rules()]:
                 if rule.get('userdata') == magic:
                     break
@@ -320,27 +313,19 @@ class FirewallManager:
                     expressions=(
                         iif(vrf_bridge_index[0]),
                         ct_state_match(0x8),
-                        ct_mark_set(vrf_table),
+                        ct_mark_set(vrf_id),
                     ),
                     userdata=magic,
                 )
 
             logging.info('fw: done')
 
-    async def remove_system_firewall(
-        self, namespace: str, annotations: dict[str, str]
-    ) -> None:
-        config = self.config
-        prefixlen = annotations.get(
-            'pyroute2.org/prefixlen', config['default']['prefixlen']
-        )
-        prefix = annotations.get(
-            'pyroute2.org/prefix', config['default']['prefix']
-        )
-        vrf_table = int(
-            annotations.get('pyroute2.org/vrf', config['default']['vrf'])
-        )
-        vrf_bridge_name = f'br-{vrf_table}'
+    async def remove_system_firewall(self, domain: VRFDomain) -> None:
+        prefixlen = domain.prefixlen
+        prefix = domain.prefix
+        vrf_id = domain.vrf
+        vrf_table = domain.table if domain.table is not None else domain.vrf
+        vrf_bridge_name = f'l2ibr-{vrf_id}'
 
         async with AsyncIPRoute() as ipr_main:
             vrf_bridge_index = await ipr_main.link_lookup(
@@ -359,7 +344,7 @@ class FirewallManager:
                     )
 
             if vrf_bridge_index:
-                magic = f'{self.version}|b={vrf_bridge_index[0]}|t={vrf_table}'
+                magic = f'{self.version}|b={vrf_bridge_index[0]}|t={vrf_id}'
                 for rule in [x async for x in await nft_main.get_rules()]:
                     if rule.get('userdata') == magic:
                         await nft_main.rule(
@@ -371,7 +356,7 @@ class FirewallManager:
 
         async with AsyncIPRoute() as ipr_main:
             for rule in [x async for x in await ipr_main.get_rules()]:
-                if rule.get('fwmark') == vrf_table:
+                if rule.get('fwmark') == vrf_id:
                     await ipr_main.rule(
-                        'delete', fwmark=vrf_table, table=vrf_table
+                        'delete', fwmark=vrf_id, table=vrf_table
                     )

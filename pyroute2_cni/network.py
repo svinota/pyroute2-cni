@@ -5,17 +5,17 @@ import socket
 from configparser import ConfigParser
 from dataclasses import asdict, dataclass
 from ipaddress import IPv4Network
-from string import Template
 from typing import Any, Callable
 
 from pyroute2 import AsyncIPRoute, NetlinkError
+from pyroute2.common import uifname
 
 from kubernetes import client as k8s_client
 from pyroute2_cni.address_pool import AddressPool, IPBlockConflict
-from pyroute2_cni.firewall import FirewallManager
-from pyroute2_cni.kubernetes import get_namespace_annotations, get_pod_tag
+from pyroute2_cni.kubernetes import get_pod_tag
 from pyroute2_cni.protocols import PluginProtocol
 from pyroute2_cni.request import CNIRequest
+from pyroute2_cni.vrf_domain import parse_vrf_domain
 
 
 def set_sysctl(config: dict[str, int]) -> None:
@@ -29,101 +29,9 @@ class SegmentInfo:
     prefix: str
     prefixlen: int
     vrf_table: int
-    l2vni: int
-    l3vni: int
-    host_link: int
-    host_ifname: str
-    host_order: int
-    namespace: str
-    net_ns_fd: int = 0
-    host_ipaddr: str = ''
-    veth_ipaddr: str = ''
-    br_ipaddr: str = ''
-    vrf_ifname: str = ''
-    br_ifname: str = ''
-    vxlan_ifname: str = ''
-    vxlan_local: str = ''
-    veth_mac: str = ''
-    pod_name: str = ''
-    srv6end: str = ''
-    srv6endDT4: str = ''
-    srv6local: str = ''
-    srv6sid_prefixlen: int = 64
-    srv6local_prefixlen: int = 48
-    vrf_announce: bool = True
-
-    def __post_init__(self):
-        self.vrf_ifname = f'vrf-{self.vrf_table}'
-        self.br_ifname = f'br-{self.vrf_table}'
-        self.vxlan_ifname = f'vxlan-{self.l2vni}'
-
-
-@dataclass
-class NamespaceDomain:
-    vrf: int
-    l2vni: int
-    l3vni: int
-    namespaces: set[str]
-    prefixes: list[IPv4Network]
-
-
-class VRFRegistry:
-    def __init__(self) -> None:
-        self._vrfs: dict[tuple[int, int], NamespaceDomain] = {}
-        self._namespace_domains: dict[str, tuple[int, int]] = {}
-
-    def add(
-        self,
-        vrf_table: int,
-        l2vni: int,
-        l3vni: int,
-        namespace: str,
-        prefix: IPv4Network,
-    ) -> bool:
-        key = (vrf_table, l2vni)
-        existing_key = self._namespace_domains.get(namespace)
-        if existing_key is not None and existing_key != key:
-            raise ValueError(
-                f'namespace {namespace} moved from {existing_key} to {key}'
-            )
-        domain = self._vrfs.get(key)
-        if domain is None:
-            domain = NamespaceDomain(
-                vrf=vrf_table,
-                l2vni=l2vni,
-                l3vni=l3vni,
-                namespaces=set(),
-                prefixes=[],
-            )
-            self._vrfs[key] = domain
-        if domain.l3vni != l3vni:
-            raise ValueError(
-                f'{namespace} l3vni mismatch: {domain.l3vni} != {l3vni}'
-            )
-        domain.namespaces.add(namespace)
-        self._namespace_domains[namespace] = key
-        if prefix not in domain.prefixes:
-            domain.prefixes.append(prefix)
-        return len(domain.namespaces) == 1
-
-    def remove(self, vrf_table: int, l2vni: int, namespace: str) -> bool:
-        key = (vrf_table, l2vni)
-        domain = self._vrfs.get(key)
-        if domain is None:
-            return False
-        domain.namespaces.discard(namespace)
-        self._namespace_domains.pop(namespace, None)
-        if domain.namespaces:
-            return False
-        del self._vrfs[key]
-        return True
-
-    def get(self, vrf_table: int, l2vni: int) -> NamespaceDomain | None:
-        return self._vrfs.get((vrf_table, l2vni))
-
-    def clear(self) -> None:
-        self._vrfs.clear()
-        self._namespace_domains.clear()
+    ipaddr: str
+    gateway: str
+    lladdr: str = ''
 
 
 class Plugin(PluginProtocol):
@@ -132,8 +40,6 @@ class Plugin(PluginProtocol):
     ) -> None:
         self.config = config
         self.address_pool = address_pool
-        self.firewall = FirewallManager(config)
-        self.vrfs = VRFRegistry()
         self.peer_ips: list[str] = []
         self.is_control_plane = False
         self.on_frr_ready: Callable[[], None] | None = None
@@ -181,171 +87,99 @@ class Plugin(PluginProtocol):
                 table=table,
             )
 
-    async def ensure_system_firewall(self, namespace: str) -> None:
-        await self.firewall.setup()
-        await self.firewall.ensure_system_firewall(namespace)
-
     async def ensure_segment(
         self,
         namespace: str,
         request: CNIRequest | None = None,
         mask: int = 0xFFFFFFFF,
     ) -> SegmentInfo:
-        raise RuntimeError('disabled path')
+        if request is None:
+            raise RuntimeError("invalid path")
         config = self.config
         pod_uid: str | None = None
-        pod_name: str | None = None
         net_ns_fd: int = 0
-        if request is not None:
-            pod_uid = get_pod_tag(request, 'uid')
-            pod_name = get_pod_tag(request, 'name')
-            net_ns_fd = request.netns
-        info = await self.allocate_segment(
-            namespace, config, pod_uid, pod_name, net_ns_fd
+
+        pod_uid = get_pod_tag(request, 'uid')
+        net_ns_fd = request.netns
+
+        bindings = (
+            self.address_pool.k8s_custom_api.list_namespaced_custom_object(
+                'cni.pyroute2.org', 'v1alpha1', namespace, 'vrfdomainbindings'
+            )
         )
-        template = Template(config['topology']['template'])
-        topology = template.substitute(asdict(info))
-        logging.info(f'topology\n{topology}')
+        items = bindings.get('items', [])
+        if items:
+            vrfd_name = (
+                (items[0].get('spec') or {})
+                .get('vrfDomainRef', {})
+                .get('name')
+            )
+        else:
+            vrfd_name = 'vrf-42'
 
-        if net_ns_fd > 0:
-            async with AsyncIPRoute(netns=net_ns_fd) as ipr:
-                info.veth_mac = (await ipr.link('get', ifname='eth0'))[0].get(
-                    'address'
-                )
-                logging.info(f'info: {asdict(info)}')
+        raw_domain = (
+            self.address_pool.k8s_custom_api.get_cluster_custom_object(
+                'cni.pyroute2.org', 'v1alpha1', 'vrfdomains', vrfd_name
+            )
+        )
+        domain = parse_vrf_domain(raw_domain)
 
-        return info
+        attachment = next(
+            item for item in domain.attachments if item.kind == 'l2vni'
+        )
+        prefix = domain.prefix or str(config['default']['prefix'])
+        prefixlen = domain.prefixlen or int(config['default']['prefixlen'])
+        network = IPv4Network(f'{prefix}/{prefixlen}')
+        bridge_ifname = f'l2ibr-{attachment.vni}'
+        uplink = uifname()
 
-    async def allocate_segment(
-        self,
-        namespace: str,
-        config: ConfigParser,
-        pod_uid: None | str = None,
-        pod_name: None | str = None,
-        net_ns_fd: int = 0,
-    ) -> SegmentInfo:
-        raise RuntimeError('disabled path')
-        namespace_annotations = get_namespace_annotations(namespace)
         async with AsyncIPRoute() as ipr_main:
-            if 'host_if' in config['network']:
-                host_ifname = config['network']['host_if']
-                logging.info(f'using host_if from config: {host_ifname}')
-                (host_link,) = await ipr_main.link_lookup(host_ifname)
-                addr_dump = [
-                    x
-                    async for x in await ipr_main.addr('dump', index=host_link)
-                ]
-                for msg in addr_dump:
-                    host_src = msg.get('address')
-                    break
-                else:
-                    logging.error('could not find host_src')
-                    raise Exception()
-            else:
-                logging.info('trying to calculate host_if')
-                default_route = await ipr_main.route('get', dst='1.1.1.1')
-                host_link = (default_route[0].get('oif'),)
-                host_src = default_route[0].get('prefsrc') or '127.0.0.1'
-                host_ifname = (await ipr_main.link('get', index=host_link))[
-                    0
-                ].get('ifname')
-            host_order = host_src.split('.')[-1]
-            info = SegmentInfo(
-                prefix=namespace_annotations.get(
-                    'pyroute2.org/prefix', config['default']['prefix']
-                ),
-                prefixlen=int(
-                    namespace_annotations.get(
-                        'pyroute2.org/prefixlen',
-                        config['default']['prefixlen'],
-                    )
-                ),
-                vrf_table=int(
-                    namespace_annotations.get(
-                        'pyroute2.org/vrf', config['default']['vrf']
-                    )
-                ),
-                l2vni=int(
-                    namespace_annotations.get(
-                        'pyroute2.org/l2vni', config['default']['l2vni']
-                    )
-                ),
-                l3vni=int(
-                    namespace_annotations.get(
-                        'pyroute2.org/l3vni', config['default']['l3vni']
-                    )
-                ),
-                host_link=host_link,
-                host_ifname=host_ifname,
-                host_order=host_order,
-                namespace=namespace,
-                net_ns_fd=net_ns_fd,
-                host_ipaddr=config['network']['ipaddr'],
+            bridge_idx = (await ipr_main.link_lookup(ifname=bridge_ifname))[0]
+            # create & attach veth pair
+            veth = await ipr_main.ensure(
+                ipr_main.link,
+                present=True,
+                ifname=uplink,
+                kind='veth',
+                peer={'ifname': 'eth0', 'net_ns_fd': net_ns_fd},
+                state='up',
+                master=bridge_idx,
             )
-            srv6end = Template(
-                namespace_annotations.get(
-                    'pyroute2.org/srv6end', config['default']['srv6end']
+            gateway = [
+                x.get('address')
+                async for x in await ipr_main.addr(
+                    'dump', index=bridge_idx, family=socket.AF_INET
                 )
-            )
-            info.srv6end = srv6end.substitute(asdict(info))
-            srv6endDT4 = Template(
-                namespace_annotations.get(
-                    'pyroute2.org/srv6endDT4', config['default']['srv6endDT4']
-                )
-            )
-            info.srv6endDT4 = srv6endDT4.substitute(asdict(info))
-            srv6local = Template(
-                namespace_annotations.get(
-                    'pyroute2.org/srv6local', config['default']['srv6local']
-                )
-            )
-            info.srv6local = srv6local.substitute(asdict(info))
-            async for _ in await ipr_main.route('dump', dst=info.srv6endDT4):
-                info.vrf_announce = False
-            network = IPv4Network(f'{info.prefix}/{info.prefixlen}')
-            if pod_uid is not None:
-                address = await self.address_pool.allocate(
-                    network=network,
-                    vrf_table=info.vrf_table,
-                    l2vni=info.l2vni,
-                    pod_uid=pod_uid,
-                )
-                info.veth_ipaddr = f'{address}/{info.prefixlen}'
-                info.pod_name = pod_name or ''
+            ][0]
+        veth_ipaddr = await self.address_pool.allocate(
+            network,
+            domain.vrf,
+            attachment.vni,
+            is_gateway=False,
+            pod_uid=pod_uid,
+        )
+        info = SegmentInfo(
+            prefix=prefix,
+            prefixlen=prefixlen,
+            vrf_table=domain.table or domain.vrf,
+            ipaddr=f'{veth_ipaddr}/{prefixlen}',
+            gateway=gateway,
+        )
 
-            # reconcile the bridge anyways
-            dump_link = [
-                x
-                async for x in await ipr_main.link(
-                    'dump', ifname=info.br_ifname
-                )
-            ]
-            for bridge in dump_link:
-                dump_addr = [
-                    x
-                    async for x in await ipr_main.addr(
-                        'dump', family=socket.AF_INET, index=bridge['index']
-                    )
-                ]
-                for msg in dump_addr:
-                    info.br_ipaddr = f'{msg.get("address")}/{info.prefixlen}'
-                    break
-            if not info.br_ipaddr:
-                address = await self.address_pool.allocate(
-                    network=network,
-                    vrf_table=info.vrf_table,
-                    l2vni=info.l2vni,
-                    is_gateway=True,
-                )
-                info.br_ipaddr = f'{address}/{info.prefixlen}'
-            logging.info(f'bridge {info.br_ifname} addr: {info.br_ipaddr}')
+        logging.info(f'segment {info}')
+
+        async with AsyncIPRoute(netns=net_ns_fd) as ipr:
+            veth = (await ipr.link('get', ifname='eth0'))[0]
+            info.lladdr = veth.get('address')
+            await ipr.link('set', index=veth.get('index'), state='up')
+            await ipr.addr('add', index=veth.get('index'), address=info.ipaddr)
+            logging.info(f'info: {asdict(info)}')
 
         return info
 
     async def resync(self) -> None:
         return
         config = self.config
-        self.vrfs.clear()
 
         v1 = k8s_client.CoreV1Api()
         self.refresh_frr_peers(v1)
@@ -374,31 +208,6 @@ class Plugin(PluginProtocol):
                 default_l3vni,
             )
         )
-        # for domain in []:
-        #    if domain.network is not None:
-        #        networks.add(
-        #            (domain.network, domain.vrf, domain.l2vni, domain.l3vni)
-        #        )
-        # for ns in v1.list_namespace().items:
-        #    metadata = ns.metadata
-        #    if metadata is None or metadata.name is None:
-        #        continue
-        #    await self.ensure_system_firewall(metadata.name)
-        #    annotations = metadata.annotations or {}
-        #    vrf_table_raw = annotations.get('pyroute2.org/vrf')
-        #    if vrf_table_raw is None:
-        #        continue
-        #    prefix = annotations.get('pyroute2.org/prefix') or default_prefix
-        #    prefixlen = (
-        #        annotations.get('pyroute2.org/prefixlen') or default_prefixlen
-        #    )
-        #    vrf_table_int = int(vrf_table_raw)
-        #    l2vni = int(annotations.get('pyroute2.org/l2vni', default_l2vni))
-        #    l3vni = int(annotations.get('pyroute2.org/l3vni', default_l3vni))
-        #    network = IPv4Network(f'{prefix}/{prefixlen}')
-        #    networks.add((network, vrf_table_int, l2vni, l3vni))
-        #    self.vrfs.add(vrf_table_int, l2vni, l3vni, metadata.name, network)
-        #    await self.ensure_segment(metadata.name, mask=1)
 
         for network, vrf_table, l2vni, _l3vni in networks:
             br_ifname = f'br-{vrf_table}'
@@ -493,21 +302,16 @@ class Plugin(PluginProtocol):
 
         namespace = get_pod_tag(request, 'namespace', default='default')
         info = await self.ensure_segment(namespace, request)
-        await self.ensure_system_firewall(namespace)
 
         data['interfaces'] = [
             {
                 'name': 'eth0',
-                'mac': info.veth_mac,
+                'mac': info.lladdr,
                 'sandbox': request.env['CNI_NETNS'],
             }
         ]
         data['ips'] = [
-            {
-                'address': info.veth_ipaddr,
-                'interface': 0,
-                'gateway': info.br_ipaddr,
-            }
+            {'address': info.ipaddr, 'interface': 0, 'gateway': info.gateway}
         ]
         data['routes'] = [{'dst': '0.0.0.0/0'}]
         os.close(request.netns)

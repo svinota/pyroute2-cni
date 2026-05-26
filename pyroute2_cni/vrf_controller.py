@@ -11,9 +11,11 @@ from pyroute2 import AsyncIPRoute
 from kubernetes import client as k8s_client
 from kubernetes import config as k8s_config
 from kubernetes import watch as k8s_watch  # type: ignore[attr-defined]
-from pyroute2_cni.address_pool import AddressPool
-from pyroute2_cni.frr_manager import FRRManager
-from pyroute2_cni.vrf_domain import VRFAttachment, VRFDomain, parse_vrf_domain
+
+from .address_pool import AddressPool
+from .firewall import FirewallManager
+from .frr_manager import FRRManager
+from .vrf_domain import VRFAttachment, VRFDomain, parse_vrf_domain
 
 
 class VRFController:
@@ -24,6 +26,7 @@ class VRFController:
         frr_manager: FRRManager,
     ) -> None:
         self.config = config
+        self.firewall = FirewallManager(config)
         self.address_pool = address_pool
         self.frr_manager = frr_manager
         self.vrf_custom_api = k8s_client.CustomObjectsApi()
@@ -39,15 +42,17 @@ class VRFController:
             await ipr.ensure(ipr.link, present=False, ifname=l2ibr_ifname)
             await ipr.ensure(ipr.link, present=False, ifname=l2vx_ifname)
         await self.frr_manager.reload(self._vrf_domain_items())
+        await self.firewall.remove_system_firewall(domain)
 
     async def ensure_l2vni(
         self, domain: VRFDomain, attachment: VRFAttachment
     ) -> None:
-        vrf_table = domain.table or domain.vrf
+        vrf_table = domain.table if domain.table is not None else domain.vrf
         vrf_ifname = f'vrf-{domain.vrf}'
         l2vx_ifname = f'l2vx-{attachment.vni}'
         l2ibr_ifname = f'l2ibr-{attachment.vni}'
         await self.frr_manager.reload(self._vrf_domain_items())
+        await self.firewall.ensure_system_firewall(domain)
         logging.info(f'ensure attachment: {attachment}')
         async with AsyncIPRoute() as ipr:
             links = dict(
@@ -281,6 +286,7 @@ class VRFController:
         )
         try:
             await self.resync()
+            await self.firewall.setup()
         except Exception as e:
             logging.warning(
                 'vrfdomain watch initial list failed, continuing: %s', e
