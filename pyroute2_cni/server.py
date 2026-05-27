@@ -277,6 +277,8 @@ def load_plugin(config: ConfigParser, address_pool: AddressPool):
 async def main(config: ConfigParser) -> None:
     registry: dict[str, CNIRequest] = {}
     ready = asyncio.Event()
+    namespace_ready = asyncio.Event()
+    vrf_ready = asyncio.Event()
 
     await run_fd_receiver(
         registry, socket_path=config['api']['socket_path_fd']
@@ -299,8 +301,6 @@ async def main(config: ConfigParser) -> None:
     except FileNotFoundError as e:
         logging.error('FRR reload socket never appeared: %s', e)
         raise SystemExit(1)
-    cni_server = CNIServer(config, registry, plugin)
-    await cni_server.setup_endpoint()
     namespace_watch_queue: asyncio.Queue[tuple[str, str] | None] = (
         asyncio.Queue()
     )
@@ -311,11 +311,16 @@ async def main(config: ConfigParser) -> None:
     frr_manager = FRRManager('/pyroute2-cni/templates/frr.conf.tpl', config)
     vrf_controller = VRFController(config, address_pool, frr_manager)
     namespace_watch_task = asyncio.create_task(
-        namespace_controller.watch(namespace_watch_queue)
+        namespace_controller.watch(namespace_watch_queue, namespace_ready)
     )
     vrf_domain_watch_task = asyncio.create_task(
-        vrf_controller.watch(vrf_domain_watch_queue)
+        vrf_controller.watch(vrf_domain_watch_queue, vrf_ready)
     )
+
+    await asyncio.gather(namespace_ready.wait(), vrf_ready.wait())
+    cni_server = CNIServer(config, registry, plugin)
+    await cni_server.setup_endpoint()
+
     loop = asyncio.get_event_loop()
     for signal_num in (signal.SIGTERM, signal.SIGINT, signal.SIGQUIT):
         loop.add_signal_handler(

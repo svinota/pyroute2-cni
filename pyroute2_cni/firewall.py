@@ -6,7 +6,7 @@ from pyroute2.netlink.nfnetlink.nftsocket import Cmp, Meta, Regs
 from pyroute2.nftables.expressions import genex, ipv4addr, masq
 from pyroute2.nftables.main import AsyncNFTables
 
-from .vrf_domain import VRFDomain
+from .vrf_domain import VRFAttachment, VRFDomain
 
 
 def ct_state_match(state):
@@ -254,18 +254,19 @@ class FirewallManager:
                     userdata=magic,
                 )
 
-    async def ensure_system_firewall(self, domain: VRFDomain) -> None:
+    async def ensure_system_firewall(
+        self, domain: VRFDomain, attachment: VRFAttachment
+    ) -> None:
         prefixlen = domain.prefixlen
         prefix = domain.prefix
         vrf_id = domain.vrf
         vrf_table = domain.table if domain.table is not None else domain.vrf
-        vrf_bridge_name = f'l2ibr-{vrf_id}'
         async with AsyncIPRoute() as ipr_main:
             default_route = await ipr_main.route('get', dst='1.1.1.1')
             default_link = default_route[0].get('oif')
             logging.info(f'fw: external interface {default_link}')
             vrf_bridge_index = await ipr_main.link_lookup(
-                ifname=vrf_bridge_name
+                ifname=f'l2ibr-{attachment.vni}'
             )
             # install RPDB rule -- complement to the CT mark
             for rule in [x async for x in await ipr_main.get_rules()]:
@@ -280,6 +281,7 @@ class FirewallManager:
             magic = f'{self.version}|p={prefix}/{prefixlen}'
             for rule in [x async for x in await nft_main.get_rules()]:
                 if rule.get('userdata') == magic:
+                    logging.info(f'fw: hit {magic}')
                     break
             else:
                 logging.info(f'fw: install nat rule with magic {magic}')
@@ -298,11 +300,13 @@ class FirewallManager:
                     userdata=magic,
                 )
             if not vrf_bridge_index:
+                logging.info('fw: attachment not found, return')
                 return
 
             magic = f'{self.version}|b={vrf_bridge_index[0]}|t={vrf_id}'
             for rule in [x async for x in await nft_main.get_rules()]:
                 if rule.get('userdata') == magic:
+                    logging.info(f'fw: hit {magic}')
                     break
             else:
                 logging.info(f'fw: install mark rule with magic {magic}')
@@ -320,16 +324,17 @@ class FirewallManager:
 
             logging.info('fw: done')
 
-    async def remove_system_firewall(self, domain: VRFDomain) -> None:
+    async def remove_system_firewall(
+        self, domain: VRFDomain, attachment: VRFAttachment
+    ) -> None:
         prefixlen = domain.prefixlen
         prefix = domain.prefix
         vrf_id = domain.vrf
         vrf_table = domain.table if domain.table is not None else domain.vrf
-        vrf_bridge_name = f'l2ibr-{vrf_id}'
 
         async with AsyncIPRoute() as ipr_main:
             vrf_bridge_index = await ipr_main.link_lookup(
-                ifname=vrf_bridge_name
+                ifname=f'l2ibr-{attachment.vni}'
             )
 
         async with AsyncNFTables() as nft_main:

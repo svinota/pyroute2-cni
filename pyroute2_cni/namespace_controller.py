@@ -102,7 +102,9 @@ class NamespaceController:
             loop.call_soon_threadsafe(queue.put_nowait, None)
 
     async def watch(
-        self, queue: asyncio.Queue[tuple[str, str] | None]
+        self,
+        queue: asyncio.Queue[tuple[str, str] | None],
+        ready: asyncio.Event | None = None,
     ) -> None:
         loop = asyncio.get_running_loop()
         stop_event = threading.Event()
@@ -112,6 +114,8 @@ class NamespaceController:
             daemon=True,
         )
         worker.start()
+        if ready is not None:
+            ready.set()
         try:
             while True:
                 namespace = await queue.get()

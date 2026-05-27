@@ -135,6 +135,12 @@ class Plugin(PluginProtocol):
 
         async with AsyncIPRoute() as ipr_main:
             bridge_idx = (await ipr_main.link_lookup(ifname=bridge_ifname))[0]
+            bridge_address = [
+                x.get('address')
+                async for x in await ipr_main.addr(
+                    'dump', index=bridge_idx, family=socket.AF_INET
+                )
+            ]
             # create & attach veth pair
             veth = await ipr_main.ensure(
                 ipr_main.link,
@@ -172,7 +178,14 @@ class Plugin(PluginProtocol):
             veth = (await ipr.link('get', ifname='eth0'))[0]
             info.lladdr = veth.get('address')
             await ipr.link('set', index=veth.get('index'), state='up')
-            await ipr.addr('add', index=veth.get('index'), address=info.ipaddr)
+            await ipr.ensure(
+                ipr.addr,
+                present=True,
+                index=veth.get('index'),
+                address=info.ipaddr,
+            )
+            if bridge_address:
+                await ipr.route('add', gateway=bridge_address[0])
             logging.info(f'info: {asdict(info)}')
 
         return info

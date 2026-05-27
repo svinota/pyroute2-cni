@@ -42,7 +42,7 @@ class VRFController:
             await ipr.ensure(ipr.link, present=False, ifname=l2ibr_ifname)
             await ipr.ensure(ipr.link, present=False, ifname=l2vx_ifname)
         await self.frr_manager.reload(self._vrf_domain_items())
-        await self.firewall.remove_system_firewall(domain)
+        await self.firewall.remove_system_firewall(domain, attachment)
 
     async def ensure_l2vni(
         self, domain: VRFDomain, attachment: VRFAttachment
@@ -52,7 +52,6 @@ class VRFController:
         l2vx_ifname = f'l2vx-{attachment.vni}'
         l2ibr_ifname = f'l2ibr-{attachment.vni}'
         await self.frr_manager.reload(self._vrf_domain_items())
-        await self.firewall.ensure_system_firewall(domain)
         logging.info(f'ensure attachment: {attachment}')
         async with AsyncIPRoute() as ipr:
             links = dict(
@@ -100,6 +99,13 @@ class VRFController:
                     address=address,
                     prefixlen=prefixlen,
                 )
+                await ipr.ensure(
+                    ipr.route,
+                    present=True,
+                    oif=l2ibr_idx,
+                    dst=prefix,
+                    dst_len=prefixlen,
+                )
 
             l2vx_idx = links.get(l2vx_ifname, {}).get('index') or (
                 await ipr.ensure(
@@ -117,6 +123,7 @@ class VRFController:
             )[0].get('index')
             await ipr.link('set', index=l2ibr_idx, master=vrf_idx)
             await ipr.link('set', index=l2vx_idx, master=l2ibr_idx)
+        await self.firewall.ensure_system_firewall(domain, attachment)
 
     async def ensure(self, domain: VRFDomain) -> None:
         for attachment in domain.attachments:
@@ -211,7 +218,11 @@ class VRFController:
         default_vrf = int(self.config['default']['vrf'])
         if default_vrf not in domains:
             domains[default_vrf] = await self.make_default_vrf()
-        for vrf, domain in domains.items():
+        vrfs: list[int] = [default_vrf] + list(
+            filter(lambda x: x != default_vrf, sorted(domains))
+        )
+        sorted_domains = dict(((k, domains[k]) for k in vrfs))
+        for vrf, domain in sorted_domains.items():
             if domain.network is None:
                 continue
             logging.info(f'vrfdomain: {domain.vrf}->{domain.network}')
@@ -232,6 +243,16 @@ class VRFController:
 
         watcher = k8s_watch.Watch()
         resource_version = ''
+
+        def refresh_resource_version() -> str:
+            response = self.vrf_custom_api.list_cluster_custom_object(
+                'cni.pyroute2.org', 'v1alpha1', 'vrfdomains'
+            )
+            metadata = response.get('metadata') or {}
+            rv = str(metadata.get('resourceVersion') or '')
+            logging.info('vrfdomain watch relisted at rv=%s', rv)
+            return rv
+
         try:
             while not stop_event.is_set():
                 try:
@@ -259,6 +280,14 @@ class VRFController:
                                 queue.put_nowait, (event_type, domain)
                             )
                 except ApiException as e:
+                    if e.status == 410 or 'Expired' in str(e):
+                        logging.warning(
+                            'vrfdomain watch expired rv=%s, resetting: %s',
+                            resource_version,
+                            e,
+                        )
+                        resource_version = refresh_resource_version()
+                        continue
                     logging.warning(
                         'vrfdomain watch api exception, restarting rv=%s: %s',
                         resource_version,
@@ -275,7 +304,9 @@ class VRFController:
             loop.call_soon_threadsafe(queue.put_nowait, None)
 
     async def watch(
-        self, queue: asyncio.Queue[tuple[str, VRFDomain] | None]
+        self,
+        queue: asyncio.Queue[tuple[str, VRFDomain] | None],
+        ready: asyncio.Event | None = None,
     ) -> None:
         loop = asyncio.get_running_loop()
         stop_event = threading.Event()
@@ -285,8 +316,10 @@ class VRFController:
             daemon=True,
         )
         try:
-            await self.resync()
             await self.firewall.setup()
+            await self.resync()
+            if ready is not None:
+                ready.set()
         except Exception as e:
             logging.warning(
                 'vrfdomain watch initial list failed, continuing: %s', e
