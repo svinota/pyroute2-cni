@@ -96,7 +96,7 @@ class VRFController:
             if len(addresses) == 0:
                 network = IPv4Network(f'{prefix}/{prefixlen}')
                 address = await self.address_pool.allocate(
-                    network, domain.vrf, attachment.vni, is_gateway=True
+                    network, domain.vrf, is_gateway=True
                 )
                 await ipr.ensure(
                     ipr.addr,

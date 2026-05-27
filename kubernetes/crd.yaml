@@ -25,9 +25,6 @@ spec:
         - name: VRF
           type: integer
           jsonPath: .spec.vrfTable
-        - name: VNI
-          type: integer
-          jsonPath: .spec.vxlanId
         - name: Allocated
           type: integer
           jsonPath: .status.allocated
@@ -41,7 +38,7 @@ spec:
           properties:
             spec:
               type: object
-              required: ["cidr", "nodeName", "vrfTable", "vxlanId"]
+              required: ["cidr", "nodeName", "vrfTable"]
               properties:
                 cidr:
                   type: string
@@ -52,9 +49,6 @@ spec:
                 vrfTable:
                   type: integer
                   description: "VRF table id"
-                vxlanId:
-                  type: integer
-                  description: "VNI / VXLAN id"
             status:
               type: object
               properties:

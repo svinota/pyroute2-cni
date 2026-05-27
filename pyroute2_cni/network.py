@@ -150,11 +150,7 @@ class Plugin(PluginProtocol):
                 )
             ][0]
         veth_ipaddr = await self.address_pool.allocate(
-            network,
-            domain.vrf,
-            attachment.vni,
-            is_gateway=False,
-            pod_uid=pod_uid,
+            network, domain.vrf, is_gateway=False, pod_uid=pod_uid
         )
         info = SegmentInfo(
             prefix=prefix,
