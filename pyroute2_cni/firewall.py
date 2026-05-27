@@ -6,7 +6,7 @@ from pyroute2.netlink.nfnetlink.nftsocket import Cmp, Meta, Regs
 from pyroute2.nftables.expressions import genex, ipv4addr, masq
 from pyroute2.nftables.main import AsyncNFTables
 
-from .vrf_domain import VRFAttachment, VRFDomain
+from .vrf_domain import VRFDomain
 
 
 def ct_state_match(state):
@@ -257,9 +257,7 @@ class FirewallManager:
     def magic(self, tag: str, vrf_id: int) -> str:
         return f'{self.version}|t={tag}|v={vrf_id}'
 
-    async def ensure_system_firewall(
-        self, domain: VRFDomain, attachment: VRFAttachment
-    ) -> None:
+    async def ensure_system_firewall(self, domain: VRFDomain) -> None:
         prefixlen = domain.prefixlen
         prefix = domain.prefix
         vrf_id = domain.vrf
@@ -269,7 +267,7 @@ class FirewallManager:
             default_link = default_route[0].get('oif')
             logging.info(f'fw: external interface {default_link}')
             vrf_bridge_index = await ipr_main.link_lookup(
-                ifname=f'l2ibr-{attachment.vni}'
+                ifname=f'l2ibr-{domain.vrf}'
             )
             default_bridge_index = await ipr_main.link_lookup(
                 ifname=f'l2ibr-{self.config["default"]["vrf"]}'
@@ -347,9 +345,7 @@ class FirewallManager:
 
             logging.info('fw: done')
 
-    async def remove_system_firewall(
-        self, domain: VRFDomain, attachment: VRFAttachment
-    ) -> None:
+    async def remove_system_firewall(self, domain: VRFDomain) -> None:
         vrf_id = domain.vrf
         vrf_table = domain.table if domain.table is not None else domain.vrf
 

@@ -180,7 +180,9 @@ class AddressPool:
         gateway_ip: str | None = None,
     ) -> int:
         removed = 0
+        logging.info('prune allocations')
         for item in self._node_block_items():
+            logging.info(f'Block item {item}')
             if item['vrf_table'] != vrf_table or not item['cidr'].subnet_of(
                 network
             ):
@@ -192,7 +194,7 @@ class AddressPool:
                     item['node_name'],
                 )
                 continue
-            logging.info(f'Block item: {item}')
+            logging.info('Process allocations')
             allocations = dict(item['allocations'])
             for ip, ref in tuple(allocations.items()):
                 keep = (

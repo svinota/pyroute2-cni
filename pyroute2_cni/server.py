@@ -25,6 +25,7 @@ from pyroute2_cni.vrf_controller import VRFController
 READINESS_HOST = '0.0.0.0'
 READINESS_PORT = 24800
 DEFAULT_LOG_LEVEL = 'INFO'
+DEFAULT_GC_INTERVAL_SECONDS = 300
 
 
 class CNIProtocol(asyncio.Protocol):
@@ -260,6 +261,19 @@ async def run_fd_receiver(
     )
 
 
+async def run_address_pool_gc(
+    address_pool: AddressPool, interval: int
+) -> None:
+    while True:
+        try:
+            await asyncio.sleep(interval)
+            await address_pool.gc_empty_blocks()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logging.warning('periodic IPBlock gc failed: %s', e)
+
+
 def handle_signal(tasks: list[asyncio.Task], signal_num) -> None:
     logging.info(f'got signal {signal.Signals(signal_num).name}')
     for task in tasks:
@@ -316,6 +330,11 @@ async def main(config: ConfigParser) -> None:
     vrf_domain_watch_task = asyncio.create_task(
         vrf_controller.watch(vrf_domain_watch_queue, vrf_ready)
     )
+    address_pool_gc_task = asyncio.create_task(
+        run_address_pool_gc(
+            address_pool, int(config['default']['gc_interval_seconds'])
+        )
+    )
 
     await asyncio.gather(namespace_ready.wait(), vrf_ready.wait())
     cni_server = CNIServer(config, registry, plugin)
@@ -327,21 +346,30 @@ async def main(config: ConfigParser) -> None:
             signal_num,
             partial(
                 handle_signal,
-                [namespace_watch_task, vrf_domain_watch_task],
+                [
+                    namespace_watch_task,
+                    vrf_domain_watch_task,
+                    address_pool_gc_task,
+                ],
                 signal_num,
             ),
         )
     try:
-        await asyncio.gather(namespace_watch_task, vrf_domain_watch_task)
+        await asyncio.gather(
+            namespace_watch_task, vrf_domain_watch_task, address_pool_gc_task
+        )
     finally:
         namespace_watch_task.cancel()
         vrf_domain_watch_task.cancel()
+        address_pool_gc_task.cancel()
         readiness_server.close()
         await readiness_server.wait_closed()
         with contextlib.suppress(asyncio.CancelledError):
             await namespace_watch_task
         with contextlib.suppress(asyncio.CancelledError):
             await vrf_domain_watch_task
+        with contextlib.suppress(asyncio.CancelledError):
+            await address_pool_gc_task
 
 
 def config_set_defaults(config: ConfigParser) -> None:
@@ -361,6 +389,9 @@ def config_set_defaults(config: ConfigParser) -> None:
     config['logging'].setdefault('level', DEFAULT_LOG_LEVEL)
     config['default'].setdefault('vrf', '42')
     config['default'].setdefault('ipblocklen', '26')
+    config['default'].setdefault(
+        'gc_interval_seconds', str(DEFAULT_GC_INTERVAL_SECONDS)
+    )
 
 
 def run():

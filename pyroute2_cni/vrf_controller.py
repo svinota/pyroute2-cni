@@ -42,13 +42,13 @@ class VRFController:
     ) -> None:
         vrf_ifname = f'vrf-{domain.vrf}'
         l2vx_ifname = f'l2vx-{attachment.vni}'
-        l2ibr_ifname = f'l2ibr-{attachment.vni}'
+        l2ibr_ifname = f'l2ibr-{domain.vrf}'
         async with AsyncIPRoute() as ipr:
             await ipr.ensure(ipr.link, present=False, ifname=vrf_ifname)
             await ipr.ensure(ipr.link, present=False, ifname=l2ibr_ifname)
             await ipr.ensure(ipr.link, present=False, ifname=l2vx_ifname)
         await self.frr_manager.reload(self._vrf_domain_items())
-        await self.firewall.remove_system_firewall(domain, attachment)
+        await self.firewall.remove_system_firewall(domain)
 
     async def ensure_l2vni(
         self, domain: VRFDomain, attachment: VRFAttachment
@@ -56,7 +56,7 @@ class VRFController:
         vrf_table = domain.table if domain.table is not None else domain.vrf
         vrf_ifname = f'vrf-{domain.vrf}'
         l2vx_ifname = f'l2vx-{attachment.vni}'
-        l2ibr_ifname = f'l2ibr-{attachment.vni}'
+        l2ibr_ifname = f'l2ibr-{domain.vrf}'
         await self.frr_manager.reload(self._vrf_domain_items())
         logging.info(f'ensure attachment: {attachment}')
         async with AsyncIPRoute() as ipr:
@@ -135,7 +135,7 @@ class VRFController:
             )[0].get('index')
             await ipr.link('set', index=l2ibr_idx, master=vrf_idx)
             await ipr.link('set', index=l2vx_idx, master=l2ibr_idx)
-        await self.firewall.ensure_system_firewall(domain, attachment)
+        await self.firewall.ensure_system_firewall(domain)
         set_sysctl({f'net.ipv4.conf.{l2ibr_ifname}.rp_filter': 0})
 
     async def ensure(self, domain: VRFDomain) -> None:

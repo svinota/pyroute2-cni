@@ -116,13 +116,10 @@ class Plugin(PluginProtocol):
         )
         domain = parse_vrf_domain(raw_domain)
 
-        attachment = next(
-            item for item in domain.attachments if item.kind == 'l2vni'
-        )
         prefix = domain.prefix or str(config['default']['prefix'])
         prefixlen = domain.prefixlen or int(config['default']['prefixlen'])
         network = IPv4Network(f'{prefix}/{prefixlen}')
-        bridge_ifname = f'l2ibr-{attachment.vni}'
+        bridge_ifname = f'l2ibr-{domain.vrf}'
         uplink = uifname()
 
         async with AsyncIPRoute() as ipr_main:
@@ -183,7 +180,51 @@ class Plugin(PluginProtocol):
         return info
 
     async def resync(self) -> None:
-        pass
+        local_node_name = self.config['network']['node_name']
+        live_pod_ips: dict[str, str] = {}
+        pods = self.address_pool.k8s_v1.list_pod_for_all_namespaces(
+            field_selector=f'spec.nodeName={local_node_name}'
+        )
+        for pod in pods.items:
+            metadata = pod.metadata
+            status = pod.status
+            if metadata is None or status is None:
+                continue
+            pod_uid = metadata.uid
+            pod_ip = status.pod_ip
+            if not pod_uid or not pod_ip:
+                continue
+            live_pod_ips[pod_uid] = pod_ip
+
+        vrf_domains = (
+            self.address_pool.k8s_custom_api.list_cluster_custom_object(
+                'cni.pyroute2.org', 'v1alpha1', 'vrfdomains'
+            )
+        )
+        for item in vrf_domains.get('items', []):
+            domain = parse_vrf_domain(item)
+            if domain.network is None:
+                continue
+            prefix = domain.prefix or str(self.config['default']['prefix'])
+            prefixlen = domain.prefixlen or int(
+                self.config['default']['prefixlen']
+            )
+            network = IPv4Network(f'{prefix}/{prefixlen}')
+            async with AsyncIPRoute() as ipr:
+                gateway_ip = [
+                    x.get('address')
+                    async for x in await ipr.addr(
+                        'dump',
+                        index=await ipr.link_lookup(f'l2ibr-{domain.vrf}'),
+                        family=socket.AF_INET,
+                    )
+                ]
+            await self.address_pool.prune_stale_allocations(
+                network=network,
+                vrf_table=domain.vrf,
+                live_pod_ips=live_pod_ips,
+                gateway_ip=gateway_ip[0] if gateway_ip else None,
+            )
 
     async def cleanup(
         self, data: dict[str, Any], request: CNIRequest
