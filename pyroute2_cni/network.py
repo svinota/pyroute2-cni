@@ -18,12 +18,6 @@ from pyroute2_cni.request import CNIRequest
 from pyroute2_cni.vrf_domain import parse_vrf_domain
 
 
-def set_sysctl(config: dict[str, int]) -> None:
-    for path, value in config.items():
-        with open(f'/proc/sys/{path.replace(".", "/")}', 'w') as f:
-            f.write(str(value))
-
-
 @dataclass
 class SegmentInfo:
     prefix: str

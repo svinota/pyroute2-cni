@@ -18,6 +18,12 @@ from .frr_manager import FRRManager
 from .vrf_domain import VRFAttachment, VRFDomain, parse_vrf_domain
 
 
+def set_sysctl(config: dict[str, int]) -> None:
+    for path, value in config.items():
+        with open(f'/proc/sys/{path.replace(".", "/")}', 'w') as f:
+            f.write(str(value))
+
+
 class VRFController:
     def __init__(
         self,
@@ -83,11 +89,11 @@ class VRFController:
                     'dump', index=l2ibr_idx, family=socket.AF_INET
                 )
             ]
+            prefix = domain.prefix or str(self.config['default']['prefix'])
+            prefixlen = domain.prefixlen or int(
+                self.config['default']['prefixlen']
+            )
             if len(addresses) == 0:
-                prefix = domain.prefix or str(self.config['default']['prefix'])
-                prefixlen = domain.prefixlen or int(
-                    self.config['default']['prefixlen']
-                )
                 network = IPv4Network(f'{prefix}/{prefixlen}')
                 address = await self.address_pool.allocate(
                     network, domain.vrf, attachment.vni, is_gateway=True
@@ -99,13 +105,19 @@ class VRFController:
                     address=address,
                     prefixlen=prefixlen,
                 )
-                await ipr.ensure(
-                    ipr.route,
-                    present=True,
-                    oif=l2ibr_idx,
-                    dst=prefix,
-                    dst_len=prefixlen,
-                )
+            await ipr.ensure(
+                ipr.route,
+                present=True,
+                oif=l2ibr_idx,
+                dst=prefix,
+                dst_len=prefixlen,
+                table=(
+                    vrf_table
+                    if vrf_table
+                    > int(self.config['default']['service_vrf_max'])
+                    else 254
+                ),
+            )
 
             l2vx_idx = links.get(l2vx_ifname, {}).get('index') or (
                 await ipr.ensure(
@@ -124,6 +136,7 @@ class VRFController:
             await ipr.link('set', index=l2ibr_idx, master=vrf_idx)
             await ipr.link('set', index=l2vx_idx, master=l2ibr_idx)
         await self.firewall.ensure_system_firewall(domain, attachment)
+        set_sysctl({f'net.ipv4.conf.{l2ibr_ifname}.rp_filter': 0})
 
     async def ensure(self, domain: VRFDomain) -> None:
         for attachment in domain.attachments:
@@ -178,7 +191,7 @@ class VRFController:
         domain = VRFDomain(
             name=f'vrf-{default_vrf}',
             vrf=default_vrf,
-            table=254,
+            table=default_vrf,
             prefix=default_prefix,
             prefixlen=default_prefixlen,
             ipblocklen=(
@@ -203,6 +216,14 @@ class VRFController:
         return domain
 
     async def resync(self) -> None:
+        set_sysctl(
+            {
+                'net.ipv4.conf.all.rp_filter': 0,
+                'net.vrf.strict_mode': 1,
+                'net.ipv4.tcp_l3mdev_accept': 1,
+                'net.ipv4.udp_l3mdev_accept': 1,
+            }
+        )
         async with AsyncIPRoute() as ipr_main:
             (vrf1,) = await ipr_main.ensure(
                 ipr_main.link,

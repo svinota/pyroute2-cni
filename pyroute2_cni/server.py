@@ -345,10 +345,6 @@ async def main(config: ConfigParser) -> None:
 
 
 def config_set_defaults(config: ConfigParser) -> None:
-    if 'topology' not in config:
-        config['topology'] = {}
-    with open('config/segment.dot', 'rb') as dot:
-        config['topology']['template'] = dot.read().decode('utf-8')
     if 'network' not in config:
         config['network'] = {}
     if 'readiness' not in config:
@@ -363,8 +359,6 @@ def config_set_defaults(config: ConfigParser) -> None:
     config['readiness'].setdefault('host', READINESS_HOST)
     config['readiness'].setdefault('port', str(READINESS_PORT))
     config['logging'].setdefault('level', DEFAULT_LOG_LEVEL)
-    config['default'].setdefault('l3vni', "0")
-    config['default'].setdefault('l2vni', "42")
     config['default'].setdefault('vrf', "42")
 
 

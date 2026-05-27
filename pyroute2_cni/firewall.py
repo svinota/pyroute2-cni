@@ -268,6 +268,10 @@ class FirewallManager:
             vrf_bridge_index = await ipr_main.link_lookup(
                 ifname=f'l2ibr-{attachment.vni}'
             )
+            default_bridge_index = await ipr_main.link_lookup(
+                ifname=f'l2ibr-{self.config["default"]["vrf"]}'
+            )
+            #
             # install RPDB rule -- complement to the CT mark
             for rule in [x async for x in await ipr_main.get_rules()]:
                 if rule.get('fwmark') == vrf_id:
@@ -276,7 +280,7 @@ class FirewallManager:
                 await ipr_main.rule('add', fwmark=vrf_id, table=vrf_table)
 
         async with AsyncNFTables() as nft_main:
-
+            #
             # reconcile rules
             magic = f'{self.version}|p={prefix}/{prefixlen}'
             for rule in [x async for x in await nft_main.get_rules()]:
@@ -285,6 +289,8 @@ class FirewallManager:
                     break
             else:
                 logging.info(f'fw: install nat rule with magic {magic}')
+                #
+                # general masquerade out
                 await nft_main.rule(
                     'add',
                     table=self.table_name,
@@ -299,6 +305,20 @@ class FirewallManager:
                     ),
                     userdata=magic,
                 )
+                #
+                # service masquerade to the default vrf
+                if domain.vrf != int(self.config['default']['vrf']):
+                    await nft_main.rule(
+                        'add',
+                        table=self.table_name,
+                        chain='nat',
+                        expressions=(
+                            ipv4addr(src=f'{prefix}/{prefixlen}'),
+                            oif(default_bridge_index[0]),
+                            masq(),
+                        ),
+                        userdata=magic,
+                    )
             if not vrf_bridge_index:
                 logging.info('fw: attachment not found, return')
                 return
@@ -342,7 +362,7 @@ class FirewallManager:
             for rule in [x async for x in await nft_main.get_rules()]:
                 if rule.get('userdata') == magic:
                     await nft_main.rule(
-                        'delete',
+                        'del',
                         table=self.table_name,
                         chain='nat',
                         handle=rule.get('handle'),
@@ -353,7 +373,7 @@ class FirewallManager:
                 for rule in [x async for x in await nft_main.get_rules()]:
                     if rule.get('userdata') == magic:
                         await nft_main.rule(
-                            'delete',
+                            'del',
                             table=self.table_name,
                             chain='ct-mark',
                             handle=rule.get('handle'),
@@ -362,6 +382,4 @@ class FirewallManager:
         async with AsyncIPRoute() as ipr_main:
             for rule in [x async for x in await ipr_main.get_rules()]:
                 if rule.get('fwmark') == vrf_id:
-                    await ipr_main.rule(
-                        'delete', fwmark=vrf_id, table=vrf_table
-                    )
+                    await ipr_main.rule('del', fwmark=vrf_id, table=vrf_table)
