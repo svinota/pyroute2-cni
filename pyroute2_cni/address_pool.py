@@ -303,10 +303,13 @@ class AddressPool:
         return deletions
 
     def _next_free_block(
-        self, network: IPv4Network, vrf_table: int
+        self, network: IPv4Network, ipblocklen: int, vrf_table: int
     ) -> IPv4Network:
         used = self._all_block_cidrs(network, vrf_table)
-        for block in network.subnets(new_prefix=self.block_prefixlen):
+        block_prefixlen = (
+            ipblocklen if ipblocklen is not None else self.block_prefixlen
+        )
+        for block in network.subnets(new_prefix=block_prefixlen):
             if block not in used:
                 return block
         raise RuntimeError(f'no available IPBlocks in {network}')
@@ -403,17 +406,27 @@ class AddressPool:
         return IPv4Address(network[address])
 
     def _block_for_ip(
-        self, network: IPv4Network, ip: IPv4Address
+        self,
+        network: IPv4Network,
+        ip: IPv4Address,
+        ipblocklen: int | None = None,
     ) -> IPv4Network:
-        block = IPv4Network(f'{ip}/{self.block_prefixlen}', strict=False)
+        block_prefixlen = (
+            ipblocklen if ipblocklen is not None else self.block_prefixlen
+        )
+        block = IPv4Network(f'{ip}/{block_prefixlen}', strict=False)
         if not block.subnet_of(network):
             raise ValueError(f'{ip} is outside of {network}')
         return block
 
     def _ensure_block_for_ip(
-        self, network: IPv4Network, ip: IPv4Address, vrf_table: int
+        self,
+        network: IPv4Network,
+        ip: IPv4Address,
+        vrf_table: int,
+        ipblocklen: int | None = None,
     ) -> dict[str, Any]:
-        block_cidr = self._block_for_ip(network, ip)
+        block_cidr = self._block_for_ip(network, ip, ipblocklen=ipblocklen)
         for item in self._cluster_block_items(network, vrf_table):
             if item['cidr'] == block_cidr:
                 return item
@@ -422,12 +435,13 @@ class AddressPool:
     def _select_block(
         self,
         network: IPv4Network,
+        ipblocklen: int,
         vrf_table: int,
         ip: IPv4Address | None = None,
     ) -> dict[str, Any]:
         blocks = self._cluster_block_items(network, vrf_table)
         if ip is not None:
-            block_cidr = self._block_for_ip(network, ip)
+            block_cidr = self._block_for_ip(network, ip, ipblocklen=ipblocklen)
             for item in blocks:
                 if (
                     item['cidr'] == block_cidr
@@ -446,7 +460,9 @@ class AddressPool:
                 return item
 
         return self._create_block(
-            network, self._next_free_block(network, vrf_table), vrf_table
+            network,
+            self._next_free_block(network, ipblocklen, vrf_table),
+            vrf_table,
         )
 
     def inet_aton(self, network: IPv4Network, address: str) -> int:
@@ -491,7 +507,8 @@ class AddressPool:
     async def allocate(
         self,
         network: IPv4Network,
-        vrf_table: int | None = None,
+        ipblocklen: int,
+        vrf_table: int,
         is_gateway: bool = False,
         pod_uid: str = '',
         address: int = -1,
@@ -499,7 +516,7 @@ class AddressPool:
         vrf_table = self._resolve_domain(vrf_table)
         ref = pod_uid or ('gateway' if is_gateway else '')
         ip = self._ip_for_address(network, address) if address >= 0 else None
-        block = self._select_block(network, vrf_table, ip)
+        block = self._select_block(network, ipblocklen, vrf_table, ip)
         allocations = dict(block['allocations'])
 
         if ip is None:
@@ -510,7 +527,9 @@ class AddressPool:
                     try:
                         block = self._create_block(
                             network,
-                            self._next_free_block(network, vrf_table),
+                            self._next_free_block(
+                                network, ipblocklen, vrf_table
+                            ),
                             vrf_table,
                         )
                         allocations = dict(block['allocations'])
@@ -548,6 +567,7 @@ class AddressPool:
         except IPBlockStaleResource:
             return await self.restore(
                 network=network,
+                ipblocklen=ipblocklen,
                 vrf_table=vrf_table,
                 is_gateway=is_gateway,
                 pod_uid=pod_uid,
@@ -565,6 +585,7 @@ class AddressPool:
     async def restore(
         self,
         network: IPv4Network,
+        ipblocklen: int,
         vrf_table: int | None = None,
         is_gateway: bool = False,
         pod_uid: str = '',
@@ -573,7 +594,7 @@ class AddressPool:
         vrf_table = self._resolve_domain(vrf_table)
         ref = pod_uid or ('gateway' if is_gateway else '')
         ip = self._ip_for_address(network, address) if address >= 0 else None
-        block = self._select_block(network, vrf_table, ip)
+        block = self._select_block(network, ipblocklen, vrf_table, ip)
         allocations = dict(block['allocations'])
 
         if ip is None:
@@ -596,6 +617,7 @@ class AddressPool:
                 except IPBlockStaleResource:
                     return await self.restore(
                         network=network,
+                        ipblocklen=ipblocklen,
                         vrf_table=vrf_table,
                         is_gateway=is_gateway,
                         pod_uid=pod_uid,
@@ -616,6 +638,7 @@ class AddressPool:
         except IPBlockStaleResource:
             return await self.restore(
                 network=network,
+                ipblocklen=ipblocklen,
                 vrf_table=vrf_table,
                 is_gateway=is_gateway,
                 pod_uid=pod_uid,

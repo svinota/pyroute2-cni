@@ -63,10 +63,10 @@ class VRFAttachment:
 class VRFDomain:
     name: str
     vrf: int
-    table: int | None
-    prefix: str | None
-    prefixlen: int | None
-    ipblocklen: int | None
+    table: int
+    prefix: str
+    prefixlen: int
+    ipblocklen: int
     attachments: list[VRFAttachment]
 
     @property
@@ -132,17 +132,9 @@ def parse_vrf_domain(item: dict[str, Any]) -> VRFDomain:
     return VRFDomain(
         name=str(metadata.get('name') or ''),
         vrf=int(spec['vrf']),
-        table=int(spec['table']) if spec.get('table') is not None else None,
-        prefix=spec.get('prefix'),
-        prefixlen=(
-            int(spec['prefixlen'])
-            if spec.get('prefixlen') is not None
-            else None
-        ),
-        ipblocklen=(
-            int(spec['ipblocklen'])
-            if spec.get('ipblocklen') is not None
-            else None
-        ),
+        table=int(spec['table']),
+        prefix=str(spec['prefix']),
+        prefixlen=int(spec['prefixlen']),
+        ipblocklen=int(spec['ipblocklen']),
         attachments=attachments,
     )

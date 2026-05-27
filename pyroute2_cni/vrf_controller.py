@@ -96,7 +96,7 @@ class VRFController:
             if len(addresses) == 0:
                 network = IPv4Network(f'{prefix}/{prefixlen}')
                 address = await self.address_pool.allocate(
-                    network, domain.vrf, is_gateway=True
+                    network, domain.ipblocklen, domain.vrf, is_gateway=True
                 )
                 await ipr.ensure(
                     ipr.addr,
@@ -194,11 +194,7 @@ class VRFController:
             table=default_vrf,
             prefix=default_prefix,
             prefixlen=default_prefixlen,
-            ipblocklen=(
-                int(self.config['default']['ipblocklen'])
-                if self.config['default'].get('ipblocklen') is not None
-                else None
-            ),
+            ipblocklen=int(self.config['default']['ipblocklen']),
             attachments=[
                 VRFAttachment(
                     kind='l2vni', vni=default_vrf, dev=host_ifname, port=4789

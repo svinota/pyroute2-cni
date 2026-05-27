@@ -89,7 +89,7 @@ spec:
           jsonPath: .spec.vrf
         - name: Table
           type: integer
-          jsonPath: .status.table
+          jsonPath: .spec.table
         - name: Prefix
           type: string
           jsonPath: .spec.prefix
@@ -106,7 +106,7 @@ spec:
           properties:
             spec:
               type: object
-              required: ["vrf", "attachments"]
+              required: ["vrf", "table", "prefix", "prefixlen", "ipblocklen", "attachments"]
               properties:
                 vrf:
                   type: integer
