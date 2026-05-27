@@ -128,6 +128,26 @@ Configuration
 * vxlan: VXLAN id of the transport between nodes;
   → creates interface ``vxlan-{int}`` in the host netns
 
+**VRFDomainBinding**
+
+``VRFDomainBinding`` is cluster-scoped. It maps a Kubernetes namespace to a
+cluster-scoped ``VRFDomain`` resource.
+
+.. code::
+
+    apiVersion: cni.pyroute2.org/v1alpha1
+    kind: VRFDomainBinding
+    metadata:
+      name: test02-vrf-200
+    spec:
+      namespaceRef:
+        name: test02
+      vrfDomainRef:
+        name: vrf-200
+
+* namespaceRef.name: target namespace name
+* vrfDomainRef.name: target ``VRFDomain`` name
+
 
 **ConfigMap**
 

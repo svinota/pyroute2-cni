@@ -160,7 +160,7 @@ metadata:
   name: vrfdomainbindings.cni.pyroute2.org
 spec:
   group: cni.pyroute2.org
-  scope: Namespaced
+  scope: Cluster
   names:
     plural: vrfdomainbindings
     singular: vrfdomainbinding
@@ -172,6 +172,9 @@ spec:
       served: true
       storage: true
       additionalPrinterColumns:
+        - name: Namespace
+          type: string
+          jsonPath: .spec.namespaceRef.name
         - name: VRFDomain
           type: string
           jsonPath: .spec.vrfDomainRef.name
@@ -182,8 +185,15 @@ spec:
           properties:
             spec:
               type: object
-              required: ["vrfDomainRef"]
+              required: ["namespaceRef", "vrfDomainRef"]
               properties:
+                namespaceRef:
+                  type: object
+                  required: ["name"]
+                  properties:
+                    name:
+                      type: string
+                      description: "Name of the target namespace"
                 vrfDomainRef:
                   type: object
                   required: ["name"]

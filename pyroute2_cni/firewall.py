@@ -254,6 +254,9 @@ class FirewallManager:
                     userdata=magic,
                 )
 
+    def magic(self, tag: str, vrf_id: int) -> str:
+        return f'{self.version}|t={tag}|v={vrf_id}'
+
     async def ensure_system_firewall(
         self, domain: VRFDomain, attachment: VRFAttachment
     ) -> None:
@@ -282,7 +285,7 @@ class FirewallManager:
         async with AsyncNFTables() as nft_main:
             #
             # reconcile rules
-            magic = f'{self.version}|p={prefix}/{prefixlen}'
+            magic = self.magic('nat', vrf_id)
             for rule in [x async for x in await nft_main.get_rules()]:
                 if rule.get('userdata') == magic:
                     logging.info(f'fw: hit {magic}')
@@ -307,7 +310,7 @@ class FirewallManager:
                 )
                 #
                 # service masquerade to the default vrf
-                if domain.vrf != int(self.config['default']['vrf']):
+                if vrf_id != int(self.config['default']['vrf']):
                     await nft_main.rule(
                         'add',
                         table=self.table_name,
@@ -323,7 +326,7 @@ class FirewallManager:
                 logging.info('fw: attachment not found, return')
                 return
 
-            magic = f'{self.version}|b={vrf_bridge_index[0]}|t={vrf_id}'
+            magic = self.magic('mark', vrf_id)
             for rule in [x async for x in await nft_main.get_rules()]:
                 if rule.get('userdata') == magic:
                     logging.info(f'fw: hit {magic}')
@@ -347,18 +350,12 @@ class FirewallManager:
     async def remove_system_firewall(
         self, domain: VRFDomain, attachment: VRFAttachment
     ) -> None:
-        prefixlen = domain.prefixlen
-        prefix = domain.prefix
         vrf_id = domain.vrf
         vrf_table = domain.table if domain.table is not None else domain.vrf
 
-        async with AsyncIPRoute() as ipr_main:
-            vrf_bridge_index = await ipr_main.link_lookup(
-                ifname=f'l2ibr-{attachment.vni}'
-            )
-
         async with AsyncNFTables() as nft_main:
-            magic = f'{self.version}|p={prefix}/{prefixlen}'
+
+            magic = self.magic('nat', vrf_id)
             for rule in [x async for x in await nft_main.get_rules()]:
                 if rule.get('userdata') == magic:
                     await nft_main.rule(
@@ -368,16 +365,15 @@ class FirewallManager:
                         handle=rule.get('handle'),
                     )
 
-            if vrf_bridge_index:
-                magic = f'{self.version}|b={vrf_bridge_index[0]}|t={vrf_id}'
-                for rule in [x async for x in await nft_main.get_rules()]:
-                    if rule.get('userdata') == magic:
-                        await nft_main.rule(
-                            'del',
-                            table=self.table_name,
-                            chain='ct-mark',
-                            handle=rule.get('handle'),
-                        )
+            magic = self.magic('mark', vrf_id)
+            for rule in [x async for x in await nft_main.get_rules()]:
+                if rule.get('userdata') == magic:
+                    await nft_main.rule(
+                        'del',
+                        table=self.table_name,
+                        chain='ct-mark',
+                        handle=rule.get('handle'),
+                    )
 
         async with AsyncIPRoute() as ipr_main:
             for rule in [x async for x in await ipr_main.get_rules()]:

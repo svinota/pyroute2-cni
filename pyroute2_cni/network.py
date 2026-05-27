@@ -1,4 +1,3 @@
-import errno
 import logging
 import os
 import socket
@@ -7,11 +6,11 @@ from dataclasses import asdict, dataclass
 from ipaddress import IPv4Network
 from typing import Any, Callable
 
-from pyroute2 import AsyncIPRoute, NetlinkError
+from pyroute2 import AsyncIPRoute
 from pyroute2.common import uifname
 
 from kubernetes import client as k8s_client
-from pyroute2_cni.address_pool import AddressPool, IPBlockConflict
+from pyroute2_cni.address_pool import AddressPool
 from pyroute2_cni.kubernetes import get_pod_tag
 from pyroute2_cni.protocols import PluginProtocol
 from pyroute2_cni.request import CNIRequest
@@ -96,20 +95,19 @@ class Plugin(PluginProtocol):
         pod_uid = get_pod_tag(request, 'uid')
         net_ns_fd = request.netns
 
-        bindings = (
-            self.address_pool.k8s_custom_api.list_namespaced_custom_object(
-                'cni.pyroute2.org', 'v1alpha1', namespace, 'vrfdomainbindings'
-            )
+        bindings = self.address_pool.k8s_custom_api.list_cluster_custom_object(
+            'cni.pyroute2.org', 'v1alpha1', 'vrfdomainbindings'
         )
         items = bindings.get('items', [])
-        if items:
-            vrfd_name = (
-                (items[0].get('spec') or {})
-                .get('vrfDomainRef', {})
-                .get('name')
-            )
-        else:
-            vrfd_name = 'vrf-42'
+        vrfd_name = None
+        for item in items:
+            spec = item.get('spec') or {}
+            namespace_ref = spec.get('namespaceRef') or {}
+            if namespace_ref.get('name') == namespace:
+                vrfd_name = (spec.get('vrfDomainRef') or {}).get('name')
+                break
+        if vrfd_name is None:
+            vrfd_name = f'vrf-{self.config["default"]["vrf"]}'
 
         raw_domain = (
             self.address_pool.k8s_custom_api.get_cluster_custom_object(
@@ -185,100 +183,7 @@ class Plugin(PluginProtocol):
         return info
 
     async def resync(self) -> None:
-        return
-        config = self.config
-
-        v1 = k8s_client.CoreV1Api()
-        self.refresh_frr_peers(v1)
-        node_name = self.address_pool.node_name
-        live_pod_ips = {
-            pod.metadata.uid: pod.status.pod_ip
-            for pod in v1.list_pod_for_all_namespaces(
-                field_selector=f'spec.nodeName={node_name}'
-            ).items
-            if pod.metadata
-            and pod.metadata.uid
-            and pod.status
-            and pod.status.pod_ip
-        }
-        networks = set()
-        default_prefix = config['default']['prefix']
-        default_prefixlen = config['default']['prefixlen']
-        default_vrf = int(config['default']['vrf'])
-        default_l2vni = int(config['default']['l2vni'])
-        default_l3vni = int(config['default']['l3vni'])
-        networks.add(
-            (
-                IPv4Network(f'{default_prefix}/{default_prefixlen}'),
-                default_vrf,
-                default_l2vni,
-                default_l3vni,
-            )
-        )
-
-        for network, vrf_table, l2vni, _l3vni in networks:
-            br_ifname = f'br-{vrf_table}'
-            gateway_ip = None
-            async with AsyncIPRoute() as ipr:
-                block_cidrs = self.address_pool.block_cidrs(
-                    network, vrf_table, l2vni
-                )
-                br_idx = await ipr.link_lookup(ifname=br_ifname)
-                if not br_idx:
-                    continue
-                bridge_addr = [
-                    x
-                    async for x in await ipr.addr(
-                        'dump', family=socket.AF_INET, index=br_idx[0]
-                    )
-                ]
-                if bridge_addr:
-                    gateway_ip = bridge_addr[0].get('address')
-                    try:
-                        await self.address_pool.restore(
-                            network=network,
-                            vrf_table=vrf_table,
-                            l2vni=l2vni,
-                            is_gateway=True,
-                            address=self.address_pool.inet_aton(
-                                network, gateway_ip
-                            ),
-                        )
-                    except IPBlockConflict as err:
-                        logging.warning(
-                            'skipping bridge gateway restore for %s: %s',
-                            gateway_ip,
-                            err,
-                        )
-                    await self.address_pool.restore_live_allocations(
-                        network, vrf_table, l2vni, live_pod_ips
-                    )
-                    await self.address_pool.prune_stale_allocations(
-                        network, vrf_table, l2vni, live_pod_ips, gateway_ip
-                    )
-
-                table = 254
-                service_vrf_max = (
-                    int(config['default']['service_vrf_max']) or 1024
-                )
-                if vrf_table > service_vrf_max:
-                    table = vrf_table
-
-                # Cleanup broad prefix routes possibly left from
-                # previous versions
-                try:
-                    await ipr.route(
-                        'del',
-                        dst=str(network.network_address),
-                        dst_len=network.prefixlen,
-                        table=table,
-                    )
-                except NetlinkError as e:
-                    if e.code != errno.ESRCH:
-                        raise
-                await self.reconcile_routes(ipr, block_cidrs, br_ifname, table)
-
-        await self.address_pool.gc_empty_blocks()
+        pass
 
     async def cleanup(
         self, data: dict[str, Any], request: CNIRequest
