@@ -210,15 +210,16 @@ class Plugin(PluginProtocol):
                 self.config['default']['prefixlen']
             )
             network = IPv4Network(f'{prefix}/{prefixlen}')
+            gateway_ip = []
             async with AsyncIPRoute() as ipr:
-                gateway_ip = [
-                    x.get('address')
-                    async for x in await ipr.addr(
-                        'dump',
-                        index=await ipr.link_lookup(f'l2ibr-{domain.vrf}'),
-                        family=socket.AF_INET,
-                    )
-                ]
+                gateway_idx = await ipr.link_lookup(f'l2ibr-{domain.vrf}')
+                if gateway_idx:
+                    gateway_ip = [
+                        x.get('address')
+                        async for x in await ipr.addr(
+                            'dump', index=gateway_idx[0], family=socket.AF_INET
+                        )
+                    ]
             await self.address_pool.prune_stale_allocations(
                 network=network,
                 vrf_table=domain.vrf,
