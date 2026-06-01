@@ -119,7 +119,7 @@ class Plugin(PluginProtocol):
         prefix = domain.prefix or str(config['default']['prefix'])
         prefixlen = domain.prefixlen or int(config['default']['prefixlen'])
         network = IPv4Network(f'{prefix}/{prefixlen}')
-        bridge_ifname = f'l2ibr-{domain.vrf}'
+        bridge_ifname = f'l2br-{domain.vrf}'
         uplink = uifname()
 
         async with AsyncIPRoute() as ipr_main:
@@ -212,7 +212,7 @@ class Plugin(PluginProtocol):
             network = IPv4Network(f'{prefix}/{prefixlen}')
             gateway_ip = []
             async with AsyncIPRoute() as ipr:
-                gateway_idx = await ipr.link_lookup(f'l2ibr-{domain.vrf}')
+                gateway_idx = await ipr.link_lookup(f'l2br-{domain.vrf}')
                 if gateway_idx:
                     gateway_ip = [
                         x.get('address')

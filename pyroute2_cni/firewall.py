@@ -267,10 +267,10 @@ class FirewallManager:
             default_link = default_route[0].get('oif')
             logging.info(f'fw: external interface {default_link}')
             vrf_bridge_index = await ipr_main.link_lookup(
-                ifname=f'l2ibr-{domain.vrf}'
+                ifname=f'l2br-{domain.vrf}'
             )
             default_bridge_index = await ipr_main.link_lookup(
-                ifname=f'l2ibr-{self.config["default"]["vrf"]}'
+                ifname=f'l2br-{self.config["default"]["vrf"]}'
             )
             #
             # install RPDB rule -- complement to the CT mark

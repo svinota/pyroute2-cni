@@ -37,56 +37,47 @@ class VRFController:
         self.frr_manager = frr_manager
         self.vrf_custom_api = k8s_client.CustomObjectsApi()
 
-    async def remove_l2vni(
-        self, domain: VRFDomain, attachment: VRFAttachment
-    ) -> None:
+    async def remove_vrf(self, domain: VRFDomain) -> None:
         vrf_ifname = f'vrf-{domain.vrf}'
-        l2vx_ifname = f'l2vx-{attachment.vni}'
-        l2ibr_ifname = f'l2ibr-{domain.vrf}'
         async with AsyncIPRoute() as ipr:
             await ipr.ensure(ipr.link, present=False, ifname=vrf_ifname)
-            await ipr.ensure(ipr.link, present=False, ifname=l2ibr_ifname)
-            await ipr.ensure(ipr.link, present=False, ifname=l2vx_ifname)
         await self.frr_manager.reload(self._vrf_domain_items())
-        await self.firewall.remove_system_firewall(domain)
 
-    async def ensure_l2vni(
-        self, domain: VRFDomain, attachment: VRFAttachment
+    async def remove_vni(
+        self, domain: VRFDomain, attachment: VRFAttachment, prefix: str
     ) -> None:
-        vrf_table = domain.table if domain.table is not None else domain.vrf
-        vrf_ifname = f'vrf-{domain.vrf}'
-        l2vx_ifname = f'l2vx-{attachment.vni}'
-        l2ibr_ifname = f'l2ibr-{domain.vrf}'
-        await self.frr_manager.reload(self._vrf_domain_items())
-        logging.info(f'ensure attachment: {attachment}')
+        l2vx_ifname = f'{prefix}vx-{attachment.vni}'
+        l2br_ifname = f'{prefix}br-{domain.vrf}'
         async with AsyncIPRoute() as ipr:
-            links = dict(
-                [(x.get('ifname'), x) async for x in await ipr.link('dump')]
-            )
-            vrf_idx = links.get(vrf_ifname, {}).get('index') or (
+            await ipr.ensure(ipr.link, present=False, ifname=l2br_ifname)
+            await ipr.ensure(ipr.link, present=False, ifname=l2vx_ifname)
+
+    async def ensure_vrf(self, domain: VRFDomain) -> int:
+        logging.info(f'ensure VRF: {domain}')
+        await self.frr_manager.reload(self._vrf_domain_items())
+        vrf_ifname = f'vrf-{domain.vrf}'
+        async with AsyncIPRoute() as ipr:
+            return (
                 await ipr.ensure(
                     ipr.link,
                     present=True,
                     ifname=vrf_ifname,
                     kind='vrf',
-                    vrf_table=vrf_table,
-                    state='up',
-                )
-            )[0].get('index')
-            l2ibr_idx = links.get(l2ibr_ifname, {}).get('index') or (
-                await ipr.ensure(
-                    ipr.link,
-                    present=True,
-                    ifname=l2ibr_ifname,
-                    kind='bridge',
+                    vrf_table=domain.table,
                     state='up',
                 )
             )[0].get('index')
 
+    async def ensure_bridge_address(
+        self, domain: VRFDomain, br_idx: int
+    ) -> None:
+
+        logging.info(f'ensure bridge address for domain: {domain}')
+        async with AsyncIPRoute() as ipr:
             addresses: list[tuple[str, int]] = [
                 (x.get('address'), x.get('prefixlen'))
                 async for x in await ipr.addr(
-                    'dump', index=l2ibr_idx, family=socket.AF_INET
+                    'dump', index=br_idx, family=socket.AF_INET
                 )
             ]
             prefix = domain.prefix or str(self.config['default']['prefix'])
@@ -101,29 +92,53 @@ class VRFController:
                 await ipr.ensure(
                     ipr.addr,
                     present=True,
-                    index=l2ibr_idx,
+                    index=br_idx,
                     address=address,
                     prefixlen=prefixlen,
                 )
             await ipr.ensure(
                 ipr.route,
                 present=True,
-                oif=l2ibr_idx,
+                oif=br_idx,
                 dst=prefix,
                 dst_len=prefixlen,
-                table=(
-                    vrf_table
-                    if vrf_table
-                    > int(self.config['default']['service_vrf_max'])
-                    else 254
-                ),
+                table=domain.table,
             )
 
-            l2vx_idx = links.get(l2vx_ifname, {}).get('index') or (
+    async def ensure_vni(
+        self,
+        domain: VRFDomain,
+        attachment: VRFAttachment,
+        prefix: str,
+        vrf_idx: int,
+    ) -> int:
+        vx_ifname = f'{prefix}vx-{attachment.vni}'
+        br_ifname = f'{prefix}br-{domain.vrf}'
+        logging.info(f'ensure attachment: {attachment}')
+        br_idx = 0
+        async with AsyncIPRoute() as ipr:
+            links = dict(
+                [(x.get('ifname'), x) async for x in await ipr.link('dump')]
+            )
+            br_idx = links.get(br_ifname, {}).get('index') or (
                 await ipr.ensure(
                     ipr.link,
                     present=True,
-                    ifname=l2vx_ifname,
+                    ifname=br_ifname,
+                    kind='bridge',
+                    state='up',
+                )
+            )[0].get('index')
+
+            #
+            # NB: vxlan_link is the output device for VXLAN, not a
+            #     master device; the master device will be the bridge
+            #
+            vx_idx = links.get(vx_ifname, {}).get('index') or (
+                await ipr.ensure(
+                    ipr.link,
+                    present=True,
+                    ifname=vx_ifname,
                     kind='vxlan',
                     vxlan_link=links[attachment.dev],
                     vxlan_id=attachment.vni,
@@ -133,26 +148,38 @@ class VRFController:
                     state='up',
                 )
             )[0].get('index')
-            await ipr.link('set', index=l2ibr_idx, master=vrf_idx)
-            await ipr.link('set', index=l2vx_idx, master=l2ibr_idx)
-        await self.firewall.ensure_system_firewall(domain)
-        set_sysctl({f'net.ipv4.conf.{l2ibr_ifname}.rp_filter': 0})
+            await ipr.link('set', index=br_idx, master=vrf_idx)
+            await ipr.link('set', index=vx_idx, master=br_idx)
+        set_sysctl({f'net.ipv4.conf.{br_ifname}.rp_filter': 0})
+        return br_idx
 
     async def ensure(self, domain: VRFDomain) -> None:
+        vrf_idx = await self.ensure_vrf(domain)
         for attachment in domain.attachments:
             match attachment.kind:
                 case 'l2vni':
-                    await self.ensure_l2vni(domain, attachment)
+                    br_idx = await self.ensure_vni(
+                        domain, attachment, 'l2', vrf_idx
+                    )
+                    await self.ensure_bridge_address(domain, br_idx)
+                case 'l3vni':
+                    await self.ensure_vni(domain, attachment, 'l3', vrf_idx)
                 case _:
                     pass
+        await self.firewall.ensure_system_firewall(domain)
+
 
     async def remove(self, domain: VRFDomain) -> None:
         for attachment in domain.attachments:
             match attachment.kind:
                 case 'l2vni':
-                    await self.remove_l2vni(domain, attachment)
+                    await self.remove_vni(domain, attachment, 'l2')
+                case 'l3vni':
+                    await self.remove_vni(domain, attachment, 'l3')
                 case _:
                     pass
+        await self.remove_vrf(domain)
+        await self.firewall.remove_system_firewall(domain)
 
     def _vrf_domain_items(self) -> dict[int, VRFDomain]:
         response = self.vrf_custom_api.list_cluster_custom_object(
