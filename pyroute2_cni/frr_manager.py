@@ -66,19 +66,23 @@ class FRRManager:
                 raise
         return []
 
-    def refresh_peers(self, v1: k8s_client.CoreV1Api) -> None:
-        peer_ips = []
+    def refresh_peers(self, v1: k8s_client.CoreV1Api) -> set[str]:
+        peer_ips: set[str] = set()
         local_node_name = self.config['network']['node_name']
-        local_rrs = self._node_route_reflectors(local_node_name)
         self.router_id = self._node_router_id(local_node_name)
-        if not local_rrs:
-            for node in v1.list_node().items:
-                if node.metadata is None or node.metadata.name is None:
-                    continue
-                if node.metadata.name == local_node_name:
-                    continue
-                peer_ips.append(self._node_router_id(node.metadata.name, node))
-        self.peer_ips = sorted(set(peer_ips))
+        for peer in self._node_route_reflectors(local_node_name):
+            peer_ips.add(peer)
+        if peer_ips:
+            # RR are fetched, stop and return
+            return peer_ips
+        # no RRs found, build mesh network
+        for node in v1.list_node().items:
+            if node.metadata is None or node.metadata.name is None:
+                continue
+            if node.metadata.name == local_node_name:
+                continue
+            peer_ips.add(self._node_router_id(node.metadata.name, node))
+        return peer_ips
 
     def render(self, vrfs: dict[int, VRFDomain]) -> str:
         vrf_sections = []
@@ -124,7 +128,9 @@ class FRRManager:
         self, vrfs: dict[int, VRFDomain], refresh: bool = True
     ) -> None:
         if refresh:
-            self.refresh_peers(k8s_client.CoreV1Api())
+            self.peer_ips = list(
+                sorted(self.refresh_peers(k8s_client.CoreV1Api()))
+            )
         self.output_path.write_text(self.render(vrfs), encoding='utf-8')
         deadline = time.monotonic() + 120
         read_timeout = 30
