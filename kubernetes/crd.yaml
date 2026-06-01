@@ -235,6 +235,14 @@ spec:
                     name:
                       type: string
                       description: "Name of the target node"
+                routerId:
+                  type: string
+                  description: "Preferred router ID for this node"
+                routeReflectors:
+                  type: array
+                  items:
+                    type: string
+                  description: "Explicit BGP route reflector peers for this node"
                 interfaces:
                   type: array
                   items:

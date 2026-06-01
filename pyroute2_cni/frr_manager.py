@@ -5,8 +5,10 @@ from pathlib import Path
 from string import Template
 from typing import Any
 
+from kubernetes.client.exceptions import ApiException
+
 from kubernetes import client as k8s_client
-from pyroute2_cni.kubernetes import get_node_annotations
+from pyroute2_cni.kubernetes import get_cluster_custom_object
 from pyroute2_cni.vrf_domain import VRFDomain
 
 
@@ -17,6 +19,7 @@ class FRRManager:
         self.output_path = Path('/etc/frr/frr.conf')
         self.reload_sock = '/var/run/frr/reload.sock'
         self.peer_ips: list[str] = []
+        self.router_id: str = config['network']['ipaddr']
 
     @staticmethod
     def _node_peer_ip(node: Any) -> str | None:
@@ -29,16 +32,52 @@ class FRRManager:
                 return addr.address
         return None
 
+    def _node_router_id(self, node_name: str, node: Any | None = None) -> str:
+        try:
+            obj = get_cluster_custom_object(
+                'cni.pyroute2.org', 'v1alpha1', 'vrfnodeconfigs', node_name
+            )
+            spec = obj.get('spec') or {}
+            router_id = spec.get('routerId')
+            if router_id:
+                return str(router_id)
+        except ApiException as e:
+            if e.status != 404:
+                raise
+
+        if node is not None:
+            peer_ip = self._node_peer_ip(node)
+            if peer_ip is not None:
+                return peer_ip
+
+        return self.config['network']['ipaddr']
+
+    def _node_route_reflectors(self, node_name: str) -> list[str]:
+        try:
+            obj = get_cluster_custom_object(
+                'cni.pyroute2.org', 'v1alpha1', 'vrfnodeconfigs', node_name
+            )
+            spec = obj.get('spec') or {}
+            rr_list = spec.get('routeReflectors') or []
+            if rr_list:
+                return [str(item) for item in rr_list if str(item)]
+        except ApiException as e:
+            if e.status != 404:
+                raise
+        return []
+
     def refresh_peers(self, v1: k8s_client.CoreV1Api) -> None:
         peer_ips = []
         local_node_name = self.config['network']['node_name']
-        for node in v1.list_node().items:
-            if node.metadata and node.metadata.name == local_node_name:
-                continue
-            peer_ip = self._node_peer_ip(node)
-            if peer_ip is None:
-                continue
-            peer_ips.append(peer_ip)
+        local_rrs = self._node_route_reflectors(local_node_name)
+        self.router_id = self._node_router_id(local_node_name)
+        if not local_rrs:
+            for node in v1.list_node().items:
+                if node.metadata is None or node.metadata.name is None:
+                    continue
+                if node.metadata.name == local_node_name:
+                    continue
+                peer_ips.append(self._node_router_id(node.metadata.name, node))
         self.peer_ips = sorted(set(peer_ips))
 
     def render(self, vrfs: dict[int, VRFDomain]) -> str:
@@ -69,31 +108,13 @@ class FRRManager:
             section += ' exit-address-family\n' 'exit'
             vrf_router_sections.append(section)
 
-        bgp_config = (
-            self.config['bgp'] if self.config.has_section('bgp') else {}
+        peer_records = '\n'.join(
+            f' neighbor {peer} peer-group PR2' for peer in self.peer_ips
         )
-        rr_mode = bgp_config.get('rr_mode', 'mesh')
-        peer_records = ''
-        router_id = self.config['network']['ipaddr']
-
-        if rr_mode == 'mesh':
-            peer_records += '\n'.join(
-                f' neighbor {peer} peer-group PR2' for peer in self.peer_ips
-            )
-        elif rr_mode == 'node-annotation':
-            node_name = self.config['network']['node_name']
-            node_rr_annotation = (
-                get_node_annotations(node_name).get('pyroute2.org/rr') or ''
-            )
-            rr_list = node_rr_annotation.split(';')
-            if rr_list:
-                peer_records += '\n'.join(
-                    f' neighbor {peer} peer-group PR2' for peer in rr_list
-                )
 
         template = Template(self.template_path.read_text(encoding='utf-8'))
         return template.substitute(
-            router_id=router_id,
+            router_id=self.router_id,
             peer_records=peer_records,
             vrf_sections='\n!\n'.join(vrf_sections),
             vrf_router_sections='\n!\n'.join(vrf_router_sections),

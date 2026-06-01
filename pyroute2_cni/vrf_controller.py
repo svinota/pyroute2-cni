@@ -168,7 +168,6 @@ class VRFController:
                     pass
         await self.firewall.ensure_system_firewall(domain)
 
-
     async def remove(self, domain: VRFDomain) -> None:
         for attachment in domain.attachments:
             match attachment.kind:
