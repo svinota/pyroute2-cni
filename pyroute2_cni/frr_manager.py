@@ -105,10 +105,10 @@ class FRRManager:
                     vrf_sections.append(
                         f'vrf vrf-{item.vrf}\n vni {attachment.vni}\nexit-vrf'
                     )
-                # section += (
-                #     f'  route-target import 65000:{item.vrf}\n'
-                #     f'  route-target export 65000:{item.vrf}\n'
-                # )
+                section += (
+                    f'  route-target import 65000:{item.vrf}\n'
+                    f'  route-target export 65000:{item.vrf}\n'
+                )
             section += ' exit-address-family\n' 'exit'
             vrf_router_sections.append(section)
 
