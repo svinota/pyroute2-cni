@@ -347,7 +347,6 @@ class FirewallManager:
 
     async def remove_system_firewall(self, domain: VRFDomain) -> None:
         vrf_id = domain.vrf
-        vrf_table = domain.table if domain.table is not None else domain.vrf
 
         async with AsyncNFTables() as nft_main:
 
@@ -374,4 +373,6 @@ class FirewallManager:
         async with AsyncIPRoute() as ipr_main:
             for rule in [x async for x in await ipr_main.get_rules()]:
                 if rule.get('fwmark') == vrf_id:
-                    await ipr_main.rule('del', fwmark=vrf_id, table=vrf_table)
+                    await ipr_main.rule(
+                        'del', fwmark=vrf_id, priority=rule.get('priority')
+                    )
