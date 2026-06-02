@@ -136,9 +136,6 @@ spec:
                       vni:
                         type: integer
                         description: "VXLAN network identifier"
-                      dev:
-                        type: string
-                        description: "Host device"
                       local:
                         type: string
                         description: "VXLAN local VTEP"

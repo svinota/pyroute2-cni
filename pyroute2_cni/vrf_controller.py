@@ -1,8 +1,10 @@
 import asyncio
 import logging
+import os
 import socket
 import threading
 from configparser import ConfigParser
+from dataclasses import dataclass
 from ipaddress import IPv4Network
 
 from kubernetes.client.exceptions import ApiException
@@ -15,6 +17,7 @@ from kubernetes import watch as k8s_watch  # type: ignore[attr-defined]
 from .address_pool import AddressPool
 from .firewall import FirewallManager
 from .frr_manager import FRRManager
+from .kubernetes import get_cluster_custom_object
 from .vrf_domain import VRFAttachment, VRFDomain, parse_vrf_domain
 
 
@@ -22,6 +25,13 @@ def set_sysctl(config: dict[str, int]) -> None:
     for path, value in config.items():
         with open(f'/proc/sys/{path.replace(".", "/")}', 'w') as f:
             f.write(str(value))
+
+
+@dataclass
+class VTEPInfo:
+    ifname: str
+    local: str
+    link: int
 
 
 class VRFController:
@@ -36,6 +46,12 @@ class VRFController:
         self.address_pool = address_pool
         self.frr_manager = frr_manager
         self.vrf_custom_api = k8s_client.CustomObjectsApi()
+        self.host_link: int = 0
+        self.host_src: str = ''
+        self.host_ifname: str = ''
+        self.node_name = os.environ.get('NODE_NAME', '')
+        if not self.node_name:
+            raise RuntimeError('node name is not set')
 
     async def remove_vrf(self, domain: VRFDomain) -> None:
         vrf_ifname = f'vrf-{domain.vrf}'
@@ -105,6 +121,70 @@ class VRFController:
                 table=domain.table,
             )
 
+    async def _fetch_vtep(
+        self, domain: VRFDomain, attachment: VRFAttachment
+    ) -> VTEPInfo:
+        #
+        # fetch all the interfaces info
+        #
+        async with AsyncIPRoute() as ipr:
+            links = dict(
+                [(x.get('ifname'), x) async for x in await ipr.link('dump')]
+            )
+
+        try:
+            obj = get_cluster_custom_object(
+                'cni.pyroute2.org',
+                'v1alpha1',
+                'vrfnodeconfigs',
+                self.node_name,
+            )
+            spec = obj.get('spec') or {}
+            #
+            # Iterate through the definitions and pick the first matching
+            #
+            interfaces = sorted(
+                (
+                    x
+                    for x in spec.get('interfaces', [])
+                    if x.get('name') is None or x.get('name') in links
+                ),
+                key=lambda x: x.get('name') is None,
+            )
+
+            for item in interfaces:
+                if item.get('name') in links:
+                    return VTEPInfo(
+                        ifname=item.get('name'),
+                        local=item.get('local'),
+                        link=links[item.get('name')].get('index'),
+                    )
+        except ApiException as e:
+            if e.status != 404:
+                logging.warning(
+                    'failed to read VRFNodeConfig for node %s, '
+                    'falling back to netlink: %s',
+                    self.node_name,
+                    e,
+                )
+            else:
+                logging.info(
+                    'VRFNodeConfig for node %s not found, '
+                    'falling back to netlink',
+                    self.node_name,
+                )
+        except Exception as e:
+            logging.warning(
+                'failed to read VRFNodeConfig for node %s, '
+                'falling back to netlink: %s',
+                self.node_name,
+                e,
+            )
+
+        return VTEPInfo(
+            ifname=self.host_ifname, local=self.host_src, link=self.host_link
+        )
+
     async def ensure_vni(
         self,
         domain: VRFDomain,
@@ -134,16 +214,18 @@ class VRFController:
             # NB: vxlan_link is the output device for VXLAN, not a
             #     master device; the master device will be the bridge
             #
+            vtep_info = await self._fetch_vtep(domain, attachment)
+            logging.info(f'vtep info: {vtep_info}')
             vx_idx = links.get(vx_ifname, {}).get('index') or (
                 await ipr.ensure(
                     ipr.link,
                     present=True,
                     ifname=vx_ifname,
                     kind='vxlan',
-                    vxlan_link=links[attachment.dev],
+                    vxlan_link=vtep_info.link,
                     vxlan_id=attachment.vni,
                     vxlan_port=attachment.port,
-                    vxlan_local=await attachment.fetch_local(),
+                    vxlan_local=vtep_info.local,
                     vxlan_learning=0,
                     state='up',
                 )
@@ -198,20 +280,18 @@ class VRFController:
         default_vrf = int(self.config['default']['vrf'])
         default_prefix = self.config['default']['prefix']
         default_prefixlen = int(self.config['default']['prefixlen'])
-        host_link: int = 0
-        host_src: str = ''
-        host_ifname: str = ''
 
         async with AsyncIPRoute() as ipr:
             logging.info('trying to calculate host_if')
             default_route = await ipr.route('get', dst='1.1.1.1')
-            host_link = default_route[0].get('oif')
-            host_src = default_route[0].get('prefsrc') or '127.0.0.1'
-            host_ifname = (await ipr.link('get', index=host_link))[0].get(
-                'ifname'
-            )
+            self.host_link = default_route[0].get('oif')
+            self.host_src = default_route[0].get('prefsrc') or '127.0.0.1'
+            self.host_ifname = (await ipr.link('get', index=self.host_link))[
+                0
+            ].get('ifname')
             logging.info(
-                f'host discovery: {host_link}:{host_ifname}:{host_src}'
+                f'host discovery: {self.host_link}:'
+                f'{self.host_ifname}:{self.host_src}'
             )
 
         domain = VRFDomain(
@@ -222,9 +302,7 @@ class VRFController:
             prefixlen=default_prefixlen,
             ipblocklen=int(self.config['default']['ipblocklen']),
             attachments=[
-                VRFAttachment(
-                    kind='l2vni', vni=default_vrf, dev=host_ifname, port=4789
-                )
+                VRFAttachment(kind='l2vni', vni=default_vrf, port=4789)
             ],
         )
         body = domain.render()

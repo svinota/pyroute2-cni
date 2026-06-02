@@ -1,62 +1,13 @@
-import logging
-import os
 from dataclasses import dataclass
 from ipaddress import IPv4Network
 from typing import Any
-
-from kubernetes.client.exceptions import ApiException
-from pyroute2 import AsyncIPRoute
-
-from pyroute2_cni.kubernetes import get_cluster_custom_object
 
 
 @dataclass(frozen=True)
 class VRFAttachment:
     kind: str
     vni: int
-    dev: str
     port: int
-
-    async def fetch_local(self) -> str:
-        node_name = os.environ.get('NODE_NAME', '')
-        if node_name:
-            try:
-                obj = get_cluster_custom_object(
-                    'cni.pyroute2.org', 'v1alpha1', 'vrfnodeconfigs', node_name
-                )
-                spec = obj.get('spec') or {}
-                for item in spec.get('interfaces') or []:
-                    if item.get('name') == self.dev:
-                        local = item.get('local')
-                        if local:
-                            return str(local)
-            except ApiException as e:
-                if e.status != 404:
-                    logging.warning(
-                        'failed to read VRFNodeConfig for node %s, '
-                        'falling back to netlink: %s',
-                        node_name,
-                        e,
-                    )
-                else:
-                    logging.info(
-                        'VRFNodeConfig for node %s not found, '
-                        'falling back to netlink',
-                        node_name,
-                    )
-            except Exception as e:
-                logging.warning(
-                    'failed to read VRFNodeConfig for node %s, '
-                    'falling back to netlink: %s',
-                    node_name,
-                    e,
-                )
-
-        async with AsyncIPRoute() as ipr:
-            index = (await ipr.link_lookup(ifname=self.dev))[0]
-            return [x async for x in await ipr.addr('dump', index=index)][
-                0
-            ].get('address')
 
 
 @dataclass(frozen=True)
@@ -105,12 +56,7 @@ class VRFDomain:
                 'prefixlen': self.prefixlen,
                 'ipblocklen': self.ipblocklen,
                 'attachments': [
-                    {
-                        'type': item.kind,
-                        'vni': item.vni,
-                        'dev': item.dev,
-                        'port': item.port,
-                    }
+                    {'type': item.kind, 'vni': item.vni, 'port': item.port}
                     for item in self.attachments
                 ],
             },
@@ -124,7 +70,6 @@ def parse_vrf_domain(item: dict[str, Any]) -> VRFDomain:
         VRFAttachment(
             kind=str(seg.get('type', '')),
             vni=int(seg.get('vni', 0)),
-            dev=str(seg.get('dev', '')),
             port=int(seg.get('port', 4789)),
         )
         for seg in spec.get('attachments') or []
