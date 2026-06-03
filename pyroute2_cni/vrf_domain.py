@@ -1,6 +1,12 @@
 from dataclasses import dataclass
+from enum import IntEnum
 from ipaddress import IPv4Network
 from typing import Any
+
+
+class VRFAttachmentTypes(IntEnum):
+    l2vni = 2
+    l3vni = 3
 
 
 @dataclass(frozen=True)
@@ -43,6 +49,28 @@ class VRFDomain:
             if segment.kind == 'l3vni':
                 return segment.vni
         return 0
+
+    def get_type(self) -> str:
+        return (
+            list(
+                sorted(
+                    (x.kind for x in self.attachments),
+                    key=lambda x: int(getattr(VRFAttachmentTypes, x, 99)),
+                )
+            )
+            or ['no']
+        )[0]
+
+    def bridge_prefix(self) -> str:
+        return {'l2vni': 'l2br', 'l3vni': 'l3br'}.get(self.get_type(), 'no')
+
+    def bridge_prefixlen(self) -> int:
+        if self.get_type() == 'l2vni':
+            return self.prefixlen
+        return self.ipblocklen
+
+    def bridge_name(self) -> str:
+        return f'{self.bridge_prefix()}-{self.vrf}'
 
     def render(self) -> dict[str, Any]:
         return {

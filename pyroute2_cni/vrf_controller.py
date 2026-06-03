@@ -110,7 +110,7 @@ class VRFController:
                     present=True,
                     index=br_idx,
                     address=address,
-                    prefixlen=prefixlen,
+                    prefixlen=domain.bridge_prefixlen(),
                 )
             table = (
                 domain.table
@@ -123,7 +123,7 @@ class VRFController:
                 present=True,
                 oif=br_idx,
                 dst=prefix,
-                dst_len=prefixlen,
+                dst_len=domain.bridge_prefixlen(),
                 table=table,
             )
 
@@ -243,17 +243,23 @@ class VRFController:
 
     async def ensure(self, domain: VRFDomain) -> None:
         vrf_idx = await self.ensure_vrf(domain)
+        bridges: dict[str, int] = {}
         for attachment in domain.attachments:
             match attachment.kind:
                 case 'l2vni':
-                    br_idx = await self.ensure_vni(
+                    bridges['l2vni'] = await self.ensure_vni(
                         domain, attachment, 'l2', vrf_idx
                     )
-                    await self.ensure_bridge_address(domain, br_idx)
                 case 'l3vni':
-                    await self.ensure_vni(domain, attachment, 'l3', vrf_idx)
+                    bridges['l3vni'] = await self.ensure_vni(
+                        domain, attachment, 'l3', vrf_idx
+                    )
                 case _:
                     pass
+        if domain.get_type() in bridges:
+            await self.ensure_bridge_address(
+                domain, bridges[domain.get_type()]
+            )
         await self.firewall.ensure_system_firewall(domain)
 
     async def remove(self, domain: VRFDomain) -> None:

@@ -267,7 +267,7 @@ class FirewallManager:
             default_link = default_route[0].get('oif')
             logging.info(f'fw: external interface {default_link}')
             vrf_bridge_index = await ipr_main.link_lookup(
-                ifname=f'l2br-{domain.vrf}'
+                ifname=domain.bridge_name()
             )
             default_bridge_index = await ipr_main.link_lookup(
                 ifname=f'l2br-{self.config["default"]["vrf"]}'
