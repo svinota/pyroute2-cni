@@ -54,13 +54,9 @@ data:
     [default]
     prefix = 10.244.0.0
     prefixlen = 16
-    ipblocklen = 26
-    l2vni = 42
-    vrf = 42
-    service_vrf_max = 512
     srv6end = fc00:100:$host_order::$vrf_table:a
     srv6endDT4 = fc00:100:$host_order::$vrf_table:b
     srv6local = fc00:200:1:$host_order::5
 
-    [bgp]
-    rr_mode = mesh
+    [logging]
+    level = info
