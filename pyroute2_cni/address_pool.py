@@ -124,7 +124,7 @@ class AddressPool:
         '''
         List normalized IPBlocks for this domain within `network`.
 
-        Claims are cluster-wide; node name is informational only.
+        Claims are node-scoped and cluster-visible.
         '''
         result: list[dict[str, Any]] = []
         for item in self._raw_block_items():
@@ -450,6 +450,10 @@ class AddressPool:
                     and item['node_name'] == self.node_name
                 ):
                     return item
+            if any(item['cidr'] == block_cidr for item in blocks):
+                raise IPBlockConflict(
+                    f'IPBlock {block_cidr} already exists for another node'
+                )
             return self._create_block(network, block_cidr, vrf_table)
 
         for item in blocks:
@@ -466,6 +470,27 @@ class AddressPool:
             self._next_free_block(network, ipblocklen, vrf_table),
             vrf_table,
         )
+
+    async def _acquire_block(
+        self,
+        network: IPv4Network,
+        ipblocklen: int,
+        vrf_table: int,
+        ip: IPv4Address | None = None,
+        max_attempts: int = 5,
+    ) -> dict[str, Any]:
+        if ip is not None:
+            return self._select_block(network, ipblocklen, vrf_table, ip)
+
+        for attempt in range(max_attempts):
+            try:
+                return self._select_block(network, ipblocklen, vrf_table, ip)
+            except IPBlockConflict:
+                if attempt + 1 >= max_attempts:
+                    raise
+                await asyncio.sleep(0.1 + random.random() * 0.4)
+                continue
+        raise RuntimeError('unable to acquire IPBlock')
 
     def inet_aton(self, network: IPv4Network, address: str) -> int:
         return (
@@ -518,7 +543,7 @@ class AddressPool:
         vrf_table = self._resolve_domain(vrf_table)
         ref = pod_uid or ('gateway' if is_gateway else '')
         ip = self._ip_for_address(network, address) if address >= 0 else None
-        block = self._select_block(network, ipblocklen, vrf_table, ip)
+        block = await self._acquire_block(network, ipblocklen, vrf_table, ip)
         allocations = dict(block['allocations'])
 
         if ip is None:
@@ -596,7 +621,7 @@ class AddressPool:
         vrf_table = self._resolve_domain(vrf_table)
         ref = pod_uid or ('gateway' if is_gateway else '')
         ip = self._ip_for_address(network, address) if address >= 0 else None
-        block = self._select_block(network, ipblocklen, vrf_table, ip)
+        block = await self._acquire_block(network, ipblocklen, vrf_table, ip)
         allocations = dict(block['allocations'])
 
         if ip is None:
