@@ -9,6 +9,8 @@ data:
     !
     service integrated-vtysh-config
     !
+    $vrf_sections
+    !
     router bgp 65000
      bgp router-id $router_id
      neighbor PR2 peer-group
