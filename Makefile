@@ -42,18 +42,18 @@ build: clean version
 	$(call nox,-e build)
 	podman build -t ghcr.io/svinota/pyroute2-cni:`cat VERSION` .
 	podman push ghcr.io/svinota/pyroute2-cni:`cat VERSION`
-
-
-.PHONY: patch
-patch:
 	sed -i "s/\(pyroute2-cni:\)[0-9.]\+/\\1$$(cat VERSION)/" kubernetes/daemonset.yaml learning/Dockerfile
+
+
+.PHONY: patch-daemonset
+patch-daemonset:
 	kubectl -n pyroute2-cni \
 		patch daemonset pyroute2-cni \
 		--type='json' \
 		-p='[{"op": "replace", "path": "/spec/template/spec/containers/1/image", "value": "ghcr.io/svinota/pyroute2-cni:'$$(cat VERSION)'"}]'
 
 .PHONY: deploy
-deploy: build patch
+deploy: build patch-daemonset
 
 .PHONY: test nox
 test nox:
