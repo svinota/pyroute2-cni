@@ -389,6 +389,7 @@ def config_set_defaults(config: ConfigParser) -> None:
     config['logging'].setdefault('level', DEFAULT_LOG_LEVEL)
     config['default'].setdefault('vrf', '42')
     config['default'].setdefault('ipblocklen', '26')
+    config['default'].setdefault('service_vrf_max', '512')
     config['default'].setdefault(
         'gc_interval_seconds', str(DEFAULT_GC_INTERVAL_SECONDS)
     )

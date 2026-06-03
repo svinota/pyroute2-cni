@@ -112,13 +112,19 @@ class VRFController:
                     address=address,
                     prefixlen=prefixlen,
                 )
+            table = (
+                domain.table
+                if domain.table
+                > int(self.config['default']['service_vrf_max'])
+                else 254
+            )
             await ipr.ensure(
                 ipr.route,
                 present=True,
                 oif=br_idx,
                 dst=prefix,
                 dst_len=prefixlen,
-                table=domain.table,
+                table=table,
             )
 
     async def _fetch_vtep(
