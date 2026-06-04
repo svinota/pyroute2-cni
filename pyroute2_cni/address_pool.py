@@ -118,7 +118,7 @@ class AddressPool:
             'creation_timestamp': metadata.get('creationTimestamp', ''),
         }
 
-    def _cluster_block_items(
+    def _list_vrf_ipblocks(
         self, network: IPv4Network, vrf_table: int
     ) -> list[dict[str, Any]]:
         '''
@@ -137,6 +137,15 @@ class AddressPool:
             key=lambda x: (int(x['cidr'].network_address), x['cidr'].prefixlen)
         )
         return result
+
+    def _own_block_items(
+        self, network: IPv4Network, vrf_table: int
+    ) -> list[dict[str, Any]]:
+        return [
+            item
+            for item in self._list_vrf_ipblocks(network, vrf_table)
+            if item['node_name'] == self.node_name
+        ]
 
     def _all_block_cidrs(
         self, network: IPv4Network, vrf_table: int
@@ -345,8 +354,21 @@ class AddressPool:
             return self._parse_block(created)
         except ApiException as err:
             if err.status == 409:
-                for item in self._cluster_block_items(network, vrf_table):
+                for item in self._list_vrf_ipblocks(network, vrf_table):
                     if item['cidr'] == cidr:
+                        if item['node_name'] != self.node_name:
+                            logging.info(
+                                'reject foreign block create fallback '
+                                'node=%s block=%s owner=%s cidr=%s',
+                                self.node_name,
+                                item['name'],
+                                item['node_name'],
+                                item['cidr'],
+                            )
+                            raise IPBlockConflict(
+                                f'IPBlock {cidr} already exists for another '
+                                f'node'
+                            )
                         return item
                 raise IPBlockConflict(
                     f'IPBlock {cidr} already exists for {vrf_table}'
@@ -356,7 +378,7 @@ class AddressPool:
     def _get_block_by_cidr(
         self, network: IPv4Network, cidr: IPv4Network, vrf_table: int
     ) -> dict[str, Any]:
-        for item in self._cluster_block_items(network, vrf_table):
+        for item in self._list_vrf_ipblocks(network, vrf_table):
             if item['cidr'] == cidr:
                 return item
         raise KeyError(f'IPBlock {cidr} not found')
@@ -402,11 +424,6 @@ class AddressPool:
                 return ip
         return None
 
-    def _ip_for_address(
-        self, network: IPv4Network, address: int
-    ) -> IPv4Address:
-        return IPv4Address(network[address])
-
     def _block_for_ip(
         self,
         network: IPv4Network,
@@ -429,8 +446,20 @@ class AddressPool:
         ipblocklen: int | None = None,
     ) -> dict[str, Any]:
         block_cidr = self._block_for_ip(network, ip, ipblocklen=ipblocklen)
-        for item in self._cluster_block_items(network, vrf_table):
+        for item in self._list_vrf_ipblocks(network, vrf_table):
             if item['cidr'] == block_cidr:
+                if item['node_name'] != self.node_name:
+                    logging.info(
+                        'reject foreign block by ip node=%s block=%s '
+                        'owner=%s cidr=%s',
+                        self.node_name,
+                        item['name'],
+                        item['node_name'],
+                        item['cidr'],
+                    )
+                    raise IPBlockConflict(
+                        f'IPBlock {block_cidr} already exists for another node'
+                    )
                 return item
         return self._create_block(network, block_cidr, vrf_table)
 
@@ -441,35 +470,82 @@ class AddressPool:
         vrf_table: int,
         ip: IPv4Address | None = None,
     ) -> dict[str, Any]:
-        blocks = self._cluster_block_items(network, vrf_table)
+        existing_blocks = self._own_block_items(network, vrf_table)
+        logging.info(
+            'select block node=%s vrf=%s network=%s ip=%s own_blocks=%s',
+            self.node_name,
+            vrf_table,
+            network,
+            ip,
+            [f"{item['name']}:{item['cidr']}" for item in existing_blocks],
+        )
         if ip is not None:
             block_cidr = self._block_for_ip(network, ip, ipblocklen=ipblocklen)
-            for item in blocks:
-                if (
-                    item['cidr'] == block_cidr
-                    and item['node_name'] == self.node_name
-                ):
+            logging.info(
+                'select block by ip node=%s vrf=%s cidr=%s',
+                self.node_name,
+                vrf_table,
+                block_cidr,
+            )
+            for item in existing_blocks:
+                if item['cidr'] == block_cidr:
+                    logging.info(
+                        'reusing own block node=%s name=%s cidr=%s',
+                        self.node_name,
+                        item['name'],
+                        item['cidr'],
+                    )
                     return item
-            if any(item['cidr'] == block_cidr for item in blocks):
+            all_blocks = self._list_vrf_ipblocks(network, vrf_table)
+            logging.info(
+                'block by ip not owned node=%s cidr=%s all_blocks=%s',
+                self.node_name,
+                block_cidr,
+                [
+                    f"{item['name']}:{item['node_name']}:{item['cidr']}"
+                    for item in all_blocks
+                ],
+            )
+            if any(item['cidr'] == block_cidr for item in all_blocks):
                 raise IPBlockConflict(
                     f'IPBlock {block_cidr} already exists for another node'
                 )
+            logging.info(
+                'creating block by ip node=%s cidr=%s vrf=%s',
+                self.node_name,
+                block_cidr,
+                vrf_table,
+            )
             return self._create_block(network, block_cidr, vrf_table)
 
-        for item in blocks:
-            if item['node_name'] != self.node_name:
-                continue
-            if (
-                self._find_free_ip(item['cidr'], item['allocations'])
-                is not None
-            ):
+        for item in existing_blocks:
+            free_ip = self._find_free_ip(item['cidr'], item['allocations'])
+            logging.info(
+                'inspect own block node=%s name=%s cidr=%s free_ip=%s '
+                'allocations=%s',
+                self.node_name,
+                item['name'],
+                item['cidr'],
+                free_ip,
+                item['allocations'],
+            )
+            if free_ip is not None:
+                logging.info(
+                    'selected existing block node=%s name=%s cidr=%s',
+                    self.node_name,
+                    item['name'],
+                    item['cidr'],
+                )
                 return item
 
-        return self._create_block(
-            network,
-            self._next_free_block(network, ipblocklen, vrf_table),
+        next_block = self._next_free_block(network, ipblocklen, vrf_table)
+        logging.info(
+            'creating new block node=%s vrf=%s cidr=%s',
+            self.node_name,
             vrf_table,
+            next_block,
         )
+        return self._create_block(network, next_block, vrf_table)
 
     async def _acquire_block(
         self,
@@ -480,12 +556,30 @@ class AddressPool:
         max_attempts: int = 5,
     ) -> dict[str, Any]:
         if ip is not None:
+            logging.info(
+                'acquire block direct node=%s vrf=%s ip=%s',
+                self.node_name,
+                vrf_table,
+                ip,
+            )
             return self._select_block(network, ipblocklen, vrf_table, ip)
 
         for attempt in range(max_attempts):
             try:
+                logging.info(
+                    'acquire block attempt=%s node=%s vrf=%s',
+                    attempt + 1,
+                    self.node_name,
+                    vrf_table,
+                )
                 return self._select_block(network, ipblocklen, vrf_table, ip)
             except IPBlockConflict:
+                logging.info(
+                    'acquire block conflict attempt=%s node=%s vrf=%s',
+                    attempt + 1,
+                    self.node_name,
+                    vrf_table,
+                )
                 if attempt + 1 >= max_attempts:
                     raise
                 await asyncio.sleep(0.1 + random.random() * 0.4)
@@ -520,17 +614,6 @@ class AddressPool:
                 return metadata
         raise KeyError('address not allocated')
 
-    def register_address(
-        self,
-        network: str,
-        address: int,
-        vrf_table: int,
-        node: str = '',
-        is_gateway: bool = False,
-        pod_uid: str = '',
-    ) -> str:
-        return self.inet_ntoa(network, address)
-
     async def allocate(
         self,
         network: IPv4Network,
@@ -542,16 +625,52 @@ class AddressPool:
     ) -> str:
         vrf_table = self._resolve_domain(vrf_table)
         ref = pod_uid or ('gateway' if is_gateway else '')
-        ip = self._ip_for_address(network, address) if address >= 0 else None
+        ip = IPv4Address(network[address]) if address >= 0 else None
+        logging.info(
+            'allocate start node=%s vrf=%s network=%s is_gateway=%s '
+            'pod_uid=%s address=%s ref=%s ip=%s',
+            self.node_name,
+            vrf_table,
+            network,
+            is_gateway,
+            pod_uid,
+            address,
+            ref,
+            ip,
+        )
         block = await self._acquire_block(network, ipblocklen, vrf_table, ip)
         allocations = dict(block['allocations'])
+        logging.info(
+            'allocate selected block node=%s block=%s owner=%s cidr=%s '
+            'allocations=%s',
+            self.node_name,
+            block['name'],
+            block['node_name'],
+            block['cidr'],
+            allocations,
+        )
 
         if ip is None:
             ip = self._find_free_ip(block['cidr'], allocations)
+            logging.info(
+                'allocate picked free ip node=%s block=%s ip=%s '
+                'allocations=%s',
+                self.node_name,
+                block['name'],
+                ip,
+                allocations,
+            )
             if ip is None:
                 max_attempts = 5
                 for attempt in range(max_attempts):
                     try:
+                        logging.info(
+                            'allocate fallback create attempt=%s '
+                            'node=%s vrf=%s',
+                            attempt + 1,
+                            self.node_name,
+                            vrf_table,
+                        )
                         block = self._create_block(
                             network,
                             self._next_free_block(
@@ -561,6 +680,14 @@ class AddressPool:
                         )
                         allocations = dict(block['allocations'])
                         ip = self._find_free_ip(block['cidr'], allocations)
+                        logging.info(
+                            'allocate fallback block node=%s block=%s ip=%s '
+                            'allocations=%s',
+                            self.node_name,
+                            block['name'],
+                            ip,
+                            allocations,
+                        )
                         if ip is None:
                             raise RuntimeError(
                                 f'no free IPs in {block["cidr"]}'
@@ -577,21 +704,39 @@ class AddressPool:
 
         if ip.compressed in allocations:
             existing = allocations[ip.compressed]
+            logging.info(
+                'allocate found existing ip node=%s block=%s ip=%s '
+                'existing=%s ref=%s',
+                self.node_name,
+                block['name'],
+                ip,
+                existing,
+                ref,
+            )
             if existing and existing != ref:
                 raise RuntimeError(f'IP {ip} already allocated to {existing}')
-            return self.register_address(
-                network.compressed,
-                self.inet_aton(network, ip.compressed),
-                vrf_table,
-                self.node_name,
-                is_gateway,
-                ref,
+            return self.inet_ntoa(
+                network.compressed, self.inet_aton(network, ip.compressed)
             )
 
         allocations[ip.compressed] = ref
+        logging.info(
+            'allocate patching node=%s block=%s ip=%s ref=%s allocations=%s',
+            self.node_name,
+            block['name'],
+            ip,
+            ref,
+            allocations,
+        )
         try:
             self._patch_block_status(block, allocations)
         except IPBlockStaleResource:
+            logging.info(
+                'allocate stale resource retry node=%s block=%s ip=%s',
+                self.node_name,
+                block['name'],
+                ip,
+            )
             return await self.restore(
                 network=network,
                 ipblocklen=ipblocklen,
@@ -600,13 +745,8 @@ class AddressPool:
                 pod_uid=pod_uid,
                 address=address,
             )
-        return self.register_address(
-            network.compressed,
-            self.inet_aton(network, ip.compressed),
-            vrf_table,
-            self.node_name,
-            is_gateway,
-            ref,
+        return self.inet_ntoa(
+            network.compressed, self.inet_aton(network, ip.compressed)
         )
 
     async def restore(
@@ -620,7 +760,7 @@ class AddressPool:
     ) -> str:
         vrf_table = self._resolve_domain(vrf_table)
         ref = pod_uid or ('gateway' if is_gateway else '')
-        ip = self._ip_for_address(network, address) if address >= 0 else None
+        ip = IPv4Address(network[address]) if address >= 0 else None
         block = await self._acquire_block(network, ipblocklen, vrf_table, ip)
         allocations = dict(block['allocations'])
 
@@ -650,13 +790,8 @@ class AddressPool:
                         pod_uid=pod_uid,
                         address=address,
                     )
-            return self.register_address(
-                network.compressed,
-                self.inet_aton(network, ip.compressed),
-                vrf_table,
-                self.node_name,
-                is_gateway,
-                ref,
+            return self.inet_ntoa(
+                network.compressed, self.inet_aton(network, ip.compressed)
             )
 
         allocations[ip.compressed] = ref
@@ -671,11 +806,6 @@ class AddressPool:
                 pod_uid=pod_uid,
                 address=address,
             )
-        return self.register_address(
-            network.compressed,
-            self.inet_aton(network, ip.compressed),
-            vrf_table,
-            self.node_name,
-            is_gateway,
-            ref,
+        return self.inet_ntoa(
+            network.compressed, self.inet_aton(network, ip.compressed)
         )
