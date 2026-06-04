@@ -123,7 +123,7 @@ class VRFController:
                 present=True,
                 oif=br_idx,
                 dst=prefix,
-                dst_len=domain.bridge_prefixlen(),
+                dst_len=prefixlen,
                 table=table,
             )
 
@@ -314,7 +314,11 @@ class VRFController:
             prefixlen=default_prefixlen,
             ipblocklen=int(self.config['default']['ipblocklen']),
             attachments=[
-                VRFAttachment(kind='l2vni', vni=default_vrf, port=4789)
+                VRFAttachment(
+                    kind=self.config['default']['system_vrf_type'],
+                    vni=default_vrf,
+                    port=4789,
+                )
             ],
         )
         body = domain.render()
