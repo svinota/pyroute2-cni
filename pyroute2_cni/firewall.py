@@ -320,11 +320,24 @@ class FirewallManager:
 
             #
             # install RPDB rule -- complement to the CT mark
-            for rule in [x async for x in await ipr_main.get_rules()]:
-                if rule.get('fwmark') == vrf_id:
-                    break
-            else:
-                await ipr_main.rule('add', fwmark=vrf_id, table=vrf_table)
+            await ipr_main.ensure(
+                ipr_main.rule,
+                present=True,
+                fwmark=vrf_id,
+                table=vrf_table,
+                priority=32000,
+            )
+            #
+            # service VRF should have their routes globally available
+            if domain.table < int(self.config['default']['service_vrf_max']):
+                await ipr_main.ensure(
+                    ipr_main.rule,
+                    present=True,
+                    dst=domain.prefix,
+                    dst_len=domain.prefixlen,
+                    table=vrf_table,
+                    priority=12000,
+                )
 
         async with AsyncNFTables() as nft_main:
             #

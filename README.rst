@@ -10,9 +10,6 @@ Requirements
 * Ubuntu 24.04+ or Talos 1.13.0+
 * Linux VRF kernel module
 
-If `config['bgp']['rr_mode'] == 'node-annotation'`, you also need external
-BGP RRs. By default, the CNI starts its own RRs on the control plane nodes.
-
 Install
 =======
 
@@ -26,7 +23,7 @@ This waits for the CRD to become established before applying the namespace,
 RBAC, ConfigMap, and DaemonSet.
 
 Talos install. When using Talos, it is important to guard `nodeIP` with
-`validSubnets`, otherwise kubelet will interfere with CNI bridges:
+`validSubnets`; otherwise, kubelet will interfere with CNI bridges:
 
 .. code::
 
@@ -92,41 +89,67 @@ Configuration
 .. warning::
    At this stage breaking changes in the configuration might occur.
 
-**Node annotations**
+**VRFNodeConfig**
 
 .. code::
 
-    apiVersion: v1
-    kind: Node
+    apiVersion: cni.pyroute2.org/v1alpha1
+    kind: VRFNodeConfig
     metadata:
-      annotations:
-        ...
-        pyroute2.org/rr: "192.168.124.1;192.168.124.2"
-      name: k8s02
+      name: k8s02-vrnc
+    spec:
+      nodeRef:
+        name: k8s02
+      routerId: 192.168.124.2
+      routeReflectors:
+        - 192.168.124.1
+      interfaces:
+        - name: eth1
+          local: 192.168.124.2
 
-* rr: only used if ``config['bgp']['rr_mode'] == 'node-annotation'`
+* nodeRef.name: target node name
+* routerId: preferred router ID for the node
+* routeReflectors: explicit BGP route reflector peers for the node
+* interfaces: node interfaces and their preferred local addresses
 
-**Namespace annotations**
+If no `routeReflectors` are given, then the CNI builds a BGP mesh in
+the cluster.
+
+**VRFDomain**
 
 .. code::
 
-    apiVersion: v1
-    kind: Namespace
+    apiVersion: cni.pyroute2.org/v1alpha1
+    kind: VRFDomain
     metadata:
-      annotations:
-        ...
-        pyroute2.org/prefix: "10.1.0.0"
-        pyroute2.org/prefixlen: "16"
-        pyroute2.org/vrf: "1000"
-        pyroute2.org/l2vni: "200"
-      name: test
+      name: vrf-200
+    spec:
+      vrf: 200
+      table: 200
+      prefix: 10.1.0.0
+      prefixlen: 16
+      ipblocklen: 26
+      attachments:
+        - type: l3vni
+          vni: 200
 
-* prefix: the prefix to use in the namespace
-* prefixlen: the network mask bits
-* vrf: the VRF to use for the namespace; see also ``End.DT4 vrf_table``;
-  → creates interface ``vrf-{int}`` in the host netns
-* vxlan: VXLAN id of the transport between nodes;
-  → creates interface ``vxlan-{int}`` in the host netns
+* vrf: VRF id
+* table: routing table id
+* prefix: pod network prefix
+* prefixlen: pod network prefix length
+* ipblocklen: IPBlock sub-prefix length
+* attachments: VNI attachments deployed in the VRF
+
+By default, CNI creates the service VRF-42 with one `l3vni` attachment.
+
+Available attachment types:
+
+* `l2vni`: stretches a layer 2 switching domain across the cluster
+* `l3vni`: builds a routing domain and uses node-specific subranges
+
+It is possible to have multiple attachments in one VRF. Then `l2vni`
+is preferred for attaching pods, while `l3vni` might be used to
+integrate with external infrastructure.
 
 **VRFDomainBinding**
 
@@ -164,26 +187,10 @@ cluster-scoped ``VRFDomain`` resource.
         socket_path_api = /var/run/pyroute2/api
         socket_path_fd = /var/run/pyroute2/fdpass
 
-        [network]
-        host_if = enp1s0
-
         [default]
         prefix = 10.244.0.0
         prefixlen = 16
-        l2vni = 42
-        vrf = 42
-
-        [bgp]
-        # control-plane: deploy internal RRs
-        # node-annotation: use an external RR, specified per node
-        rr_mode = control-plane
-
-        [plan9]
-        port = 8149
-
-        [readiness]
-        host = 0.0.0.0
-        port = 24800
+        system_vrf_type = l3vni
 
         [logging]
         level = INFO

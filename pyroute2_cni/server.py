@@ -390,7 +390,7 @@ def config_set_defaults(config: ConfigParser) -> None:
     config['default'].setdefault('vrf', '42')
     config['default'].setdefault('ipblocklen', '26')
     config['default'].setdefault('service_vrf_max', '512')
-    config['default'].setdefault('system_vrf_type', 'l2vni')
+    config['default'].setdefault('system_vrf_type', 'l3vni')
     config['default'].setdefault(
         'gc_interval_seconds', str(DEFAULT_GC_INTERVAL_SECONDS)
     )
