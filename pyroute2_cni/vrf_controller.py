@@ -260,7 +260,7 @@ class VRFController:
             await self.ensure_bridge_address(
                 domain, bridges[domain.get_type()]
             )
-        await self.firewall.ensure_system_firewall(domain)
+        await self.firewall.ensure_vrf_firewall(domain)
 
     async def remove(self, domain: VRFDomain) -> None:
         for attachment in domain.attachments:
@@ -272,7 +272,7 @@ class VRFController:
                 case _:
                     pass
         await self.remove_vrf(domain)
-        await self.firewall.remove_system_firewall(domain)
+        await self.firewall.remove_vrf_firewall(domain)
 
     def _vrf_domain_items(self) -> dict[int, VRFDomain]:
         response = self.vrf_custom_api.list_cluster_custom_object(

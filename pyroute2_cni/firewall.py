@@ -139,7 +139,7 @@ class FirewallManager:
         self.config = config
         self.has_setup = False
         self.table_name = 'pyroute2-cni'
-        self.version = 'v1'
+        self.version = 'v2'
 
     async def setup(self) -> None:
         if self.has_setup:
@@ -257,7 +257,52 @@ class FirewallManager:
     def magic(self, tag: str, vrf_id: int) -> str:
         return f'{self.version}|t={tag}|v={vrf_id}'
 
-    async def ensure_system_firewall(self, domain: VRFDomain) -> None:
+    async def ensure_nat_rules(
+        self,
+        vrf_id: int,
+        nft: AsyncNFTables,
+        prefix: str,
+        prefixlen: int,
+        default_link: int,
+        vrf_bridge_index: int,
+    ):
+        magic = self.magic('nat', vrf_id)
+        for rule in [x async for x in await nft.get_rules()]:
+            if rule.get('userdata') == magic:
+                logging.info(f'fw: hit {magic}')
+                return
+
+        logging.info(f'fw: install nat rule with magic {magic}')
+        #
+        # general masquerade out
+        await nft.rule(
+            'add',
+            table=self.table_name,
+            chain='nat',
+            expressions=(
+                ipv4addr(src=f'{prefix}/{prefixlen}'),
+                ipv4addr(dst=f'{prefix}/{prefixlen}', op=Cmp.NFT_CMP_NEQ),
+                oif(default_link),
+                masq(),
+            ),
+            userdata=magic,
+        )
+        #
+        # service masquerade in
+        await nft.rule(
+            'add',
+            table=self.table_name,
+            chain='nat',
+            expressions=(
+                ipv4addr(src=f'{prefix}/{prefixlen}', op=Cmp.NFT_CMP_NEQ),
+                ipv4addr(dst=f'{prefix}/{prefixlen}'),
+                oif(vrf_bridge_index),
+                masq(),
+            ),
+            userdata=magic,
+        )
+
+    async def ensure_vrf_firewall(self, domain: VRFDomain) -> None:
         prefixlen = domain.prefixlen
         prefix = domain.prefix
         vrf_id = domain.vrf
@@ -269,9 +314,10 @@ class FirewallManager:
             vrf_bridge_index = await ipr_main.link_lookup(
                 ifname=domain.bridge_name()
             )
-            default_bridge_index = await ipr_main.link_lookup(
-                ifname=f'l2br-{self.config["default"]["vrf"]}'
-            )
+            if not vrf_bridge_index:
+                logging.info('fw: attachment not found, return')
+                return
+
             #
             # install RPDB rule -- complement to the CT mark
             for rule in [x async for x in await ipr_main.get_rules()]:
@@ -283,46 +329,14 @@ class FirewallManager:
         async with AsyncNFTables() as nft_main:
             #
             # reconcile rules
-            magic = self.magic('nat', vrf_id)
-            for rule in [x async for x in await nft_main.get_rules()]:
-                if rule.get('userdata') == magic:
-                    logging.info(f'fw: hit {magic}')
-                    break
-            else:
-                logging.info(f'fw: install nat rule with magic {magic}')
-                #
-                # general masquerade out
-                await nft_main.rule(
-                    'add',
-                    table=self.table_name,
-                    chain='nat',
-                    expressions=(
-                        ipv4addr(src=f'{prefix}/{prefixlen}'),
-                        ipv4addr(
-                            dst=f'{prefix}/{prefixlen}', op=Cmp.NFT_CMP_NEQ
-                        ),
-                        oif(default_link),
-                        masq(),
-                    ),
-                    userdata=magic,
-                )
-                #
-                # service masquerade to the default vrf
-                if vrf_id != int(self.config['default']['vrf']):
-                    await nft_main.rule(
-                        'add',
-                        table=self.table_name,
-                        chain='nat',
-                        expressions=(
-                            ipv4addr(src=f'{prefix}/{prefixlen}'),
-                            oif(default_bridge_index[0]),
-                            masq(),
-                        ),
-                        userdata=magic,
-                    )
-            if not vrf_bridge_index:
-                logging.info('fw: attachment not found, return')
-                return
+            await self.ensure_nat_rules(
+                vrf_id,
+                nft_main,
+                prefix,
+                prefixlen,
+                default_link,
+                vrf_bridge_index[0],
+            )
 
             magic = self.magic('mark', vrf_id)
             for rule in [x async for x in await nft_main.get_rules()]:
@@ -345,7 +359,7 @@ class FirewallManager:
 
             logging.info('fw: done')
 
-    async def remove_system_firewall(self, domain: VRFDomain) -> None:
+    async def remove_vrf_firewall(self, domain: VRFDomain) -> None:
         vrf_id = domain.vrf
 
         async with AsyncNFTables() as nft_main:
