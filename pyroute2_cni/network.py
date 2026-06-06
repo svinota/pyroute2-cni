@@ -136,10 +136,18 @@ class Plugin(PluginProtocol):
                 present=True,
                 ifname=uplink,
                 kind='veth',
-                peer={'ifname': 'eth0', 'net_ns_fd': net_ns_fd},
+                mtu=1440,
+                peer={'ifname': 'eth0', 'net_ns_fd': net_ns_fd, 'mtu': 1440},
                 state='up',
                 master=bridge_idx,
             )
+            # set hairpin mode
+            #
+            # this setting is crucial to work via k8s svc redirect,
+            # if the pod is providing and using the service at the
+            # same time
+            await ipr_main.brport('set', index=veth[0].get('index'), mode=1)
+
             gateway = [
                 x.get('address')
                 async for x in await ipr_main.addr(
