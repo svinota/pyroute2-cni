@@ -263,6 +263,11 @@ class Plugin(PluginProtocol):
         Run network cleanup
         '''
         pod_uid = get_pod_tag(request, 'uid')
+        net_ns_fd = request.netns
+        # try to release the interface using netns
+        if net_ns_fd > 0:
+            async with AsyncIPRoute(netns=net_ns_fd) as ipr:
+                await ipr.ensure(ipr.link, present=False, ifname='eth0')
         try:
             await self.address_pool.release(pod_uid)
         except KeyError:
