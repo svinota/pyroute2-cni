@@ -18,6 +18,7 @@ from pyroute2_cni.address_pool import AddressPool
 from pyroute2_cni.frr_manager import FRRManager
 from pyroute2_cni.kubernetes import get_node_ip
 from pyroute2_cni.namespace_controller import NamespaceController
+from pyroute2_cni.network import CNIError
 from pyroute2_cni.protocols import PluginProtocol
 from pyroute2_cni.request import CNIRequest
 from pyroute2_cni.vrf_controller import VRFController
@@ -108,7 +109,28 @@ class CNIProtocol(asyncio.Protocol):
     async def cni_response_task(
         self, func: Callable, data: dict[str, Any], request: CNIRequest
     ) -> None:
-        self.cni_response(await func(data, request))
+        try:
+            self.cni_response(await func(data, request))
+        except CNIError as e:
+            logging.exception('CNI request %s failed', request.rid)
+            self.cni_response(
+                {
+                    'cniVersion': request.cni.cniVersion,
+                    'code': e.code,
+                    'msg': e.msg,
+                    'details': e.details,
+                }
+            )
+        except Exception as e:
+            logging.exception('CNI request %s failed', request.rid)
+            self.cni_response(
+                {
+                    'cniVersion': request.cni.cniVersion,
+                    'code': 11,
+                    'msg': str(e),
+                    'details': str(e),
+                }
+            )
 
 
 class CNIServer:

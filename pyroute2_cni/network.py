@@ -6,6 +6,7 @@ from dataclasses import asdict, dataclass
 from ipaddress import IPv4Network
 from typing import Any, Callable
 
+from kubernetes.client.exceptions import ApiException
 from pyroute2 import AsyncIPRoute
 from pyroute2.common import uifname
 
@@ -15,6 +16,16 @@ from pyroute2_cni.kubernetes import get_pod_tag
 from pyroute2_cni.protocols import PluginProtocol
 from pyroute2_cni.request import CNIRequest
 from pyroute2_cni.vrf_domain import parse_vrf_domain
+
+
+class CNIError(RuntimeError):
+    def __init__(
+        self, code: int, msg: str, details: str | None = None
+    ) -> None:
+        super().__init__(details or msg)
+        self.code = code
+        self.msg = msg
+        self.details = details or msg
 
 
 @dataclass
@@ -109,11 +120,21 @@ class Plugin(PluginProtocol):
         if vrfd_name is None:
             vrfd_name = f'vrf-{self.config["default"]["vrf"]}'
 
-        raw_domain = (
-            self.address_pool.k8s_custom_api.get_cluster_custom_object(
-                'cni.pyroute2.org', 'v1alpha1', 'vrfdomains', vrfd_name
+        try:
+            raw_domain = (
+                self.address_pool.k8s_custom_api.get_cluster_custom_object(
+                    'cni.pyroute2.org', 'v1alpha1', 'vrfdomains', vrfd_name
+                )
             )
-        )
+        except ApiException as e:
+            if e.status == 404:
+                raise CNIError(
+                    7,
+                    'Invalid network config',
+                    f'VRFDomain {vrfd_name} referenced by '
+                    f'namespace {namespace} not found',
+                ) from e
+            raise
         domain = parse_vrf_domain(raw_domain)
 
         prefix = domain.prefix or str(config['default']['prefix'])
