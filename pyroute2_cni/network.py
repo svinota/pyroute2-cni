@@ -1,6 +1,5 @@
 import logging
 import os
-import socket
 from configparser import ConfigParser
 from dataclasses import asdict, dataclass
 from ipaddress import IPv4Network
@@ -71,26 +70,6 @@ class Plugin(PluginProtocol):
             peer_ips.append(peer_ip)
         self.peer_ips = sorted(set(peer_ips))
 
-    async def reconcile_routes(
-        self,
-        ipr: AsyncIPRoute,
-        block_cidrs: set[IPv4Network],
-        br_ifname: str,
-        table: int,
-    ) -> None:
-        oif = await ipr.link_lookup(ifname=br_ifname)
-        if not oif:
-            logging.info(f'skip routes for missing bridge {br_ifname}')
-            return
-        for cidr in block_cidrs:
-            await ipr.route(
-                'replace',
-                dst=str(cidr.network_address),
-                dst_len=cidr.prefixlen,
-                oif=oif,
-                table=table,
-            )
-
     async def ensure_segment(
         self,
         namespace: str,
@@ -143,14 +122,25 @@ class Plugin(PluginProtocol):
         bridge_ifname = domain.bridge_name()
         uplink = uifname()
 
+        allocation = await self.address_pool.allocate(
+            network, domain.ipblocklen, domain.vrf, pod_uid=pod_uid
+        )
+        veth_ipaddr = allocation.address.compressed
+        bridge_ipaddr = allocation.gateway.compressed
+
+        info = SegmentInfo(
+            prefix=prefix,
+            prefixlen=prefixlen,
+            vrf_table=domain.table or domain.vrf,
+            ipaddr=f'{veth_ipaddr}/{domain.bridge_prefixlen()}',
+            gateway=bridge_ipaddr,
+        )
+
+        logging.info(f'segment {info}')
+
         async with AsyncIPRoute() as ipr_main:
             bridge_idx = (await ipr_main.link_lookup(ifname=bridge_ifname))[0]
-            bridge_address = [
-                x.get('address')
-                async for x in await ipr_main.addr(
-                    'dump', index=bridge_idx, family=socket.AF_INET
-                )
-            ]
+
             # create & attach veth pair
             veth = await ipr_main.ensure(
                 ipr_main.link,
@@ -162,6 +152,7 @@ class Plugin(PluginProtocol):
                 state='up',
                 master=bridge_idx,
             )
+
             # set hairpin mode
             #
             # this setting is crucial to work via k8s svc redirect,
@@ -169,28 +160,14 @@ class Plugin(PluginProtocol):
             # same time
             await ipr_main.brport('set', index=veth[0].get('index'), mode=1)
 
-            gateway = [
-                x.get('address')
-                async for x in await ipr_main.addr(
-                    'dump', index=bridge_idx, family=socket.AF_INET
-                )
-            ][0]
-        veth_ipaddr = await self.address_pool.allocate(
-            network,
-            domain.ipblocklen,
-            domain.vrf,
-            is_gateway=False,
-            pod_uid=pod_uid,
-        )
-        info = SegmentInfo(
-            prefix=prefix,
-            prefixlen=prefixlen,
-            vrf_table=domain.table or domain.vrf,
-            ipaddr=f'{veth_ipaddr}/{domain.bridge_prefixlen()}',
-            gateway=gateway,
-        )
-
-        logging.info(f'segment {info}')
+            # ensure gateway address
+            await ipr_main.ensure(
+                ipr_main.addr,
+                present=True,
+                index=bridge_idx,
+                address=bridge_ipaddr,
+                prefixlen=domain.bridge_prefixlen(),
+            )
 
         async with AsyncIPRoute(netns=net_ns_fd) as ipr:
             veth = (await ipr.link('get', ifname='eth0'))[0]
@@ -200,61 +177,16 @@ class Plugin(PluginProtocol):
                 ipr.addr,
                 present=True,
                 index=veth.get('index'),
-                address=info.ipaddr,
+                address=veth_ipaddr,
+                prefixlen=domain.bridge_prefixlen(),
             )
-            if bridge_address:
-                await ipr.route('add', gateway=bridge_address[0])
+            await ipr.route('add', gateway=bridge_ipaddr)
             logging.info(f'info: {asdict(info)}')
 
         return info
 
     async def resync(self) -> None:
-        local_node_name = self.config['network']['node_name']
-        live_pod_ips: dict[str, str] = {}
-        pods = self.address_pool.k8s_v1.list_pod_for_all_namespaces(
-            field_selector=f'spec.nodeName={local_node_name}'
-        )
-        for pod in pods.items:
-            metadata = pod.metadata
-            status = pod.status
-            if metadata is None or status is None:
-                continue
-            pod_uid = metadata.uid
-            pod_ip = status.pod_ip
-            if not pod_uid or not pod_ip:
-                continue
-            live_pod_ips[pod_uid] = pod_ip
-
-        vrf_domains = (
-            self.address_pool.k8s_custom_api.list_cluster_custom_object(
-                'cni.pyroute2.org', 'v1alpha1', 'vrfdomains'
-            )
-        )
-        for item in vrf_domains.get('items', []):
-            domain = parse_vrf_domain(item)
-            if domain.network is None:
-                continue
-            prefix = domain.prefix or str(self.config['default']['prefix'])
-            prefixlen = domain.prefixlen or int(
-                self.config['default']['prefixlen']
-            )
-            network = IPv4Network(f'{prefix}/{prefixlen}')
-            gateway_ip = []
-            async with AsyncIPRoute() as ipr:
-                gateway_idx = await ipr.link_lookup(domain.bridge_name())
-                if gateway_idx:
-                    gateway_ip = [
-                        x.get('address')
-                        async for x in await ipr.addr(
-                            'dump', index=gateway_idx[0], family=socket.AF_INET
-                        )
-                    ]
-            await self.address_pool.prune_stale_allocations(
-                network=network,
-                vrf_table=domain.vrf,
-                live_pod_ips=live_pod_ips,
-                gateway_ip=gateway_ip[0] if gateway_ip else None,
-            )
+        pass
 
     async def cleanup(
         self, data: dict[str, Any], request: CNIRequest

@@ -1,11 +1,9 @@
 import asyncio
 import logging
 import os
-import socket
 import threading
 from configparser import ConfigParser
 from dataclasses import dataclass
-from ipaddress import IPv4Network
 
 from kubernetes.client.exceptions import ApiException
 from pyroute2 import AsyncIPRoute
@@ -83,35 +81,6 @@ class VRFController:
                     state='up',
                 )
             )[0].get('index')
-
-    async def ensure_bridge_address(
-        self, domain: VRFDomain, br_idx: int
-    ) -> None:
-
-        logging.info(f'ensure bridge address for domain: {domain}')
-        async with AsyncIPRoute() as ipr:
-            addresses: list[tuple[str, int]] = [
-                (x.get('address'), x.get('prefixlen'))
-                async for x in await ipr.addr(
-                    'dump', index=br_idx, family=socket.AF_INET
-                )
-            ]
-            prefix = domain.prefix or str(self.config['default']['prefix'])
-            prefixlen = domain.prefixlen or int(
-                self.config['default']['prefixlen']
-            )
-            if len(addresses) == 0:
-                network = IPv4Network(f'{prefix}/{prefixlen}')
-                address = await self.address_pool.allocate(
-                    network, domain.ipblocklen, domain.vrf, is_gateway=True
-                )
-                await ipr.ensure(
-                    ipr.addr,
-                    present=True,
-                    index=br_idx,
-                    address=address,
-                    prefixlen=domain.bridge_prefixlen(),
-                )
 
     async def _fetch_vtep(
         self, domain: VRFDomain, attachment: VRFAttachment
@@ -242,10 +211,6 @@ class VRFController:
                     )
                 case _:
                     pass
-        if domain.get_type() in bridges:
-            await self.ensure_bridge_address(
-                domain, bridges[domain.get_type()]
-            )
         await self.firewall.ensure_vrf_firewall(domain)
 
     async def remove(self, domain: VRFDomain) -> None:
