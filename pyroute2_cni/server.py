@@ -360,6 +360,13 @@ async def main(config: ConfigParser) -> None:
             'periodic IPBlock gc',
         )
     )
+    reconcile_allocations_task = asyncio.create_task(
+        run_periodic_job(
+            address_pool.reconcile_allocations,
+            int(config['default']['fw_interval_seconds']),
+            'periodic IP allocations reconciliation',
+        )
+    )
     vrf_periodic_task = asyncio.create_task(
         run_periodic_job(
             vrf_controller.reconcile_firewall,
@@ -382,6 +389,7 @@ async def main(config: ConfigParser) -> None:
                     namespace_watch_task,
                     vrf_domain_watch_task,
                     address_pool_gc_task,
+                    reconcile_allocations_task,
                     vrf_periodic_task,
                 ],
                 signal_num,
@@ -392,12 +400,14 @@ async def main(config: ConfigParser) -> None:
             namespace_watch_task,
             vrf_domain_watch_task,
             address_pool_gc_task,
+            reconcile_allocations_task,
             vrf_periodic_task,
         )
     finally:
         namespace_watch_task.cancel()
         vrf_domain_watch_task.cancel()
         address_pool_gc_task.cancel()
+        reconcile_allocations_task.cancel()
         vrf_periodic_task.cancel()
         readiness_server.close()
         await readiness_server.wait_closed()
@@ -407,6 +417,8 @@ async def main(config: ConfigParser) -> None:
             await vrf_domain_watch_task
         with contextlib.suppress(asyncio.CancelledError):
             await address_pool_gc_task
+        with contextlib.suppress(asyncio.CancelledError):
+            await reconcile_allocations_task
         with contextlib.suppress(asyncio.CancelledError):
             await vrf_periodic_task
 

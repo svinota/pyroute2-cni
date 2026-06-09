@@ -46,6 +46,14 @@ class AddressAllocation:
     gateway: IPv4Address
 
 
+@dataclass(frozen=True)
+class RunningPod:
+    namespace: str
+    name: str
+    uid: str
+    ip: str
+
+
 class AddressPool:
     def __init__(self, node_name: str, config: ConfigParser) -> None:
         self.node_name = node_name
@@ -188,6 +196,84 @@ class AddressPool:
         self.k8s_custom_api.delete_cluster_custom_object(
             IPBLOCK_GROUP, IPBLOCK_VERSION, IPBLOCK_PLURAL, name
         )
+
+    def _list_running_pods(self) -> list[RunningPod]:
+        response = self.k8s_v1.list_pod_for_all_namespaces(
+            field_selector=f'spec.nodeName={self.node_name}'
+        )
+        result: list[RunningPod] = []
+        for item in response.items:
+            status = item.status
+            if status is None:
+                continue
+            pod_ip = getattr(status, 'pod_ip', None)
+            if status.phase != 'Running' or not pod_ip:
+                continue
+            metadata = item.metadata
+            if metadata is None:
+                continue
+            if item.spec is not None and item.spec.host_network:
+                continue
+            if not metadata.uid:
+                continue
+            result.append(
+                RunningPod(
+                    namespace=metadata.namespace or '',
+                    name=metadata.name or '',
+                    uid=metadata.uid,
+                    ip=pod_ip,
+                )
+            )
+        return result
+
+    async def reconcile_allocations(self) -> int:
+        logging.debug('Starting IPBlock allocation reconciliation')
+        running_pods = self._list_running_pods()
+        running_pods_by_uid = {pod.uid: pod for pod in running_pods}
+
+        changed_blocks = 0
+        local_blocks = self._node_block_items()
+        allocations_by_ip: dict[str, str] = {}
+        block: IPBlock | None = None
+        for block in local_blocks:
+            allocations = dict(block.allocations)
+            updated_allocations = dict(allocations)
+            changed = False
+            for ip, ref in allocations.items():
+                if ref == 'gateway':
+                    continue
+                if ref not in running_pods_by_uid:
+                    updated_allocations.pop(ip, None)
+                    changed = True
+                else:
+                    allocations_by_ip[ip] = ref
+            if changed:
+                self._patch_block_status(block, updated_allocations)
+                changed_blocks += 1
+
+        for pod in running_pods:
+            if pod.ip not in allocations_by_ip:
+                block = None
+                for candidate in local_blocks:
+                    if IPv4Address(pod.ip) in candidate.cidr:
+                        block = candidate
+                        break
+                if block is None:
+                    logging.info(
+                        f'running pod missing IPBlock allocation '
+                        f'namespace={pod.namespace} name={pod.name} '
+                        f'uid={pod.uid} ip={pod.ip}'
+                    )
+                    continue
+                allocations = dict(block.allocations)
+                if pod.ip in allocations and allocations[pod.ip] == pod.uid:
+                    continue
+                allocations[pod.ip] = pod.uid
+                logging.info(f'patching block: {block}/{allocations}')
+                self._patch_block_status(block, allocations)
+                changed_blocks += 1
+
+        return changed_blocks
 
     async def gc_empty_blocks(self) -> int:
         logging.info('Starting IPBlock GC')

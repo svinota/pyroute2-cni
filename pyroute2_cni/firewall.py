@@ -269,7 +269,7 @@ class FirewallManager:
         magic = self.magic('nat', vrf_id)
         for rule in [x async for x in await nft.get_rules()]:
             if rule.get('userdata') == magic:
-                logging.info(f'fw: hit {magic}')
+                logging.debug(f'fw: hit {magic}')
                 return
 
         logging.info(f'fw: install nat rule with magic {magic}')
@@ -310,7 +310,7 @@ class FirewallManager:
         async with AsyncIPRoute() as ipr_main:
             default_route = await ipr_main.route('get', dst='1.1.1.1')
             default_link = default_route[0].get('oif')
-            logging.info(f'fw: external interface {default_link}')
+            logging.debug(f'fw: external interface {default_link}')
             vrf_bridge_index = await ipr_main.link_lookup(
                 ifname=domain.bridge_name()
             )
@@ -354,7 +354,7 @@ class FirewallManager:
             magic = self.magic('mark', vrf_id)
             for rule in [x async for x in await nft_main.get_rules()]:
                 if rule.get('userdata') == magic:
-                    logging.info(f'fw: hit {magic}')
+                    logging.debug(f'fw: hit {magic}')
                     break
             else:
                 logging.info(f'fw: install mark rule with magic {magic}')
@@ -369,8 +369,7 @@ class FirewallManager:
                     ),
                     userdata=magic,
                 )
-
-            logging.info('fw: done')
+            logging.debug('fw: done')
 
     async def remove_vrf_firewall(self, domain: VRFDomain) -> None:
         vrf_id = domain.vrf
