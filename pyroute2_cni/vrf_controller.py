@@ -121,27 +121,17 @@ class VRFController:
                         link=links[item.get('name')].get('index'),
                     )
         except ApiException as e:
-            if e.status != 404:
-                logging.warning(
-                    'failed to read VRFNodeConfig for node %s, '
-                    'falling back to netlink: %s',
-                    self.node_name,
-                    e,
-                )
-            else:
-                logging.info(
-                    'VRFNodeConfig for node %s not found, '
-                    'falling back to netlink',
-                    self.node_name,
-                )
-        except Exception as e:
-            logging.warning(
-                'failed to read VRFNodeConfig for node %s, '
-                'falling back to netlink: %s',
-                self.node_name,
-                e,
+            status = (
+                f'failed to read VRFNodeConfig node={self.node_name} '
+                f'type={type(e)} status={e.status}'
             )
-
+        except Exception as e:
+            status = (
+                f'failed to read VRFNodeConfig node={self.node_name} '
+                f'type={type(e)} error={e}'
+            )
+        logging.warning(status)
+        logging.info('falling back to netlink defaults')
         return VTEPInfo(
             ifname=self.host_ifname, local=self.host_src, link=self.host_link
         )
@@ -250,20 +240,6 @@ class VRFController:
         default_vrf = int(self.config['default']['vrf'])
         default_prefix = self.config['default']['prefix']
         default_prefixlen = int(self.config['default']['prefixlen'])
-
-        async with AsyncIPRoute() as ipr:
-            logging.info('trying to calculate host_if')
-            default_route = await ipr.route('get', dst='1.1.1.1')
-            self.host_link = default_route[0].get('oif')
-            self.host_src = default_route[0].get('prefsrc') or '127.0.0.1'
-            self.host_ifname = (await ipr.link('get', index=self.host_link))[
-                0
-            ].get('ifname')
-            logging.info(
-                f'host discovery: {self.host_link}:'
-                f'{self.host_ifname}:{self.host_src}'
-            )
-
         domain = VRFDomain(
             name=f'vrf-{default_vrf}',
             vrf=default_vrf,
@@ -298,17 +274,23 @@ class VRFController:
                 'net.ipv4.udp_l3mdev_accept': 1,
             }
         )
-        async with AsyncIPRoute() as ipr_main:
-            (vrf1,) = await ipr_main.ensure(
-                ipr_main.link,
-                present=True,
-                ifname='vrf-1',
-                kind='vrf',
-                vrf_table=1,
+        async with AsyncIPRoute() as ipr:
+            (vrf1,) = await ipr.ensure(
+                ipr.link, present=True, ifname='vrf-1', kind='vrf', vrf_table=1
             )
-            await ipr_main.ensure(
-                ipr_main.link, present=False, index=vrf1['index']
+            await ipr.ensure(ipr.link, present=False, index=vrf1['index'])
+            logging.info('trying to calculate host_if')
+            default_route = await ipr.route('get', dst='1.1.1.1')
+            self.host_link = default_route[0].get('oif')
+            self.host_src = default_route[0].get('prefsrc') or '127.0.0.1'
+            self.host_ifname = (await ipr.link('get', index=self.host_link))[
+                0
+            ].get('ifname')
+            logging.info(
+                f'host discovery: {self.host_link}:'
+                f'{self.host_ifname}:{self.host_src}'
             )
+
         domains: dict[int, VRFDomain] = self._vrf_domain_items()
         default_vrf = int(self.config['default']['vrf'])
         if default_vrf not in domains:
@@ -401,7 +383,7 @@ class VRFController:
     async def watch(
         self,
         queue: asyncio.Queue[tuple[str, VRFDomain] | None],
-        ready: asyncio.Event | None = None,
+        ready: asyncio.Event,
     ) -> None:
         loop = asyncio.get_running_loop()
         stop_event = threading.Event()
@@ -413,8 +395,7 @@ class VRFController:
         try:
             await self.firewall.setup()
             await self.resync()
-            if ready is not None:
-                ready.set()
+            ready.set()
         except Exception as e:
             logging.warning(
                 'vrfdomain watch initial list failed, continuing: %s', e
