@@ -213,6 +213,13 @@ class VRFController:
                     pass
         await self.firewall.ensure_vrf_firewall(domain)
 
+    async def reconcile_firewall(self) -> int:
+        counter = 0
+        for domain in self._vrf_domain_items().values():
+            await self.firewall.ensure_vrf_firewall(domain)
+            counter += 1
+        return counter
+
     async def remove(self, domain: VRFDomain) -> None:
         for attachment in domain.attachments:
             match attachment.kind:

@@ -10,7 +10,7 @@ import uuid
 from configparser import ConfigParser
 from functools import partial
 from importlib.metadata import entry_points
-from typing import Any, Callable, Optional
+from typing import Any, Awaitable, Callable, Optional
 
 from pydantic import ValidationError
 
@@ -27,6 +27,7 @@ READINESS_HOST = '0.0.0.0'
 READINESS_PORT = 24800
 DEFAULT_LOG_LEVEL = 'INFO'
 DEFAULT_GC_INTERVAL_SECONDS = 300
+DEFAULT_FW_INTERVAL_SECONDS = 30
 
 
 class CNIProtocol(asyncio.Protocol):
@@ -283,17 +284,17 @@ async def run_fd_receiver(
     )
 
 
-async def run_address_pool_gc(
-    address_pool: AddressPool, interval: int
+async def run_periodic_job(
+    job: Callable[[], Awaitable[int]], interval: int, description: str
 ) -> None:
     while True:
         try:
             await asyncio.sleep(interval)
-            await address_pool.gc_empty_blocks()
+            await job()
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            logging.warning('periodic IPBlock gc failed: %s', e)
+            logging.warning('%s failed: %s', description, e)
 
 
 def handle_signal(tasks: list[asyncio.Task], signal_num) -> None:
@@ -353,8 +354,17 @@ async def main(config: ConfigParser) -> None:
         vrf_controller.watch(vrf_domain_watch_queue, vrf_ready)
     )
     address_pool_gc_task = asyncio.create_task(
-        run_address_pool_gc(
-            address_pool, int(config['default']['gc_interval_seconds'])
+        run_periodic_job(
+            address_pool.gc_empty_blocks,
+            int(config['default']['gc_interval_seconds']),
+            'periodic IPBlock gc',
+        )
+    )
+    vrf_periodic_task = asyncio.create_task(
+        run_periodic_job(
+            vrf_controller.reconcile_firewall,
+            int(config['default']['fw_interval_seconds']),
+            'periodic VRF firewall reconciliation',
         )
     )
 
@@ -372,18 +382,23 @@ async def main(config: ConfigParser) -> None:
                     namespace_watch_task,
                     vrf_domain_watch_task,
                     address_pool_gc_task,
+                    vrf_periodic_task,
                 ],
                 signal_num,
             ),
         )
     try:
         await asyncio.gather(
-            namespace_watch_task, vrf_domain_watch_task, address_pool_gc_task
+            namespace_watch_task,
+            vrf_domain_watch_task,
+            address_pool_gc_task,
+            vrf_periodic_task,
         )
     finally:
         namespace_watch_task.cancel()
         vrf_domain_watch_task.cancel()
         address_pool_gc_task.cancel()
+        vrf_periodic_task.cancel()
         readiness_server.close()
         await readiness_server.wait_closed()
         with contextlib.suppress(asyncio.CancelledError):
@@ -392,6 +407,8 @@ async def main(config: ConfigParser) -> None:
             await vrf_domain_watch_task
         with contextlib.suppress(asyncio.CancelledError):
             await address_pool_gc_task
+        with contextlib.suppress(asyncio.CancelledError):
+            await vrf_periodic_task
 
 
 def config_set_defaults(config: ConfigParser) -> None:
@@ -415,6 +432,9 @@ def config_set_defaults(config: ConfigParser) -> None:
     config['default'].setdefault('system_vrf_type', 'l3vni')
     config['default'].setdefault(
         'gc_interval_seconds', str(DEFAULT_GC_INTERVAL_SECONDS)
+    )
+    config['default'].setdefault(
+        'fw_interval_seconds', str(DEFAULT_FW_INTERVAL_SECONDS)
     )
 
 
