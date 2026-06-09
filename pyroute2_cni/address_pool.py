@@ -189,8 +189,10 @@ class AddressPool:
             IPBLOCK_GROUP, IPBLOCK_VERSION, IPBLOCK_PLURAL, name
         )
 
-    async def gc_empty_blocks(self, limit: int = 1, keep: int = 0) -> int:
+    async def gc_empty_blocks(self) -> int:
         logging.info('Starting IPBlock GC')
+        limit: int = 1
+        keep: int = 0
         live_domains: set[int] = set()
         response = self.k8s_custom_api.list_cluster_custom_object(
             'cni.pyroute2.org', 'v1alpha1', 'vrfdomains'
@@ -428,7 +430,10 @@ class AddressPool:
         allocations[gateway.compressed] = 'gateway'
         # gateway is ALWAYS not None with prefixlen < 32
         logging.info(f'allocate: acquired gateway={gateway}')
-        ip = self._find_free_ip(block.cidr, allocations)
+        if pod_uid in reverse_lookup:
+            ip = IPv4Address(reverse_lookup[pod_uid])
+        else:
+            ip = self._find_free_ip(block.cidr, allocations)
         # ip is always not None with prefixlen < 32
         logging.info(f'allocate: acquired ip={ip}')
         allocations[ip.compressed] = pod_uid
