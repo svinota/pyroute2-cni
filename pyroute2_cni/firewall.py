@@ -3,7 +3,7 @@ import struct
 
 from pyroute2 import AsyncIPRoute
 from pyroute2.netlink.nfnetlink.nftsocket import Cmp, Meta, Regs
-from pyroute2.nftables.expressions import genex, ipv4addr, masq
+from pyroute2.nftables.expressions import genex, ipv4addr, masq, verdict
 from pyroute2.nftables.main import AsyncNFTables
 
 from .vrf_domain import VRFDomain
@@ -39,6 +39,47 @@ def ct_state_match(state):
             },
         )
     )
+    return ret
+
+
+def ct_mark_match(mark):
+    ret = []
+    ret.append(
+        genex('meta', {'key': Meta.NFT_META_MARK, 'dreg': Regs.NFT_REG_1})
+    )
+    ret.append(
+        genex(
+            'bitwise',
+            {
+                'sreg': Regs.NFT_REG_1,
+                'dreg': Regs.NFT_REG_1,
+                'len': 0x4,
+                'op': 0x0,
+                'mask': {
+                    'attrs': [['NFTA_DATA_VALUE', struct.pack('I', mark)]]
+                },
+                'xor': {'attrs': [['NFTA_DATA_VALUE', struct.pack('I', 0x0)]]},
+            },
+        )
+    )
+    ret.append(
+        genex(
+            'cmp',
+            {
+                'sreg': Regs.NFT_REG_1,
+                'op': Cmp.NFT_CMP_EQ,
+                'data': {
+                    'attrs': [['NFTA_DATA_VALUE', struct.pack('I', mark)]]
+                },
+            },
+        )
+    )
+    return ret
+
+
+def nft_counter():
+    ret = []
+    ret.append(genex('counter', {'bytes': 0, 'packets': 0}))
     return ret
 
 
@@ -236,21 +277,32 @@ class FirewallManager:
                     'add',
                     table=self.table_name,
                     chain='ct-restore',
-                    expressions=(meta_mark(),),
+                    expressions=(
+                        ct_mark_match(0x4000),
+                        nft_counter(),
+                        verdict(-5),
+                    ),
+                    userdata=magic,
+                )
+                await nft_main.rule(
+                    'add',
+                    table=self.table_name,
+                    chain='ct-restore',
+                    expressions=(nft_counter(), meta_mark()),
                     userdata=magic,
                 )
                 await nft_main.rule(
                     'add',
                     table=self.table_name,
                     chain='ct-manager',
-                    expressions=(jump('ct-mark'),),
+                    expressions=(nft_counter(), jump('ct-mark')),
                     userdata=magic,
                 )
                 await nft_main.rule(
                     'add',
                     table=self.table_name,
                     chain='ct-manager',
-                    expressions=(jump('ct-restore'),),
+                    expressions=(nft_counter(), jump('ct-restore')),
                     userdata=magic,
                 )
 
@@ -283,20 +335,7 @@ class FirewallManager:
                 ipv4addr(src=f'{prefix}/{prefixlen}'),
                 ipv4addr(dst=f'{prefix}/{prefixlen}', op=Cmp.NFT_CMP_NEQ),
                 oif(default_link),
-                masq(),
-            ),
-            userdata=magic,
-        )
-        #
-        # service masquerade in
-        await nft.rule(
-            'add',
-            table=self.table_name,
-            chain='nat',
-            expressions=(
-                ipv4addr(src=f'{prefix}/{prefixlen}', op=Cmp.NFT_CMP_NEQ),
-                ipv4addr(dst=f'{prefix}/{prefixlen}'),
-                oif(vrf_bridge_index),
+                nft_counter(),
                 masq(),
             ),
             userdata=magic,

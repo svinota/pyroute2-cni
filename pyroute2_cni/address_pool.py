@@ -276,7 +276,7 @@ class AddressPool:
         return changed_blocks
 
     async def gc_empty_blocks(self) -> int:
-        logging.info('Starting IPBlock GC')
+        logging.debug('Starting IPBlock GC')
         limit: int = 1
         keep: int = 0
         live_domains: set[int] = set()
