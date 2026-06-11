@@ -34,15 +34,15 @@ ghcr-clean:
 
 .PHONY: version
 version:
-	echo `cat VERSION | awk -F . '{print($$1"."$$2"."$$3 + 1)}'` >VERSION
+	echo `cat images/cni/VERSION | awk -F . '{print($$1"."$$2"."$$3 + 1)}'` >images/cni/VERSION
 
 .PHONY: build
 build: clean version
 	make -C pyroute2_plugin
 	$(call nox,-e build)
-	podman build -t ghcr.io/svinota/pyroute2-cni:`cat VERSION` .
-	podman push ghcr.io/svinota/pyroute2-cni:`cat VERSION`
-	sed -i "s/\(pyroute2-cni:\)[0-9.]\+/\\1$$(cat VERSION)/" kubernetes/daemonset.yaml
+	podman build -t ghcr.io/svinota/pyroute2-cni:`cat images/cni/VERSION` .
+	podman push ghcr.io/svinota/pyroute2-cni:`cat images/cni/VERSION`
+	sed -i "s/\(pyroute2-cni:\)[0-9.]\+/\\1$$(cat images/cni/VERSION)/" kubernetes/daemonset.yaml
 
 
 .PHONY: patch-daemonset
@@ -50,7 +50,7 @@ patch-daemonset:
 	kubectl -n pyroute2-cni \
 		patch daemonset pyroute2-cni \
 		--type='json' \
-		-p='[{"op": "replace", "path": "/spec/template/spec/containers/1/image", "value": "ghcr.io/svinota/pyroute2-cni:'$$(cat VERSION)'"}]'
+		-p='[{"op": "replace", "path": "/spec/template/spec/containers/1/image", "value": "ghcr.io/svinota/pyroute2-cni:'$$(cat images/cni/VERSION)'"}]'
 
 .PHONY: deploy
 deploy: build patch-daemonset

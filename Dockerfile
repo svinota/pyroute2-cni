@@ -10,7 +10,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 RUN pip install *whl
 
 # assets
-COPY image/* .
+COPY images/cni/* .
 
 # the engine
 COPY pyroute2_plugin/pyroute2-cni-plugin .
