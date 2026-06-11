@@ -1,7 +1,7 @@
 pyroute2-cni
 ------------
 
-A lab project to test Kubernetes integration with EVPN-VXLAN / SRv6 / VRF
+A rather simple CNI with EVPN-VXLAN / VRF support
 
 Requirements
 ============
@@ -72,24 +72,26 @@ Access FRR shell:
 
 .. code::
 
-    $ kubectl -n pyroute2-cni exec -ti {{pod-name}} -c pyroute2-frr -- vtysh
+    $ kubectl -n pyroute2-cni exec -ti daemonsets/pyroute2-cni -c pyroute2-frr -- vtysh
 
 Useful vtysh commands:
 
 .. code::
 
     # show bgp l2vpn evpn summary
-    # show bgp l2vpn evpn route
-    # show evpn mac vni all
+    # show bgp l2vpn evpn route type 5
     # show ip route vrf {{vrf-name}}
 
 Configuration
 =============
 
-.. warning::
-   At this stage breaking changes in the configuration might occur.
-
 **VRFNodeConfig**
+
+If a CNI process doesn't find a corresponding `VRFNodeConfig`, it defaults
+to the interface used for the default route and to its primary address.
+
+Otherwise `VRFNodeConfig` helps to configure these parameters on per-node
+basis:
 
 .. code::
 
@@ -109,13 +111,15 @@ Configuration
 
 * nodeRef.name: target node name
 * routerId: preferred router ID for the node
-* routeReflectors: explicit BGP route reflector peers for the node
+* routeReflectors: (optional) BGP route reflector peers for the node
 * interfaces: node interfaces and their preferred local addresses
 
 If no `routeReflectors` are given, then the CNI builds a BGP mesh in
 the cluster.
 
 **VRFDomain**
+
+If there is no `VRFDomain` CR defined, CNI creates a default one.
 
 .. code::
 
@@ -147,14 +151,14 @@ Available attachment types:
 * `l2vni`: stretches a layer 2 switching domain across the cluster
 * `l3vni`: builds a routing domain and uses node-specific subranges
 
-It is possible to have multiple attachments in one VRF. Then `l2vni`
-is preferred for attaching pods, while `l3vni` might be used to
-integrate with external infrastructure.
+If a VRF has multiple attachments, `l2vni` is preferred for attaching
+pods, while `l3vni` can be used to integrate with external infrastructure.
 
 **VRFDomainBinding**
 
-``VRFDomainBinding`` is cluster-scoped. It maps a Kubernetes namespace to a
-cluster-scoped ``VRFDomain`` resource.
+`VRFDomainBinding` CR is cluster-scoped. It maps a Kubernetes namespace to a
+cluster-scoped `VRFDomain` resource. `VRFDomainBindings` are managed by the CNI,
+so no manual setup is needed.
 
 .. code::
 
@@ -169,10 +173,12 @@ cluster-scoped ``VRFDomain`` resource.
         name: vrf-200
 
 * namespaceRef.name: target namespace name
-* vrfDomainRef.name: target ``VRFDomain`` name
-
+* vrfDomainRef.name: target `VRFDomain` name
 
 **ConfigMap**
+
+The values in `[default]` section help to define the default `VRFDomain`,
+if needed.
 
 .. code::
 
@@ -183,14 +189,17 @@ cluster-scoped ``VRFDomain`` resource.
       namespace: pyroute2-cni
     data:
       server.ini: |
-        [api]
-        socket_path_api = /var/run/pyroute2/api
-        socket_path_fd = /var/run/pyroute2/fdpass
-
         [default]
+        vrf = 42
         prefix = 10.244.0.0
         prefixlen = 16
+        ipblocklen = 26
         system_vrf_type = l3vni
 
         [logging]
-        level = INFO
+        level = info
+
+Monitoring
+==========
+
+The DaemonSet exposes `/livez`, `/readyz`, and `/metrics` on port `24800`.

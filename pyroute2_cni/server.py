@@ -24,10 +24,10 @@ from pyroute2_cni.request import CNIRequest
 from pyroute2_cni.vrf_controller import VRFController
 
 READINESS_HOST = '0.0.0.0'
-READINESS_PORT = 24800
+READINESS_PORT = '24800'
 DEFAULT_LOG_LEVEL = 'INFO'
-DEFAULT_GC_INTERVAL_SECONDS = 300
-DEFAULT_FW_INTERVAL_SECONDS = 30
+GC_INTERVAL_SECONDS = '300'
+FW_INTERVAL_SECONDS = '30'
 
 
 class CNIProtocol(asyncio.Protocol):
@@ -236,7 +236,7 @@ async def run_readiness_server(
     ready: asyncio.Event,
     registry: dict[str, CNIRequest],
     host: str = READINESS_HOST,
-    port: int = READINESS_PORT,
+    port: int = int(READINESS_PORT),
 ) -> asyncio.AbstractServer:
     return await asyncio.start_server(
         lambda r, w: http_handler(r, w, ready, registry), host=host, port=port
@@ -323,8 +323,8 @@ async def main(config: ConfigParser) -> None:
     readiness_server = await run_readiness_server(
         ready,
         registry,
-        host=config['readiness'].get('host', READINESS_HOST),
-        port=config['readiness'].getint('port', fallback=READINESS_PORT),
+        host=config['readiness']['host'],
+        port=int(config['readiness']['port']),
     )
     ready.set()
     node_name = os.environ['NODE_NAME']
@@ -424,30 +424,25 @@ async def main(config: ConfigParser) -> None:
 
 
 def config_set_defaults(config: ConfigParser) -> None:
-    if 'network' not in config:
-        config['network'] = {}
-    if 'readiness' not in config:
-        config['readiness'] = {}
-    if 'logging' not in config:
-        config['logging'] = {}
-    if 'default' not in config:
-        config['default'] = {}
-    config['network']['node_name'] = os.environ['NODE_NAME']
+    config.setdefault('api', {})
+    config.setdefault('network', {})
+    config.setdefault('readiness', {})
+    config.setdefault('logging', {})
+    config.setdefault('default', {})
+    config['api'].setdefault('socket_path_api', '/var/run/pyroute2/api')
+    config['api'].setdefault('socket_path_fd', '/var/run/pyroute2/fdpass')
+    config['network'].setdefault('node_name', os.environ['NODE_NAME'])
     node_ip = get_node_ip(config['network']['node_name'])
-    config['network']['ipaddr'] = node_ip
-    config['readiness'].setdefault('host', READINESS_HOST)
-    config['readiness'].setdefault('port', str(READINESS_PORT))
+    config['network'].setdefault('ipaddr', node_ip)
     config['logging'].setdefault('level', DEFAULT_LOG_LEVEL)
     config['default'].setdefault('vrf', '42')
     config['default'].setdefault('ipblocklen', '26')
     config['default'].setdefault('service_vrf_max', '512')
     config['default'].setdefault('system_vrf_type', 'l3vni')
-    config['default'].setdefault(
-        'gc_interval_seconds', str(DEFAULT_GC_INTERVAL_SECONDS)
-    )
-    config['default'].setdefault(
-        'fw_interval_seconds', str(DEFAULT_FW_INTERVAL_SECONDS)
-    )
+    config['default'].setdefault('gc_interval_seconds', GC_INTERVAL_SECONDS)
+    config['default'].setdefault('fw_interval_seconds', FW_INTERVAL_SECONDS)
+    config['readiness'].setdefault('host', READINESS_HOST)
+    config['readiness'].setdefault('port', READINESS_PORT)
 
 
 def run():

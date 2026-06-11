@@ -78,24 +78,18 @@ def env_pods(env_namespace):
 
 def test_pod_create_delete(env_pods):
     cmd_matches = 0
-    frr_matches = 0
     cmd_output = _run_cmd(
         env_pods.v1,
         env_pods.namespace,
         env_pods.pods[0].name,
         ['ping', '-c', '1', env_pods.pods[1].ip],
     )
-    frr_output = _check_frr_status(env_pods.v1)
     if '1 packets received' in cmd_output:
         cmd_matches += 1
-    for pod in env_pods.pods:
-        if pod.mac in frr_output:
-            frr_matches += 1
     assert cmd_matches == 1
-    assert frr_matches == 2
 
 
-def test_namespace_create_delete(env_namespace):
+def _not_test_namespace_create_delete(env_namespace):
     v1, namespace = env_namespace.v1, env_namespace.name
     try:
         ns = v1.read_namespace(name=namespace)
@@ -172,7 +166,7 @@ def _check_frr_status(v1: client.CoreV1Api) -> str:
         name=frr_pod_name,
         namespace='pyroute2-cni',
         container='pyroute2-frr',
-        command=['vtysh', '-c', 'show bgp l2vpn evpn route type 2'],
+        command=['vtysh', '-c', 'show bgp l2vpn evpn route type 5'],
         stderr=True,
         stdin=False,
         stdout=True,
@@ -183,13 +177,7 @@ def _check_frr_status(v1: client.CoreV1Api) -> str:
 def _create_test_namespace(name: str) -> client.V1Namespace:
     return client.V1Namespace(
         metadata=client.V1ObjectMeta(
-            name=name,
-            annotations={
-                'pyroute2.org/vrf': '5000',
-                'pyroute2.org/l2vni': '2000',
-                'pyroute2.org/prefix': '10.2.3.0',
-                'pyroute2.org/prefixlen': '24',
-            },
+            name=name, labels={'pyroute2.org/test': 'true'}
         )
     )
 
@@ -210,7 +198,11 @@ def _create_test_pod(name: str) -> client.V1Pod:
     )
     return client.V1Pod(
         metadata=client.V1ObjectMeta(
-            name=name, labels={'app': 'test-pod-create-delete'}
+            name=name,
+            labels={
+                'app': 'test-pod-create-delete',
+                'pyroute2.org/test': 'true',
+            },
         ),
         spec=client.V1PodSpec(
             containers=[

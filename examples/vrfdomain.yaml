@@ -1,0 +1,25 @@
+---
+apiVersion: cni.pyroute2.org/v1alpha1
+kind: VRFDomain
+metadata:
+  name: vrf-200
+spec:
+  attachments:  
+  - port: 4789
+    type: l3vni
+    vni: 50200
+  ipblocklen: 26
+  prefix: 10.150.0.0
+  prefixlen: 16
+  table: 2200
+  vrf: 200
+---
+apiVersion: cni.pyroute2.org/v1alpha1
+kind: VRFDomainBinding
+metadata:
+  name: vrf-200
+spec:
+  namespaceRef:
+    name: test-namespace
+  vrfDomainRef:
+    name: vrf-200
