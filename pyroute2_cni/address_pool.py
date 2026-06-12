@@ -58,6 +58,7 @@ class AddressPool:
     def __init__(self, node_name: str, config: ConfigParser) -> None:
         self.node_name = node_name
         self.config = config
+        self._alloc_lock = asyncio.Lock()
         self.block_prefixlen = int(
             self.config['default'].get(
                 'ipblocklen', self.config['default']['prefixlen']
@@ -191,6 +192,28 @@ class AddressPool:
                 continue
             result.append(block)
         return result
+
+    def _node_used_ips(self, network: IPv4Network, vrf_table: int) -> set[str]:
+        used: set[str] = set()
+        for pod in self._list_running_pods():
+            used.add(pod.ip)
+        return used
+
+    def _find_free_ip_excluding(
+        self,
+        cidr: IPv4Network,
+        allocations: dict[str, str],
+        excluded: set[str],
+    ) -> IPv4Address:
+        for ip in cidr.hosts():
+            ip_str = ip.compressed
+            if ip_str in allocations:
+                continue
+            if ip_str in excluded:
+                logging.warning(f'consistency: {ip_str} not in the IPBlock')
+                continue
+            return ip
+        raise KeyError('no free addresses found')
 
     def _delete_block(self, name: str) -> None:
         self.k8s_custom_api.delete_cluster_custom_object(
@@ -488,15 +511,18 @@ class AddressPool:
         raise RuntimeError('unable to acquire IPBlock')
 
     async def release(self, pod_uid: str) -> None:
-        for item in self._node_block_items():
-            allocations = dict(item.allocations)
-            for ip, ref in tuple(allocations.items()):
-                if ref != pod_uid:
-                    continue
-                allocations.pop(ip, None)
-                self._patch_block_status(item, allocations)
-                return
-        raise KeyError('address not allocated')
+        logging.info(f'Starting release pod_uid={pod_uid}')
+        async with self._alloc_lock:
+            for item in self._node_block_items():
+                allocations = dict(item.allocations)
+                for ip, ref in tuple(allocations.items()):
+                    if ref != pod_uid:
+                        continue
+                    allocations.pop(ip, None)
+                    self._patch_block_status(item, allocations)
+                    logging.info(f'Done release pod_uid={pod_uid}')
+                    return
+            raise KeyError('address not allocated')
 
     async def allocate(
         self,
@@ -505,23 +531,35 @@ class AddressPool:
         vrf_table: int,
         pod_uid: str = '',
     ) -> AddressAllocation:
-        gateway: IPv4Address
-        block = await self._acquire_block(network, ipblocklen, vrf_table)
-        allocations = dict(block.allocations)
-        reverse_lookup = dict([(x[1], x[0]) for x in allocations.items()])
-        if 'gateway' in reverse_lookup:
-            gateway = IPv4Address(reverse_lookup['gateway'])
-        else:
-            gateway = self._find_free_ip(block.cidr, allocations)
-        allocations[gateway.compressed] = 'gateway'
-        # gateway is ALWAYS not None with prefixlen < 32
-        logging.info(f'allocate: acquired gateway={gateway}')
-        if pod_uid in reverse_lookup:
-            ip = IPv4Address(reverse_lookup[pod_uid])
-        else:
-            ip = self._find_free_ip(block.cidr, allocations)
-        # ip is always not None with prefixlen < 32
-        logging.info(f'allocate: acquired ip={ip}')
-        allocations[ip.compressed] = pod_uid
-        self._patch_block_status(block, allocations)
-        return AddressAllocation(ip, gateway)
+        logging.info(f'Starting allocation pod_uid={pod_uid}')
+        async with self._alloc_lock:
+            gateway: IPv4Address
+            block = await self._acquire_block(network, ipblocklen, vrf_table)
+            allocations = dict(block.allocations)
+            reverse_lookup = dict([(x[1], x[0]) for x in allocations.items()])
+            used_ips = self._node_used_ips(network, vrf_table)
+            if 'gateway' in reverse_lookup:
+                gateway = IPv4Address(reverse_lookup['gateway'])
+            else:
+                gateway = self._find_free_ip_excluding(
+                    block.cidr, allocations, used_ips
+                )
+            allocations[gateway.compressed] = 'gateway'
+            used_ips.add(gateway.compressed)
+            # gateway is ALWAYS not None with prefixlen < 32
+            logging.info(f'allocate: acquired gateway={gateway}')
+            if pod_uid in reverse_lookup:
+                ip = IPv4Address(reverse_lookup[pod_uid])
+            else:
+                ip = self._find_free_ip_excluding(
+                    block.cidr, allocations, used_ips
+                )
+            # ip is always not None with prefixlen < 32
+            logging.info(f'allocate: acquired ip={ip}')
+            allocations[ip.compressed] = pod_uid
+            self._patch_block_status(block, allocations)
+            logging.info(
+                f'Done allocation pod_uid={pod_uid} '
+                f'ip={ip} gateway={gateway}'
+            )
+            return AddressAllocation(ip, gateway)
