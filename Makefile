@@ -17,6 +17,16 @@ define nox
 	}
 endef
 
+define render_dev_kustomization
+	{\
+		cat kubernetes/releases/dev/kustomization.yaml.tpl |\
+		sed "\
+			s/{cni_image}/$$(cat images/cni/VERSION)/;\
+			s/{cni_version}/$$(cat VERSION)/;\
+		" >kubernetes/releases/dev/kustomization.yaml;\
+	}
+endef
+
 
 .PHONY: clean
 clean:
@@ -42,18 +52,12 @@ build: clean version
 	$(call nox,-e build)
 	podman build -t ghcr.io/svinota/pyroute2-cni:`cat images/cni/VERSION` .
 	podman push ghcr.io/svinota/pyroute2-cni:`cat images/cni/VERSION`
-	sed -i "s/\(pyroute2-cni:\)[0-9.]\+/\\1$$(cat images/cni/VERSION)/" kubernetes/daemonset.yaml
+	$(call render_dev_kustomization,)
 
-
-.PHONY: patch-daemonset
-patch-daemonset:
-	kubectl -n pyroute2-cni \
-		patch daemonset pyroute2-cni \
-		--type='json' \
-		-p='[{"op": "replace", "path": "/spec/template/spec/containers/1/image", "value": "ghcr.io/svinota/pyroute2-cni:'$$(cat images/cni/VERSION)'"}]'
 
 .PHONY: deploy
-deploy: build patch-daemonset
+deploy: build
+	kubectl apply -k kubernetes/releases/dev/
 
 .PHONY: test nox
 test nox:

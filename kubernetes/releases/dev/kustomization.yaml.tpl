@@ -1,0 +1,17 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base/0.1
+
+images:
+  - name: ghcr.io/svinota/pyroute2-cni
+    newTag: {cni_image}
+  - name: ghcr.io/svinota/pyroute2-frr
+    newTag: 0.0.5
+
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: pyroute2-cni
+      app.kubernetes.io/version: "{cni_version}"
