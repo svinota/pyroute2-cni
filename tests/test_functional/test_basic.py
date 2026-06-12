@@ -86,6 +86,7 @@ def packets_received(output, amount):
     return received == amount
 
 
+@pytest.mark.repeat(10)
 def test_pod_create_delete(env_pods):
     time.sleep(5)
     cmd_output = _run_cmd(

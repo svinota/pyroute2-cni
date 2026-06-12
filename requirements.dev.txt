@@ -5,6 +5,7 @@ eventlet
 pytest
 pytest-asyncio
 pytest-timeout
+pytest-repeat
 pre-commit
 mypy
 # git+https://github.com/svinota/pyroute2.git@master
