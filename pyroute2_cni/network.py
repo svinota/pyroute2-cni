@@ -1,12 +1,14 @@
 import logging
 import os
+import socket
+import struct
 from configparser import ConfigParser
 from dataclasses import asdict, dataclass
 from ipaddress import IPv4Network
 from typing import Any, Callable
 
 from kubernetes.client.exceptions import ApiException
-from pyroute2 import AsyncIPRoute
+from pyroute2 import AsyncIPRoute, netns, process
 from pyroute2.common import uifname
 
 from kubernetes import client as k8s_client
@@ -35,6 +37,44 @@ class SegmentInfo:
     ipaddr: str
     gateway: str
     lladdr: str = ''
+
+
+def send_garp(net_ns_fd: int, src_mac: str, src_ip: str) -> None:
+
+    iface = 'eth0'
+    src_mac_bytes = bytes.fromhex(src_mac.replace(':', ''))
+    src_ip_bytes = socket.inet_aton(src_ip)
+
+    # eth
+    eth_dst = bytes.fromhex('ff' * 6)
+    eth_type = struct.pack('!H', 0x0806)
+    eth_hdr = eth_dst + src_mac_bytes + eth_type
+
+    # arp
+    arp_fields = struct.pack(
+        '!HHBBH',
+        1,  # eth
+        0x0800,  # IPv4
+        6,  # MAC length
+        4,  # IPv4 length
+        1,  # ARP request
+    )
+    arp_hdr = (
+        arp_fields
+        + src_mac_bytes
+        + src_ip_bytes
+        + bytes.fromhex('00' * 6)
+        + src_ip_bytes
+    )
+
+    frame = eth_hdr + arp_hdr
+
+    netns.pushns(net_ns_fd)
+    s = socket.socket(socket.AF_PACKET, socket.SOCK_RAW)
+    s.bind((iface, 0))
+    s.send(frame)
+    s.close()
+    netns.popns()
 
 
 class Plugin(PluginProtocol):
@@ -180,7 +220,11 @@ class Plugin(PluginProtocol):
                 address=veth_ipaddr,
                 prefixlen=domain.bridge_prefixlen(),
             )
-            await ipr.route('add', gateway=bridge_ipaddr)
+            await ipr.ensure(ipr.route, present=True, gateway=bridge_ipaddr)
+            with process.ChildProcess(
+                send_garp, [net_ns_fd, info.lladdr, veth_ipaddr]
+            ) as proc:
+                proc.communicate()
             logging.info(f'info: {asdict(info)}')
 
         return info

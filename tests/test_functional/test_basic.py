@@ -58,6 +58,8 @@ def env_pods(env_namespace):
     try:
         v1.create_namespaced_pod(namespace=namespace, body=pod_1.manifest)
         v1.create_namespaced_pod(namespace=namespace, body=pod_2.manifest)
+        wait_for(lambda: _pod_running(v1, pod_1.name, namespace))
+        wait_for(lambda: _pod_running(v1, pod_2.name, namespace))
         wait_for(lambda: _get_ip(v1, pod_1.name, namespace) is not None)
         wait_for(lambda: _get_ip(v1, pod_2.name, namespace) is not None)
         ip_1 = _get_ip(v1, pod_1.name, namespace)
@@ -76,17 +78,23 @@ def env_pods(env_namespace):
         wait_for(lambda: _pod_gone(v1, namespace, pod_2.name))
 
 
+def packets_received(output, amount):
+    step_1 = [x for x in output.split('\n') if 'packets received' in x][0]
+    step_2 = step_1.split(',')[1]
+    step_3 = step_2.split()[0]
+    received = int(step_3)
+    return received == amount
+
+
 def test_pod_create_delete(env_pods):
-    cmd_matches = 0
+    time.sleep(5)
     cmd_output = _run_cmd(
         env_pods.v1,
         env_pods.namespace,
         env_pods.pods[0].name,
-        ['ping', '-c', '1', env_pods.pods[1].ip],
+        ['ping', '-c', '3', env_pods.pods[1].ip],
     )
-    if '1 packets received' in cmd_output:
-        cmd_matches += 1
-    assert cmd_matches == 1
+    assert packets_received(cmd_output, 3)
 
 
 def _not_test_namespace_create_delete(env_namespace):
@@ -104,6 +112,11 @@ def _not_test_namespace_create_delete(env_namespace):
 def _get_ip(v1: client.CoreV1Api, name: str, namespace: str) -> str | None:
     pod = v1.read_namespaced_pod(name=name, namespace=namespace)
     return pod.status.pod_ip if pod.status is not None else None
+
+
+def _pod_running(v1: client.CoreV1Api, name: str, namespace: str) -> bool:
+    pod = v1.read_namespaced_pod(name=name, namespace=namespace)
+    return pod.status is not None and pod.status.phase == 'Running'
 
 
 def _get_mac(v1: client.CoreV1Api, name: str, namespace: str) -> str:
