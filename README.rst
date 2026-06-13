@@ -17,7 +17,10 @@ Standard Kubernetes install.
 
 .. code::
 
-    curl -fsSL https://raw.githubusercontent.com/svinota/pyroute2-cni/refs/heads/main/kubernetes/install.sh | bash
+    kubectl apply -k https://github.com/svinota/pyroute2-cni/kubernetes/crds/0.1/
+    kubectl wait --for=condition=Established crd/ipblocks.ipam.pyroute2.org
+    kubectl apply -k https://github.com/svinota/pyroute2-cni/kubernetes/releases/0.1.0/
+
 
 This waits for the CRD to become established before applying the namespace,
 RBAC, ConfigMap, and DaemonSet.
@@ -72,15 +75,15 @@ Access FRR shell:
 
 .. code::
 
-    $ kubectl -n pyroute2-cni exec -ti daemonsets/pyroute2-cni -c pyroute2-frr -- vtysh
+    kubectl -n pyroute2-cni exec -ti daemonsets/pyroute2-cni -c pyroute2-frr -- vtysh
 
 Useful vtysh commands:
 
 .. code::
 
-    # show bgp l2vpn evpn summary
-    # show bgp l2vpn evpn route type 5
-    # show ip route vrf {{vrf-name}}
+    show bgp l2vpn evpn summary
+    show bgp l2vpn evpn route type 5
+    show ip route vrf {{vrf-name}}
 
 Configuration
 =============
