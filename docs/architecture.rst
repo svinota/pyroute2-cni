@@ -6,7 +6,8 @@ pyroute2 CNI architecture and protocols
 Network topology
 ----------------
 
-...
+.. image:: _images/CNI-overview.svg
+   :target: _images/CNI-overview.svg
 
 Plugin
 ------
