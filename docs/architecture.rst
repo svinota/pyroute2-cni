@@ -6,35 +6,7 @@ pyroute2 CNI architecture and protocols
 Network topology
 ----------------
 
-.. aafig::
-   :scale: 80
-   :textual:
-
-    +------------+           +------------+
-    |   enp1s0   |           |  `vrf-X`   |
-    +------------+           +------------+
-           ^                        ^
-           | `link`                 | `master`
-           o                        o
-    +------------+  `master` +------------+
-    |   `vxlan-X`|o--------->|  `br-X`    |
-    +------------+           +------------+
-                                    ^
-                                    | `master`
-                                    o
-                             +------------+
-                             |  `veth`    |
-                             +------+-----+
-                                    |
-                          -         |        -
-                         /          |         \
-                        |    +------+-----+    |
-                        |    |  `peer`    |    |
-                        |    +------------+    +- container netns
-                        |                      |
-                        |                      |
-                         \                    /
-                          -                  -
+...
 
 Plugin
 ------
@@ -47,72 +19,53 @@ The plugin workflow:
 1. executed by kubelet
 2. get CNI JSON from `stdin`
 3. get environment variables
-4. parse the variables and open `CNI_NETNS` → obtain an open FD
+4. parse the variables and open `CNI_NETNS` -> obtain an open FD
 5. obtain a new request id from the server
-6. send the FD to the server
-7. send the CNI and env data to the server
+6. send the FD to the server over `socket_path_fd`
+7. send the CNI and env data to the server over `socket_path_api`
 8. await the response
-9. print out the response to `stdout`
+9. print the response to `stdout`
 
 Server
 ------
 
-* a pod from the DaemonSet
+Container: pyroute2-frr
+~~~~~~~~~~~~~~~~~~~~~~~
+
+* image: `ghcr.io/svinota/pyroute2-cni:{version}`
+* runs FRR: zebra, staticd, bgpd
+* runs EVPN-VXLAN controlplane
+* exposes and monitors a UNIX socket to reload configuratuion
+
+Container: pyroute2-cni
+~~~~~~~~~~~~~~~~~~~~~~~
+
 * image:  `ghcr.io/svinota/pyroute2-cni:{version}`
 * uses the host network namespace
-* mounts the host file system to expose communication sockets
+* exposes two UNIX sockets for the API and an HTTP readiness endpoint
 
 The server workflow:
 
-1. await request init
-2. allocate and send a new request id
-3. collect netns FD, CNI data and env variables from all the communication sockets
-4. ensure the node infrastructure
-5. create a veth pair, setup the container network
-6. send CNI response to the plugin
+#. watch namespaces and VRF domain objects
+#. reconcile periodic address-pool and firewall jobs
+#. await request init
+#. allocate and respond with a request id
+#. collect netns FD, CNI data and env variables from all the communication sockets
+#. set up the container network
+#. send the CNI response to the plugin
 
-.. aafig::
-   :scale: 80
-   :textual:
+.. image:: _images/CNI-plugin-flow.svg
+   :target: _images/CNI-plugin-flow.svg
 
-    kubelet                plugin                server
-      o                     o                     o
-      | `CNI_COMMAND: ADD`  |                     |
-      +-------------------->|                     |
-      |   json, env dict    |    request init     |
-      |                     +-------------------->|    via `socket_path_api`
-      |                     |                     |
-      |                     |   get request id    |
-      |                     |<--------------------+
-      |                     |                     |
-      |                     |   send netns data   |
-      |                     +-------------------->|    via `socket_path_fd`
-      |                     | \                   |
-      |                     |  +-o request id     |
-      |                     |  +-o open netns FD  |
-      |                     |                     |
-      |                     |                     |
-      |                     |   send CNI data     |
-      |                     +-------------------->|    via `socket_path_api`
-      |                     | \                   |
-      |                     |  +-o `request id`   |
-      |                     |  +-o `CNI data`     |
-      |                     |  +-o `env dict`     |
-      |                     |                     |
-      |                     |                     |  - - - - - -  `request ready`
-      |                     |                     |
-      |                     |                     |    `await resync()`
-      |                     |                     |
-      |                     |                     |     1. `ensure firewall`
-      |                     |                     |     2. `ensure sysctl for VRF, SRv6, ...`
-      |                     |                     |     3. `ensure the bridge`
-      |                     |                     |     4. `ensure the VRF interface`
-      |                     |                     |     5. `ensure the VXLAN interface`
-      |                     |                     |     6. `create veth pair, setup the peer`
-      |                     |                     |     7. `allocate and setup the address`
-      |                     |   get CNI data      |
-      |                     |<--------------------+
-      |   `json to stdout`  |                     |
-      |<--------------------+                     |
-      |                     |                     |
-      v                     v                     v
+Controller flow
+---------------
+
+The server keeps node state synchronised with background controllers:
+
+* `NamespaceController` watches namespaces and triggers namespace lifecycle hooks.
+* `VRFController` watches `VRFDomain` objects, creates or removes VRFs and VXLAN-backed bridges, and reconciles firewall rules.
+
+Also it has managers:
+
+* `AddressPool` handles allocation, reconciliation, and garbage collection of pod address blocks.
+* `FirewallManager` owns the nftables setup and per-VRF NAT and marking rules.

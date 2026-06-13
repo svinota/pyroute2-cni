@@ -8,5 +8,6 @@ pyroute2-cni documentation
    :maxdepth: 2
    :caption: Contents:
 
+   general
    architecture
 

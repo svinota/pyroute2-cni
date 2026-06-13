@@ -4,4 +4,5 @@ pyroute2_plugin/pyroute2-cni-plugin
 *.egg-info
 dist
 docs/_build
+docs/html
 kubernetes/releases/dev/kustomization.yaml

@@ -88,14 +88,11 @@ def setup_venv_common(session, flavour='dev', config=None):
 def setup_venv_docs(session, config=None):
     tmpdir = setup_venv_common(session, flavour='docs', config=config)
     session.run('cp', '-a', 'docs', tmpdir, external=True)
-    session.run('cp', '-a', 'examples', tmpdir, external=True)
+    session.run('cp', '-a', 'VERSION', tmpdir, external=True)
     [
         session.run('cp', src, dst, external=True)
         for (src, dst) in (
             ('README.rst', f'{tmpdir}/docs/general.rst'),
-            ('README.report.rst', f'{tmpdir}/docs/report.rst'),
-            ('README.contribute.rst', f'{tmpdir}/docs/devcontribute.rst'),
-            ('CHANGELOG.rst', f'{tmpdir}/docs/changelog.rst'),
         )
     ]
     return tmpdir
@@ -107,22 +104,14 @@ def docs(session, config):
     '''Generate project docs.'''
     tmpdir = setup_venv_docs(session, config)
     cwd = os.path.abspath(os.getcwd())
-    # man pages
-    session.chdir(f'{tmpdir}/docs/')
-    session.run('make', 'man', 'SPHINXOPTS="-W"', external=True)
-    session.run('cp', '-a', 'man', f'{cwd}/docs/', external=True)
     # html
     session.chdir(f'{tmpdir}/docs/')
     session.run('make', 'html', 'SPHINXOPTS="-W"', external=True)
     session.run('cp', '-a', 'html', f'{cwd}/docs/', external=True)
-    session.run('make', 'doctest', external=True)
-    session.chdir(cwd)
-    session.run('bash', 'util/aafigure_mapper.sh', external=True)
     #
     session.log('8<---------------------------------------------------------')
     session.log('compiled docs:')
     session.log(f'html pages -> {cwd}/docs/html')
-    session.log(f'man pages -> {cwd}/docs/man')
 
 
 @nox.session
