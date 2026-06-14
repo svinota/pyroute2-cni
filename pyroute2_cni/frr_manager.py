@@ -84,9 +84,16 @@ class FRRManager:
             peer_ips.add(self._node_router_id(node.metadata.name, node))
         return peer_ips
 
-    def render(self, vrfs: dict[int, VRFDomain]) -> str:
+    def render_config(
+        self, vrfs: dict[int, VRFDomain], cleanup: dict[int, VRFDomain]
+    ) -> str:
         vrf_sections = []
         vrf_router_sections = []
+        for item in cleanup.values():
+            vrf_sections.append(
+                f'no vrf vrf-{item.vrf}\n'
+                f'no router bgp 65000 vrf vrf-{item.vrf}\n'
+            )
         for item in vrfs.values():
             section = (
                 f'router bgp 65000 vrf vrf-{item.vrf}\n'
@@ -125,13 +132,14 @@ class FRRManager:
         )
 
     async def reload(
-        self, vrfs: dict[int, VRFDomain], refresh: bool = True
+        self, vrfs: dict[int, VRFDomain], cleanup: dict[int, VRFDomain]
     ) -> None:
-        if refresh:
-            self.peer_ips = list(
-                sorted(self.refresh_peers(k8s_client.CoreV1Api()))
-            )
-        self.output_path.write_text(self.render(vrfs), encoding='utf-8')
+        self.peer_ips = list(
+            sorted(self.refresh_peers(k8s_client.CoreV1Api()))
+        )
+        self.output_path.write_text(
+            self.render_config(vrfs, cleanup), encoding='utf-8'
+        )
         deadline = time.monotonic() + 120
         read_timeout = 30
         while True:

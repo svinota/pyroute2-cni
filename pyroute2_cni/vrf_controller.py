@@ -52,10 +52,18 @@ class VRFController:
             raise RuntimeError('node name is not set')
 
     async def remove_vrf(self, domain: VRFDomain) -> None:
+        logging.info(f'Remove VRF {domain.vrf}')
         vrf_ifname = f'vrf-{domain.vrf}'
         async with AsyncIPRoute() as ipr:
             await ipr.ensure(ipr.link, present=False, ifname=vrf_ifname)
-        await self.frr_manager.reload(self._vrf_domain_items())
+        await self.frr_manager.reload(
+            {
+                k: v
+                for k, v in self._vrf_domain_items().items()
+                if k != domain.vrf
+            },
+            {domain.vrf: domain},
+        )
 
     async def remove_vni(
         self, domain: VRFDomain, attachment: VRFAttachment, prefix: str
@@ -67,8 +75,8 @@ class VRFController:
             await ipr.ensure(ipr.link, present=False, ifname=l2vx_ifname)
 
     async def ensure_vrf(self, domain: VRFDomain) -> int:
-        logging.info(f'ensure VRF: {domain}')
-        await self.frr_manager.reload(self._vrf_domain_items())
+        logging.info(f'Ensure VRF: {domain}')
+        await self.frr_manager.reload(self._vrf_domain_items(), {})
         vrf_ifname = f'vrf-{domain.vrf}'
         async with AsyncIPRoute() as ipr:
             return (
