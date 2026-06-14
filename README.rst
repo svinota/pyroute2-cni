@@ -62,14 +62,13 @@ Allocated IP blocks:
 .. code::
 
     $ kubectl get ipblocks.ipam.pyroute2.org
-    NAME                                   CIDR              NODE    VRF    VNI    ALLOCATED   CAPACITY
-    k8s02-vrf1024-vx5500-10-244-0-64-26    10.244.0.64/26    k8s02   1024   5500   1           62
-    k8s02-vrf4005-vx4005-192-168-0-64-26   192.168.0.64/26   k8s02   4005   4005   1           62
-    k8s02-vrf42-vx42-10-244-0-64-26        10.244.0.64/26    k8s02   42     42     14          62
-    k8s03-vrf1024-vx5500-10-244-0-0-26     10.244.0.0/26     k8s03   1024   5500   5           62
-    k8s03-vrf4004-vx4004-172-16-12-0-26    172.16.12.0/26    k8s03   4004   4004   2           62
-    k8s03-vrf4005-vx4005-192-168-0-0-26    192.168.0.0/26    k8s03   4005   4005   1           62
-    k8s03-vrf42-vx42-10-244-0-0-26         10.244.0.0/26     k8s03   42     42     10          62
+    NAME                      CIDR              NODE    VRF   ALLOCATED   CAPACITY
+    vrf-200-10-150-0-0-26     10.150.0.0/26     k8s03   200   62          62
+    vrf-200-10-150-0-128-26   10.150.0.128/26   k8s03   200   41          62
+    vrf-200-10-150-0-192-26   10.150.0.192/26   k8s02   200   41          62
+    vrf-200-10-150-0-64-26    10.150.0.64/26    k8s02   200   62          62
+    vrf-42-10-244-0-0-26      10.244.0.0/26     k8s03   42    4           62
+    vrf-42-10-244-0-64-26     10.244.0.64/26    k8s02   42    4           62
 
 Access FRR shell:
 
@@ -132,13 +131,14 @@ If there is no `VRFDomain` CR defined, CNI creates a default one.
       name: vrf-200
     spec:
       vrf: 200
-      table: 200
+      table: 10200
       prefix: 10.1.0.0
       prefixlen: 16
       ipblocklen: 26
       attachments:
         - type: l3vni
-          vni: 200
+          vni: 60200
+          port: 4789
 
 * vrf: VRF id
 * table: routing table id

@@ -91,9 +91,7 @@ def setup_venv_docs(session, config=None):
     session.run('cp', '-a', 'VERSION', tmpdir, external=True)
     [
         session.run('cp', src, dst, external=True)
-        for (src, dst) in (
-            ('README.rst', f'{tmpdir}/docs/general.rst'),
-        )
+        for (src, dst) in (('README.rst', f'{tmpdir}/docs/general.rst'),)
     ]
     return tmpdir
 
