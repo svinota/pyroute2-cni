@@ -55,7 +55,7 @@ def options(module, config):
         '-m',
         'pytest',
         f'-r{config.get("summary", "x")}',
-        f'--timeout={config.get("timeout", 60)}',
+        f'--timeout={config.get("timeout", 600)}',
         '--basetemp',
         './log',
     ]

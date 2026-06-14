@@ -98,6 +98,131 @@ def test_pod_create_delete(env_pods):
     assert packets_received(cmd_output, 3)
 
 
+def test_pod_churn(env_namespace):
+    v1, namespace = env_namespace.v1, env_namespace.name
+    pods = [PodInfo(unique_name('pod')) for _ in range(200)]
+    try:
+        for pod in pods:
+            v1.create_namespaced_pod(namespace=namespace, body=pod.manifest)
+
+        for pod in pods:
+            wait_for(lambda pod_name=pod.name: _pod_running(v1, pod_name, namespace))
+
+        for pod in pods:
+            wait_for(lambda pod_name=pod.name: _get_ip(v1, pod_name, namespace) is not None)
+
+        ips = [
+            _get_ip(v1, pod.name, namespace)
+            for pod in pods
+        ]
+        assert all(ip is not None for ip in ips)
+        assert len(ips) == len(set(ips))
+    finally:
+        for pod in pods:
+            v1.delete_namespaced_pod(name=pod.name, namespace=namespace)
+        for pod in pods:
+            wait_for(lambda pod_name=pod.name: _pod_gone(v1, namespace, pod_name))
+
+
+def test_ipblock_gateways(env_namespace):
+    v1, namespace = env_namespace.v1, env_namespace.name
+    custom_api = client.CustomObjectsApi()
+    vrfdomain_name = unique_name('vrfdomain')
+    vrfdomainbinding_name = unique_name('vrfdomainbinding')
+    pods = [PodInfo(unique_name('pod')) for _ in range(30)]
+    vrfdomain = {
+        'apiVersion': 'cni.pyroute2.org/v1alpha1',
+        'kind': 'VRFDomain',
+        'metadata': {'name': vrfdomain_name},
+        'spec': {
+            'attachments': [
+                {'type': 'l3vni', 'port': 4789, 'vni': 50200},
+            ],
+            'ipblocklen': 29,
+            'prefix': '10.150.0.0',
+            'prefixlen': 16,
+            'table': 2200,
+            'vrf': 200,
+        },
+    }
+    vrfdomainbinding = {
+        'apiVersion': 'cni.pyroute2.org/v1alpha1',
+        'kind': 'VRFDomainBinding',
+        'metadata': {'name': vrfdomainbinding_name},
+        'spec': {
+            'namespaceRef': {'name': namespace},
+            'vrfDomainRef': {'name': vrfdomain_name},
+        },
+    }
+    try:
+        custom_api.create_cluster_custom_object(
+            'cni.pyroute2.org', 'v1alpha1', 'vrfdomains', vrfdomain
+        )
+        custom_api.create_cluster_custom_object(
+            'cni.pyroute2.org',
+            'v1alpha1',
+            'vrfdomainbindings',
+            vrfdomainbinding,
+        )
+
+        for pod in pods:
+            v1.create_namespaced_pod(namespace=namespace, body=pod.manifest)
+
+        for pod in pods:
+            wait_for(lambda pod_name=pod.name: _pod_running(v1, pod_name, namespace))
+
+        for pod in pods:
+            wait_for(lambda pod_name=pod.name: _get_ip(v1, pod_name, namespace) is not None)
+
+        ipblocks = _list_ipblocks_for_vrf(custom_api, 200)
+        assert len(ipblocks) == 6
+        assert all(_ipblock_gateway_count(block) == 1 for block in ipblocks)
+
+        for pod in pods:
+            v1.delete_namespaced_pod(name=pod.name, namespace=namespace)
+        for pod in pods:
+            wait_for(lambda pod_name=pod.name: _pod_gone(v1, namespace, pod_name))
+
+        wait_for(lambda: not _list_ipblocks_for_vrf(custom_api, 200))
+    finally:
+        custom_api.delete_cluster_custom_object(
+            'cni.pyroute2.org',
+            'v1alpha1',
+            'vrfdomainbindings',
+            vrfdomainbinding_name,
+        )
+        custom_api.delete_cluster_custom_object(
+            'cni.pyroute2.org',
+            'v1alpha1',
+            'vrfdomains',
+            vrfdomain_name,
+        )
+
+
+def _list_ipblocks_for_vrf(
+    custom_api: client.CustomObjectsApi, vrf_table: int
+) -> list[dict]:
+    items = custom_api.list_cluster_custom_object(
+        'ipam.pyroute2.org', 'v1alpha1', 'ipblocks'
+    ).get('items', [])
+    result = []
+    for item in items:
+        metadata = item.get('metadata') or {}
+        spec = item.get('spec') or {}
+        status = item.get('status') or {}
+        if not metadata.get('name', '').startswith(f'vrf-{vrf_table}-'):
+            continue
+        if spec.get('vrfTable') != vrf_table:
+            continue
+        result.append({'metadata': metadata, 'spec': spec, 'status': status})
+    return result
+
+
+def _ipblock_gateway_count(block: dict) -> int:
+    allocations = block.get('status', {}).get('allocations') or {}
+    return sum(1 for value in allocations.values() if value == 'gateway')
+
+
 def _not_test_namespace_create_delete(env_namespace):
     v1, namespace = env_namespace.v1, env_namespace.name
     try:
@@ -250,7 +375,7 @@ def unique_name(prefix: str) -> str:
     return f'{prefix}-{uuid.uuid4().hex[:8]}'
 
 
-def wait_for(condition, timeout: float = 60.0, interval: float = 1.0) -> None:
+def wait_for(condition, timeout: float = 600.0, interval: float = 1.0) -> None:
     deadline = time.time() + timeout
     last_error = None
     while time.time() < deadline:
