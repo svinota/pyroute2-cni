@@ -76,6 +76,8 @@ Access FRR shell:
 
     kubectl -n pyroute2-cni exec -ti daemonsets/pyroute2-cni -c pyroute2-frr -- vtysh
 
+It might be handy to add it as an alias in `.bashrc`.
+
 Useful vtysh commands:
 
 .. code::
@@ -87,12 +89,23 @@ Useful vtysh commands:
 Configuration
 =============
 
+The default settings start the CNI with full-mesh BGP and one system VRF,
+using the interfaces of the default route as VTEPs.
+
+This should be enough to run a medium-sized cluster in most typical setups.
+
+Large clusters work better with route reflectors, so you must set some up
+before deploying the CNI and use `VRFNodeConfigs` to instruct the CNI to use
+them.
+
+If you want to customize the CNI, use the following CRDs:
+
 **VRFNodeConfig**
 
 If a CNI process doesn't find a corresponding `VRFNodeConfig`, it defaults
-to the interface used for the default route and to its primary address.
+to the interface used for the default route and its primary address.
 
-Otherwise `VRFNodeConfig` helps to configure these parameters on per-node
+Otherwise, `VRFNodeConfig` helps configure these parameters on a per-node
 basis:
 
 .. code::
@@ -116,12 +129,14 @@ basis:
 * routeReflectors: (optional) BGP route reflector peers for the node
 * interfaces: node interfaces and their preferred local addresses
 
-If no `routeReflectors` are given, then the CNI builds a BGP mesh in
-the cluster.
+If no `routeReflectors` are given, the CNI builds a BGP mesh in the cluster.
 
 **VRFDomain**
 
-If there is no `VRFDomain` CR defined, CNI creates a default one.
+If there are no `VRFDomain` CRs defined, the CNI creates a default one
+(`vrf-42`) with one `l3vni` attachment.
+
+Here is an example `VRFDomain` you can use to create your own:
 
 .. code::
 
@@ -147,8 +162,6 @@ If there is no `VRFDomain` CR defined, CNI creates a default one.
 * ipblocklen: IPBlock sub-prefix length
 * attachments: VNI attachments deployed in the VRF
 
-By default, CNI creates the service VRF-42 with one `l3vni` attachment.
-
 Available attachment types:
 
 * `l2vni`: stretches a layer 2 switching domain across the cluster
@@ -159,9 +172,10 @@ pods, while `l3vni` can be used to integrate with external infrastructure.
 
 **VRFDomainBinding**
 
-`VRFDomainBinding` CR is cluster-scoped. It maps a Kubernetes namespace to a
-cluster-scoped `VRFDomain` resource. `VRFDomainBindings` are managed by the CNI,
-so no manual setup is needed.
+`VRFDomainBinding` CRs are cluster-scoped. They map Kubernetes namespaces to
+cluster-scoped `VRFDomain` resources. If there is a `VRFDomainBinding` for a
+namespace, then pods in this namespace will be attached to the corresponding
+VRF when they are created.
 
 .. code::
 
@@ -177,10 +191,18 @@ so no manual setup is needed.
 
 * namespaceRef.name: target namespace name
 * vrfDomainRef.name: target `VRFDomain` name
+ 
+**IPBlock**
+
+The whole `VRFDomain` prefix is divided into `IPBlocks` in order to set up
+routing for the pods. `IPBlock` CRs are created and managed by the CNI, so no
+manual setup is needed. They describe the mapping of pods to IP addresses.
+Every sub-range has a gateway address that is used to announce the sub-range
+to neighbours.
 
 **ConfigMap**
 
-The values in `[default]` section help to define the default `VRFDomain`,
+The values in the `[default]` section help define the default `VRFDomain`,
 if needed.
 
 .. code::
