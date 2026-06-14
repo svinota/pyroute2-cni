@@ -1,2 +1,2 @@
 pyroute2_cni/
-tests/test_functional/test_basic.py
+tests/test_functional/

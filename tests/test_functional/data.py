@@ -25,6 +25,7 @@ class PodsEnv:
 @dataclass
 class NamespaceEnv:
     v1: client.CoreV1Api
+    custom_api: client.CustomObjectsApi
     name: str
     manifest: client.V1Namespace = field(init=False)
 

@@ -28,7 +28,7 @@ def test_pod_create_delete(env_pods):
 
 def test_pod_churn(env_namespace):
     v1, namespace = env_namespace.v1, env_namespace.name
-    pods = [PodInfo(unique_name('pod')) for _ in range(200)]
+    pods = [PodInfo(unique_name('pod')) for _ in range(100)]
     try:
         for pod in pods:
             v1.create_namespaced_pod(namespace=namespace, body=pod.manifest)

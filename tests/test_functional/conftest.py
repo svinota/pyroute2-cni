@@ -18,13 +18,56 @@ from .utils import (
 def env_namespace():
     config.load_kube_config()
     v1 = client.CoreV1Api()
-    namespace = NamespaceEnv(v1, unique_name('test-ns'))
+    custom_api = client.CustomObjectsApi()
+    namespace = NamespaceEnv(v1, custom_api, unique_name('test-ns'))
+    vrfdomain_name = unique_name('vrfdomain')
+    vrfdomainbinding_name = unique_name('vrfdomainbinding')
+    vrfdomain = {
+        'apiVersion': 'cni.pyroute2.org/v1alpha1',
+        'kind': 'VRFDomain',
+        'metadata': {'name': vrfdomain_name},
+        'spec': {
+            'attachments': [{'type': 'l3vni', 'port': 4789, 'vni': 50200}],
+            'ipblocklen': 29,
+            'prefix': '10.150.0.0',
+            'prefixlen': 16,
+            'table': 2200,
+            'vrf': 200,
+        },
+    }
+    vrfdomainbinding = {
+        'apiVersion': 'cni.pyroute2.org/v1alpha1',
+        'kind': 'VRFDomainBinding',
+        'metadata': {'name': vrfdomainbinding_name},
+        'spec': {
+            'namespaceRef': {'name': namespace.name},
+            'vrfDomainRef': {'name': vrfdomain_name},
+        },
+    }
     try:
+        custom_api.create_cluster_custom_object(
+            'cni.pyroute2.org', 'v1alpha1', 'vrfdomains', vrfdomain
+        )
+        custom_api.create_cluster_custom_object(
+            'cni.pyroute2.org',
+            'v1alpha1',
+            'vrfdomainbindings',
+            vrfdomainbinding,
+        )
         v1.create_namespace(namespace.manifest)
         yield namespace
     finally:
         v1.delete_namespace(name=namespace.name)
         wait_for(lambda: namespace_gone(v1, namespace.name))
+        custom_api.delete_cluster_custom_object(
+            'cni.pyroute2.org',
+            'v1alpha1',
+            'vrfdomainbindings',
+            vrfdomainbinding_name,
+        )
+        custom_api.delete_cluster_custom_object(
+            'cni.pyroute2.org', 'v1alpha1', 'vrfdomains', vrfdomain_name
+        )
 
 
 @pytest.fixture
