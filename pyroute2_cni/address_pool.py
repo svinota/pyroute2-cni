@@ -8,6 +8,7 @@ from ipaddress import IPv4Address, IPv4Network
 from typing import Any, cast
 
 from kubernetes.client.exceptions import ApiException
+from pyroute2 import AsyncIPRoute
 
 from kubernetes import client as k8s_client
 from kubernetes import config as k8s_config  # type: ignore[attr-defined]
@@ -195,7 +196,7 @@ class AddressPool:
 
     def _node_used_ips(self, network: IPv4Network, vrf_table: int) -> set[str]:
         used: set[str] = set()
-        for pod in self._list_running_pods():
+        for pod in self._list_allocated_pods():
             used.add(pod.ip)
         return used
 
@@ -220,7 +221,27 @@ class AddressPool:
             IPBLOCK_GROUP, IPBLOCK_VERSION, IPBLOCK_PLURAL, name
         )
 
-    def _list_running_pods(self) -> list[RunningPod]:
+    async def _cleanup_allocations(self, allocations: dict[str, str]) -> None:
+        async with AsyncIPRoute() as ipr:
+            for record in allocations:
+                dump = [
+                    x async for x in await ipr.addr('dump', address=record)
+                ]
+                if len(dump) != 1:
+                    logging.warning(
+                        f'consistency: found multiple addresses for {record}'
+                    )
+                    continue
+                for address in dump:
+                    await ipr.ensure(
+                        ipr.addr,
+                        present=False,
+                        index=address.get('index'),
+                        address=address.get('address'),
+                        prefixlen=address.get('prefixlen'),
+                    )
+
+    def _list_allocated_pods(self) -> list[RunningPod]:
         response = self.k8s_v1.list_pod_for_all_namespaces(
             field_selector=f'spec.nodeName={self.node_name}'
         )
@@ -230,7 +251,7 @@ class AddressPool:
             if status is None:
                 continue
             pod_ip = getattr(status, 'pod_ip', None)
-            if status.phase != 'Running' or not pod_ip:
+            if not pod_ip:
                 continue
             metadata = item.metadata
             if metadata is None:
@@ -248,55 +269,6 @@ class AddressPool:
                 )
             )
         return result
-
-    async def reconcile_allocations(self) -> int:
-        logging.debug('Starting IPBlock allocation reconciliation')
-        running_pods = self._list_running_pods()
-        running_pods_by_uid = {pod.uid: pod for pod in running_pods}
-
-        changed_blocks = 0
-        local_blocks = self._node_block_items()
-        allocations_by_ip: dict[str, str] = {}
-        block: IPBlock | None = None
-        for block in local_blocks:
-            allocations = dict(block.allocations)
-            updated_allocations = dict(allocations)
-            changed = False
-            for ip, ref in allocations.items():
-                if ref == 'gateway':
-                    continue
-                if ref not in running_pods_by_uid:
-                    updated_allocations.pop(ip, None)
-                    changed = True
-                else:
-                    allocations_by_ip[ip] = ref
-            if changed:
-                self._patch_block_status(block, updated_allocations)
-                changed_blocks += 1
-
-        for pod in running_pods:
-            if pod.ip not in allocations_by_ip:
-                block = None
-                for candidate in local_blocks:
-                    if IPv4Address(pod.ip) in candidate.cidr:
-                        block = candidate
-                        break
-                if block is None:
-                    logging.info(
-                        f'running pod missing IPBlock allocation '
-                        f'namespace={pod.namespace} name={pod.name} '
-                        f'uid={pod.uid} ip={pod.ip}'
-                    )
-                    continue
-                allocations = dict(block.allocations)
-                if pod.ip in allocations and allocations[pod.ip] == pod.uid:
-                    continue
-                allocations[pod.ip] = pod.uid
-                logging.info(f'patching block: {block}/{allocations}')
-                self._patch_block_status(block, allocations)
-                changed_blocks += 1
-
-        return changed_blocks
 
     async def gc_empty_blocks(self) -> int:
         logging.debug('Starting IPBlock GC')
@@ -317,13 +289,26 @@ class AddressPool:
             if vrf not in live_domains:
                 orphaned_blocks.append(item)
                 continue
-            if item.allocated != 0:
+            if len(item.allocations) != item.allocated:
+                logging.warning(
+                    f'consistency: IPBlock {item.name} has unexpected '
+                    f'counter: allocated={item.allocated}'
+                )
+                continue
+            if item.allocated > 1:
+                continue
+            if set(item.allocations.values()) != {'gateway'}:
+                logging.warning(
+                    f'consistency: IPBlock {item.name} has unexpected '
+                    f'allocations: allocations={item.allocations}'
+                )
                 continue
             empty_blocks_by_domain.setdefault(vrf, []).append(item)
 
         for block in orphaned_blocks:
             logging.info(f'Deleting orphaned IPBlock {block.name}')
             try:
+                await self._cleanup_allocations(block.allocations)
                 self._delete_block(block.name)
             except ApiException as err:
                 logging.warning(
@@ -340,6 +325,7 @@ class AddressPool:
             empty_block: IPBlock = empty_blocks.pop(0)
             logging.info(f'Deleting IPBlock {empty_block.name}')
             try:
+                await self._cleanup_allocations(empty_block.allocations)
                 self._delete_block(empty_block.name)
                 deletions += 1
             except ApiException as err:
