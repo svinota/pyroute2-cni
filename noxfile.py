@@ -7,7 +7,7 @@ import nox
 
 nox.options.envdir = f'./.nox-{getpass.getuser()}'
 nox.options.reuse_existing_virtualenvs = False
-nox.options.sessions = ['linter', 'test_unit', 'test_mock', 'test_cluster']
+nox.options.sessions = ['linter', 'test_unit', 'test_mock', 'test_functional']
 
 
 def load_global_config():
@@ -152,7 +152,7 @@ def test_mock(session, config):
 
 @nox.session
 @add_session_config
-def test_cluster(session, config):
+def test_functional(session, config):
     '''Run live cluster functional tests.'''
     setup_venv_common(session, flavour='dev', config=config)
     session.run(
