@@ -17,6 +17,7 @@ from pydantic import ValidationError
 from pyroute2_cni.address_pool import AddressPool
 from pyroute2_cni.controllers.namespace_controller import NamespaceController
 from pyroute2_cni.controllers.vrf_controller import VRFController
+from pyroute2_cni.controllers.vrnc_controller import VRFNodeConfigController
 from pyroute2_cni.frr_manager import FRRManager
 from pyroute2_cni.kubernetes import get_node_ip
 from pyroute2_cni.network import CNIError
@@ -316,6 +317,7 @@ async def main(config: ConfigParser) -> None:
     ready = asyncio.Event()
     namespace_ready = asyncio.Event()
     vrf_ready = asyncio.Event()
+    vrfnodeconfig_ready = asyncio.Event()
 
     await run_fd_receiver(
         registry, socket_path=config['api']['socket_path_fd']
@@ -344,14 +346,23 @@ async def main(config: ConfigParser) -> None:
     vrf_domain_watch_queue: asyncio.Queue[tuple[str, Any] | None] = (
         asyncio.Queue()
     )
+    vrfnodeconfig_watch_queue: asyncio.Queue[tuple[str, str] | None] = (
+        asyncio.Queue()
+    )
     namespace_controller = NamespaceController(config)
     frr_manager = FRRManager('/pyroute2-cni/templates/frr.conf.tpl', config)
     vrf_controller = VRFController(config, address_pool, frr_manager)
+    vrfnodeconfig_controller = VRFNodeConfigController(config, frr_manager)
     namespace_watch_task = asyncio.create_task(
         namespace_controller.watch(namespace_watch_queue, namespace_ready)
     )
     vrf_domain_watch_task = asyncio.create_task(
         vrf_controller.watch(vrf_domain_watch_queue, vrf_ready)
+    )
+    vrfnodeconfig_watch_task = asyncio.create_task(
+        vrfnodeconfig_controller.watch(
+            vrfnodeconfig_watch_queue, vrfnodeconfig_ready
+        )
     )
     address_pool_gc_task = asyncio.create_task(
         run_periodic_job(
@@ -368,7 +379,9 @@ async def main(config: ConfigParser) -> None:
         )
     )
 
-    await asyncio.gather(namespace_ready.wait(), vrf_ready.wait())
+    await asyncio.gather(
+        namespace_ready.wait(), vrf_ready.wait(), vrfnodeconfig_ready.wait()
+    )
     cni_server = CNIServer(config, registry, plugin)
     await cni_server.setup_endpoint()
 
@@ -381,6 +394,7 @@ async def main(config: ConfigParser) -> None:
                 [
                     namespace_watch_task,
                     vrf_domain_watch_task,
+                    vrfnodeconfig_watch_task,
                     address_pool_gc_task,
                     vrf_periodic_task,
                 ],
@@ -391,12 +405,14 @@ async def main(config: ConfigParser) -> None:
         await asyncio.gather(
             namespace_watch_task,
             vrf_domain_watch_task,
+            vrfnodeconfig_watch_task,
             address_pool_gc_task,
             vrf_periodic_task,
         )
     finally:
         namespace_watch_task.cancel()
         vrf_domain_watch_task.cancel()
+        vrfnodeconfig_watch_task.cancel()
         address_pool_gc_task.cancel()
         vrf_periodic_task.cancel()
         readiness_server.close()
@@ -405,6 +421,8 @@ async def main(config: ConfigParser) -> None:
             await namespace_watch_task
         with contextlib.suppress(asyncio.CancelledError):
             await vrf_domain_watch_task
+        with contextlib.suppress(asyncio.CancelledError):
+            await vrfnodeconfig_watch_task
         with contextlib.suppress(asyncio.CancelledError):
             await address_pool_gc_task
         with contextlib.suppress(asyncio.CancelledError):

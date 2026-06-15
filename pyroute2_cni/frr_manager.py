@@ -9,7 +9,7 @@ from kubernetes.client.exceptions import ApiException
 
 from kubernetes import client as k8s_client
 from pyroute2_cni.kubernetes import get_cluster_custom_object
-from pyroute2_cni.vrf_domain import VRFDomain
+from pyroute2_cni.vrf_domain import VRFDomain, parse_vrf_domain
 
 
 class FRRManager:
@@ -17,6 +17,7 @@ class FRRManager:
         self.template_path = Path(template_path)
         self.config = config
         self.output_path = Path('/etc/frr/frr.conf')
+        self.vrf_custom_api = k8s_client.CustomObjectsApi()
         self.reload_sock = '/var/run/frr/reload.sock'
         self.peer_ips: list[str] = []
         self.router_id: str = config['network']['ipaddr']
@@ -84,9 +85,21 @@ class FRRManager:
             peer_ips.add(self._node_router_id(node.metadata.name, node))
         return peer_ips
 
-    def render_config(
-        self, vrfs: dict[int, VRFDomain], cleanup: dict[int, VRFDomain]
-    ) -> str:
+    def vrf_domain_items(self) -> dict[int, VRFDomain]:
+        response = self.vrf_custom_api.list_cluster_custom_object(
+            'cni.pyroute2.org', 'v1alpha1', 'vrfdomains'
+        )
+        return dict(
+            (
+                (x.vrf, x)
+                for x in (
+                    parse_vrf_domain(item)
+                    for item in response.get('items', [])
+                )
+            )
+        )
+
+    def render_config(self, cleanup: dict[int, VRFDomain]) -> str:
         vrf_sections = []
         vrf_router_sections = []
         for item in cleanup.values():
@@ -94,6 +107,11 @@ class FRRManager:
                 f'no vrf vrf-{item.vrf}\n'
                 f'no router bgp 65000 vrf vrf-{item.vrf}\n'
             )
+        vrfs = {
+            k: v
+            for k, v in self.vrf_domain_items().items()
+            if k not in cleanup
+        }
         for item in vrfs.values():
             section = (
                 f'router bgp 65000 vrf vrf-{item.vrf}\n'
@@ -131,14 +149,12 @@ class FRRManager:
             vrf_router_sections='\n!\n'.join(vrf_router_sections),
         )
 
-    async def reload(
-        self, vrfs: dict[int, VRFDomain], cleanup: dict[int, VRFDomain]
-    ) -> None:
+    async def reload(self, cleanup: dict[int, VRFDomain]) -> None:
         self.peer_ips = list(
             sorted(self.refresh_peers(k8s_client.CoreV1Api()))
         )
         self.output_path.write_text(
-            self.render_config(vrfs, cleanup), encoding='utf-8'
+            self.render_config(cleanup), encoding='utf-8'
         )
         deadline = time.monotonic() + 120
         read_timeout = 30

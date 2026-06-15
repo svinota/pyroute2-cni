@@ -55,14 +55,7 @@ class VRFController:
         vrf_ifname = f'vrf-{domain.vrf}'
         async with AsyncIPRoute() as ipr:
             await ipr.ensure(ipr.link, present=False, ifname=vrf_ifname)
-        await self.frr_manager.reload(
-            {
-                k: v
-                for k, v in self._vrf_domain_items().items()
-                if k != domain.vrf
-            },
-            {domain.vrf: domain},
-        )
+        await self.frr_manager.reload({domain.vrf: domain})
 
     async def remove_vni(
         self, domain: VRFDomain, attachment: VRFAttachment, prefix: str
@@ -75,7 +68,7 @@ class VRFController:
 
     async def ensure_vrf(self, domain: VRFDomain) -> int:
         logging.info(f'Ensure VRF: {domain}')
-        await self.frr_manager.reload(self._vrf_domain_items(), {})
+        await self.frr_manager.reload({})
         vrf_ifname = f'vrf-{domain.vrf}'
         async with AsyncIPRoute() as ipr:
             return (
@@ -212,7 +205,7 @@ class VRFController:
 
     async def reconcile_firewall(self) -> int:
         counter = 0
-        for domain in self._vrf_domain_items().values():
+        for domain in self.frr_manager.vrf_domain_items().values():
             await self.firewall.ensure_vrf_firewall(domain)
             counter += 1
         return counter
@@ -228,20 +221,6 @@ class VRFController:
                     pass
         await self.remove_vrf(domain)
         await self.firewall.remove_vrf_firewall(domain)
-
-    def _vrf_domain_items(self) -> dict[int, VRFDomain]:
-        response = self.vrf_custom_api.list_cluster_custom_object(
-            'cni.pyroute2.org', 'v1alpha1', 'vrfdomains'
-        )
-        return dict(
-            (
-                (x.vrf, x)
-                for x in (
-                    parse_vrf_domain(item)
-                    for item in response.get('items', [])
-                )
-            )
-        )
 
     async def make_default_vrf(self) -> VRFDomain:
         default_vrf = int(self.config['default']['vrf'])
@@ -300,7 +279,7 @@ class VRFController:
             }
         )
 
-        domains: dict[int, VRFDomain] = self._vrf_domain_items()
+        domains: dict[int, VRFDomain] = self.frr_manager.vrf_domain_items()
         default_vrf = int(self.config['default']['vrf'])
         if default_vrf not in domains:
             domains[default_vrf] = await self.make_default_vrf()
