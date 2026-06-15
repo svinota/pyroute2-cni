@@ -1,13 +1,11 @@
 import asyncio
 import logging
 import threading
+from functools import partial
 from typing import Any, Generic, TypeVar
 
-from kubernetes.client.exceptions import ApiException
-
 from kubernetes import client as k8s_client
-from kubernetes import config as k8s_config
-from kubernetes import watch as k8s_watch  # type: ignore[attr-defined]
+from pyroute2_cni.controllers.watch_helper import run_watch_loop
 
 T = TypeVar('T')
 
@@ -42,16 +40,6 @@ class BaseCRDWatchController(Generic[T]):
         loop: asyncio.AbstractEventLoop,
         stop_event: threading.Event,
     ) -> None:
-        try:
-            k8s_config.load_incluster_config()  # type: ignore[attr-defined]
-        except Exception as e:
-            logging.error(f'error starting {self.watch_name} watch: {e}')
-            loop.call_soon_threadsafe(queue.put_nowait, None)
-            return
-
-        watcher = k8s_watch.Watch()
-        resource_version = ''
-
         def refresh_resource_version() -> str:
             response = self.custom_api.list_cluster_custom_object(
                 self.group, self.version, self.plural
@@ -61,52 +49,32 @@ class BaseCRDWatchController(Generic[T]):
             logging.info(f'{self.watch_name} watch relisted at rv={rv}')
             return rv
 
-        try:
-            while not stop_event.is_set():
-                try:
-                    for event in watcher.stream(
-                        self.custom_api.list_cluster_custom_object,
-                        self.group,
-                        self.version,
-                        self.plural,
-                        timeout_seconds=30,
-                        resource_version=resource_version or None,
-                    ):
-                        if stop_event.is_set():
-                            break
-                        event_type = event.get('type')
-                        obj = event.get('object')
-                        if not obj:
-                            continue
-                        metadata = obj.get('metadata') or {}
-                        rv = str(metadata.get('resourceVersion') or '')
-                        if rv:
-                            resource_version = rv
-                        if event_type in {'ADDED', 'MODIFIED', 'DELETED'}:
-                            payload = self._parse_payload(obj)
-                            loop.call_soon_threadsafe(
-                                queue.put_nowait, (event_type, payload)
-                            )
-                except ApiException as e:
-                    if e.status == 410 or 'Expired' in str(e):
-                        logging.warning(
-                            f'{self.watch_name} watch expired '
-                            f'rv={resource_version}, resetting: {e}'
-                        )
-                        resource_version = refresh_resource_version()
-                        continue
-                    logging.warning(
-                        f'{self.watch_name} watch api exception, '
-                        f'restarting rv={resource_version}: {e}'
-                    )
-                except Exception as e:
-                    logging.warning(
-                        f'{self.watch_name} watch failed, '
-                        f'restarting rv={resource_version}: {e}'
-                    )
-        finally:
-            watcher.stop()
-            loop.call_soon_threadsafe(queue.put_nowait, None)
+        run_watch_loop(
+            watch_name=self.watch_name,
+            list_fn=partial(
+                self.custom_api.list_cluster_custom_object,
+                self.group,
+                self.version,
+                self.plural,
+            ),
+            event_handler=lambda event: self._handle_watch_event(event),
+            queue=queue,
+            loop=loop,
+            stop_event=stop_event,
+            refresh_resource_version=refresh_resource_version,
+        )
+
+    def _handle_watch_event(
+        self, event: dict[str, Any]
+    ) -> tuple[str, T] | None:
+        event_type = event.get('type')
+        obj = event.get('object')
+        if not obj:
+            return None
+        if event_type not in {'ADDED', 'MODIFIED', 'DELETED'}:
+            return None
+        payload = self._parse_payload(obj)
+        return event_type, payload
 
     async def watch(
         self, queue: asyncio.Queue[tuple[str, T] | None], ready: asyncio.Event
