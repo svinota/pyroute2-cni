@@ -13,7 +13,8 @@ Requirements
 Install
 =======
 
-Standard Kubernetes install.
+Standard Kubernetes install
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 .. code::
 
@@ -25,8 +26,12 @@ Standard Kubernetes install.
 This waits for the CRD to become established before applying the namespace,
 RBAC, ConfigMap, and DaemonSet.
 
-Talos install. When using Talos, it is important to guard `nodeIP` with
-`validSubnets`; otherwise, kubelet will interfere with CNI bridges:
+Talos install
+~~~~~~~~~~~~~
+
+When using Talos, it is important to restrict `nodeIP` with `validSubnets`;
+otherwise, kubelet will interfere with CNI bridges. Set `validSubnets` to the
+network used by your nodes.
 
 .. code::
 
@@ -34,25 +39,19 @@ Talos install. When using Talos, it is important to guard `nodeIP` with
     # controlplane.yaml
     #
     kubelet:
+        ...
         nodeIP:
             validSubnets:
-                - 192.168.124.0/24
+                - 192.168.124.0/24   # the network used by the nodes
     cluster:
-        ...
-        controlPlane:
-            endpoint: https://192.168.124.37:6443
         ...
         network:
             ...
             cni:
-                name: custom
-                urls:
-                    - https://github.com/svinota/pyroute2-cni/raw/refs/heads/main/kubernetes/crd.yaml
-                    - https://github.com/svinota/pyroute2-cni/raw/refs/heads/main/kubernetes/namespace.yaml
-                    - https://github.com/svinota/pyroute2-cni/raw/refs/heads/main/kubernetes/rbac.yaml
-                    - https://github.com/svinota/pyroute2-cni/raw/refs/heads/main/kubernetes/config.yaml
-                    - https://github.com/svinota/pyroute2-cni/raw/refs/heads/main/kubernetes/daemonset.yaml
+                name: none
 
+After running `talosctl ... health`, continue with the standard Kubernetes
+install from the section above and run `kubectl apply -k ...`
 
 Maintenance
 ===========
