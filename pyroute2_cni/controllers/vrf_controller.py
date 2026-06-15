@@ -1,17 +1,13 @@
-import asyncio
 import logging
 import os
-import threading
 from configparser import ConfigParser
 from dataclasses import dataclass
 
 from kubernetes.client.exceptions import ApiException
 from pyroute2 import AsyncIPRoute
 
-from kubernetes import client as k8s_client
-from kubernetes import config as k8s_config
-from kubernetes import watch as k8s_watch  # type: ignore[attr-defined]
 from pyroute2_cni.address_pool import AddressPool
+from pyroute2_cni.controllers.base_crd_controller import BaseCRDWatchController
 from pyroute2_cni.firewall import FirewallManager
 from pyroute2_cni.frr_manager import FRRManager
 from pyroute2_cni.kubernetes import get_cluster_custom_object
@@ -31,24 +27,30 @@ class VTEPInfo:
     link: int
 
 
-class VRFController:
+class VRFController(BaseCRDWatchController[VRFDomain]):
+    plural = 'vrfdomains'
+    watch_name = 'vrfdomain'
+
     def __init__(
         self,
         config: ConfigParser,
         address_pool: AddressPool,
         frr_manager: FRRManager,
     ) -> None:
+        super().__init__()
         self.config = config
         self.firewall = FirewallManager(config)
         self.address_pool = address_pool
         self.frr_manager = frr_manager
-        self.vrf_custom_api = k8s_client.CustomObjectsApi()
         self.host_link: int = 0
         self.host_src: str = ''
         self.host_ifname: str = ''
         self.node_name = os.environ.get('NODE_NAME', '')
         if not self.node_name:
             raise RuntimeError('node name is not set')
+
+    def _parse_payload(self, obj: dict[str, object]) -> VRFDomain:
+        return parse_vrf_domain(obj)
 
     async def remove_vrf(self, domain: VRFDomain) -> None:
         logging.info(f'Remove VRF {domain.vrf}')
@@ -243,7 +245,7 @@ class VRFController:
         )
         body = domain.render()
         try:
-            self.vrf_custom_api.create_cluster_custom_object(
+            self.frr_manager.vrf_custom_api.create_cluster_custom_object(
                 'cni.pyroute2.org', 'v1alpha1', 'vrfdomains', body
             )
         except ApiException as e:
@@ -292,116 +294,3 @@ class VRFController:
                 continue
             logging.info(f'VRFDomain: {domain.vrf}->{domain.network}')
             await self.ensure(domain)
-
-    def _watch_worker(
-        self,
-        queue: asyncio.Queue[tuple[str, VRFDomain] | None],
-        loop: asyncio.AbstractEventLoop,
-        stop_event: threading.Event,
-    ) -> None:
-        try:
-            k8s_config.load_incluster_config()  # type: ignore[attr-defined]
-        except Exception as e:
-            logging.error(f'error starting vrfdomain watch: {e}')
-            loop.call_soon_threadsafe(queue.put_nowait, None)
-            return
-
-        watcher = k8s_watch.Watch()
-        resource_version = ''
-
-        def refresh_resource_version() -> str:
-            response = self.vrf_custom_api.list_cluster_custom_object(
-                'cni.pyroute2.org', 'v1alpha1', 'vrfdomains'
-            )
-            metadata = response.get('metadata') or {}
-            rv = str(metadata.get('resourceVersion') or '')
-            logging.info('vrfdomain watch relisted at rv=%s', rv)
-            return rv
-
-        try:
-            while not stop_event.is_set():
-                try:
-                    for event in watcher.stream(
-                        self.vrf_custom_api.list_cluster_custom_object,
-                        'cni.pyroute2.org',
-                        'v1alpha1',
-                        'vrfdomains',
-                        timeout_seconds=30,
-                        resource_version=resource_version or None,
-                    ):
-                        if stop_event.is_set():
-                            break
-                        event_type = event.get('type')
-                        obj = event.get('object')
-                        if not obj:
-                            continue
-                        metadata = obj.get('metadata') or {}
-                        rv = str(metadata.get('resourceVersion') or '')
-                        if rv:
-                            resource_version = rv
-                        domain = parse_vrf_domain(obj)
-                        if event_type in {'ADDED', 'MODIFIED', 'DELETED'}:
-                            loop.call_soon_threadsafe(
-                                queue.put_nowait, (event_type, domain)
-                            )
-                except ApiException as e:
-                    if e.status == 410 or 'Expired' in str(e):
-                        logging.warning(
-                            'vrfdomain watch expired rv=%s, resetting: %s',
-                            resource_version,
-                            e,
-                        )
-                        resource_version = refresh_resource_version()
-                        continue
-                    logging.warning(
-                        'vrfdomain watch api exception, restarting rv=%s: %s',
-                        resource_version,
-                        e,
-                    )
-                except Exception as e:
-                    logging.warning(
-                        'vrfdomain watch failed, restarting rv=%s: %s',
-                        resource_version,
-                        e,
-                    )
-        finally:
-            watcher.stop()
-            loop.call_soon_threadsafe(queue.put_nowait, None)
-
-    async def watch(
-        self,
-        queue: asyncio.Queue[tuple[str, VRFDomain] | None],
-        ready: asyncio.Event,
-    ) -> None:
-        loop = asyncio.get_running_loop()
-        stop_event = threading.Event()
-        worker = threading.Thread(
-            target=self._watch_worker,
-            args=(queue, loop, stop_event),
-            daemon=True,
-        )
-        try:
-            await self.firewall.setup()
-            await self.resync()
-            ready.set()
-        except Exception as e:
-            logging.warning(
-                'vrfdomain watch initial list failed, continuing: %s', e
-            )
-
-        worker.start()
-        try:
-            while True:
-                event = await queue.get()
-                if event is None:
-                    break
-                event_type, domain = event
-                if event_type == 'ADDED':
-                    await self.ensure(domain)
-                elif event_type == 'MODIFIED':
-                    await self.ensure(domain)
-                elif event_type == 'DELETED':
-                    await self.remove(domain)
-        finally:
-            stop_event.set()
-            worker.join(timeout=5)
