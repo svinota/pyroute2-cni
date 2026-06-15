@@ -6,7 +6,7 @@ from pyroute2.netlink.nfnetlink.nftsocket import Cmp, Meta, Regs
 from pyroute2.nftables.expressions import genex, ipv4addr, masq, verdict
 from pyroute2.nftables.main import AsyncNFTables
 
-from .vrf_domain import VRFDomain
+from .crds.vrf_domain import VRFDomain
 
 
 def ct_state_match(state):

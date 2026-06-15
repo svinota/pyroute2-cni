@@ -8,10 +8,14 @@ from pyroute2 import AsyncIPRoute
 
 from pyroute2_cni.address_pool import AddressPool
 from pyroute2_cni.controllers.base_crd_controller import BaseCRDWatchController
+from pyroute2_cni.crds.vrf_domain import (
+    VRFAttachment,
+    VRFDomain,
+    parse_vrf_domain,
+)
 from pyroute2_cni.firewall import FirewallManager
 from pyroute2_cni.frr_manager import FRRManager
 from pyroute2_cni.kubernetes import get_cluster_custom_object
-from pyroute2_cni.vrf_domain import VRFAttachment, VRFDomain, parse_vrf_domain
 
 
 def set_sysctl(config: dict[str, int]) -> None:

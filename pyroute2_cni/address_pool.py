@@ -12,7 +12,7 @@ from pyroute2 import AsyncIPRoute
 
 from kubernetes import client as k8s_client
 from kubernetes import config as k8s_config  # type: ignore[attr-defined]
-from pyroute2_cni.vrf_domain import parse_vrf_domain
+from pyroute2_cni.crds.vrf_domain import parse_vrf_domain
 
 IPBLOCK_GROUP = 'ipam.pyroute2.org'
 IPBLOCK_VERSION = 'v1alpha1'

@@ -8,8 +8,8 @@ from typing import Any
 from kubernetes.client.exceptions import ApiException
 
 from kubernetes import client as k8s_client
+from pyroute2_cni.crds.vrf_domain import VRFDomain, parse_vrf_domain
 from pyroute2_cni.kubernetes import get_cluster_custom_object
-from pyroute2_cni.vrf_domain import VRFDomain, parse_vrf_domain
 
 
 class FRRManager:

@@ -346,7 +346,7 @@ async def main(config: ConfigParser) -> None:
     vrf_domain_watch_queue: asyncio.Queue[tuple[str, Any] | None] = (
         asyncio.Queue()
     )
-    vrfnodeconfig_watch_queue: asyncio.Queue[tuple[str, str] | None] = (
+    vrfnodeconfig_watch_queue: asyncio.Queue[tuple[str, Any] | None] = (
         asyncio.Queue()
     )
     namespace_controller = NamespaceController(config)

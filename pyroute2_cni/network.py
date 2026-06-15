@@ -13,10 +13,10 @@ from pyroute2.common import uifname
 
 from kubernetes import client as k8s_client
 from pyroute2_cni.address_pool import AddressPool
+from pyroute2_cni.crds.vrf_domain import parse_vrf_domain
 from pyroute2_cni.kubernetes import get_pod_tag
 from pyroute2_cni.protocols import PluginProtocol
 from pyroute2_cni.request import CNIRequest
-from pyroute2_cni.vrf_domain import parse_vrf_domain
 
 
 class CNIError(RuntimeError):

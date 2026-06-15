@@ -18,6 +18,7 @@ class BaseCRDWatchController(Generic[T]):
 
     def __init__(self) -> None:
         self.custom_api = k8s_client.CustomObjectsApi()
+        self._generation_cache: dict[str, int] = {}
 
     async def resync(self) -> None:
         return
@@ -28,7 +29,7 @@ class BaseCRDWatchController(Generic[T]):
     async def remove(self, name: T) -> None:
         raise NotImplementedError
 
-    def _parse_payload(self, obj: dict[str, Any]) -> T:
+    def _parse_payload(self, obj: dict[str, Any]) -> T | None:
         metadata = obj.get('metadata') or {}
         if isinstance(metadata, dict):
             return metadata.get('name')  # type: ignore[return-value]
@@ -73,7 +74,19 @@ class BaseCRDWatchController(Generic[T]):
             return None
         if event_type not in {'ADDED', 'MODIFIED', 'DELETED'}:
             return None
+        metadata = obj.get('metadata') or {}
+        if isinstance(metadata, dict):
+            name = str(metadata.get('name') or '')
+            generation = int(metadata.get('generation') or 0)
+            if name:
+                if event_type == 'MODIFIED':
+                    cached_generation = self._generation_cache.get(name)
+                    if cached_generation == generation:
+                        return None
+                self._generation_cache[name] = generation
         payload = self._parse_payload(obj)
+        if payload is None:
+            return None
         return event_type, payload
 
     async def watch(
