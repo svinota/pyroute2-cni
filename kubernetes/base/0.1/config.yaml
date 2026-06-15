@@ -55,9 +55,6 @@ data:
     prefix = 10.244.0.0
     prefixlen = 16
     system_vrf_type = l3vni
-    srv6end = fc00:100:$host_order::$vrf_table:a
-    srv6endDT4 = fc00:100:$host_order::$vrf_table:b
-    srv6local = fc00:200:1:$host_order::5
 
     [logging]
     level = info

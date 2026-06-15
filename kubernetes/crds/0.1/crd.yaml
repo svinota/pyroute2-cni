@@ -213,9 +213,9 @@ spec:
       served: true
       storage: true
       additionalPrinterColumns:
-        - name: Interfaces
-          type: integer
-          jsonPath: .spec.interfaces.length
+        - name: routerId
+          type: string
+          jsonPath: .spec.routerId
       schema:
         openAPIV3Schema:
           type: object
