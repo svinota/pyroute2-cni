@@ -222,6 +222,9 @@ spec:
         - name: interfaces
           type: integer
           jsonPath: .status.interfacesCount
+        - name: Accepted
+          type: boolean
+          jsonPath: .status.accepted
         - name: Ready
           type: boolean
           jsonPath: .status.ready
@@ -264,6 +267,8 @@ spec:
             status:
               type: object
               properties:
+                accepted:
+                  type: boolean
                 ready:
                   type: boolean
                 routeReflectorsCount:

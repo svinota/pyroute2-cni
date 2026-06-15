@@ -27,7 +27,6 @@ class VRFNodeConfigController(BaseCRDWatchController[VRFNodeConfig]):
         super().__init__()
         self.config = config
         self.frr_manager = frr_manager
-        self.peer_cache: set[str] = set()
         self.node_name = self.config['network']['node_name']
         if not self.node_name:
             raise RuntimeError('node name is not set')
@@ -69,17 +68,20 @@ class VRFNodeConfigController(BaseCRDWatchController[VRFNodeConfig]):
                 last_transition_time=timestamp,
             ),
         ]
+        status = {
+            'accepted': True,
+            'ready': ready,
+            'routeReflectorsCount': len(node_config.route_reflectors),
+            'interfacesCount': len(node_config.interfaces),
+            'conditions': render_vrf_node_config_conditions(conditions),
+        }
         self.custom_api.patch_namespaced_custom_object_status(
             self.group,
             self.version,
             '',
             self.plural,
             node_config.name,
-            {
-                'status': {
-                    'conditions': render_vrf_node_config_conditions(conditions)
-                }
-            },
+            {'status': status},
         )
 
     async def reconcile(
@@ -89,9 +91,9 @@ class VRFNodeConfigController(BaseCRDWatchController[VRFNodeConfig]):
         logging.info(f'VRFNodeConfig {event_type.value} event: {node_name}')
         self._set_conditions(node_config, False, event_type)
         current_peers = self.frr_manager.refresh_peers(k8s_client.CoreV1Api())
-        peer_cleanup = self.peer_cache - current_peers
+        peer_cleanup = self.frr_manager.peer_cache - current_peers
         await self.frr_manager.reload({}, peer_cleanup)
-        self.peer_cache = current_peers
+        self.frr_manager.peer_cache = current_peers
         self._set_conditions(node_config, True, event_type)
 
     async def ensure(self, node_config: VRFNodeConfig) -> None:

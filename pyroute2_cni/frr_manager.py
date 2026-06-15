@@ -19,7 +19,7 @@ class FRRManager:
         self.output_path = Path('/etc/frr/frr.conf')
         self.vrf_custom_api = k8s_client.CustomObjectsApi()
         self.reload_sock = '/var/run/frr/reload.sock'
-        self.peer_ips: list[str] = []
+        self.peer_cache: set[str] = set()
         self.router_id: str = config['network']['ipaddr']
 
     @staticmethod
@@ -114,6 +114,7 @@ class FRRManager:
             for k, v in self.vrf_domain_items().items()
             if k not in vrf_cleanup
         }
+        self.peer_cache = self.refresh_peers(k8s_client.CoreV1Api())
         for item in vrfs.values():
             section = (
                 f'router bgp 65000 vrf vrf-{item.vrf}\n'
@@ -140,7 +141,7 @@ class FRRManager:
             vrf_router_sections.append(section)
 
         peer_records = '\n'.join(
-            f' neighbor {peer} peer-group PR2' for peer in self.peer_ips
+            f' neighbor {peer} peer-group PR2' for peer in self.peer_cache
         )
         peer_cleanup_records = '\n'.join(
             f' no neighbor {peer} peer-group PR2'
@@ -160,9 +161,6 @@ class FRRManager:
     async def reload(
         self, vrf_cleanup: dict[int, VRFDomain], peer_cleanup: set[str]
     ) -> None:
-        self.peer_ips = list(
-            sorted(self.refresh_peers(k8s_client.CoreV1Api()))
-        )
         if peer_cleanup is None:
             peer_cleanup = set()
         self.output_path.write_text(

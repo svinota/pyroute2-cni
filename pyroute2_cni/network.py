@@ -11,7 +11,6 @@ from kubernetes.client.exceptions import ApiException
 from pyroute2 import AsyncIPRoute, netns, process
 from pyroute2.common import uifname
 
-from kubernetes import client as k8s_client
 from pyroute2_cni.address_pool import AddressPool
 from pyroute2_cni.crds.vrf_domain import parse_vrf_domain
 from pyroute2_cni.kubernetes import get_pod_tag
@@ -83,7 +82,6 @@ class Plugin(PluginProtocol):
     ) -> None:
         self.config = config
         self.address_pool = address_pool
-        self.peer_ips: list[str] = []
         self.is_control_plane = False
         self.on_frr_ready: Callable[[], None] | None = None
 
@@ -97,18 +95,6 @@ class Plugin(PluginProtocol):
             if addr.type == 'ExternalIP':
                 return addr.address
         return None
-
-    def refresh_frr_peers(self, v1: k8s_client.CoreV1Api) -> None:
-        peer_ips = []
-        local_node_name = self.config['network']['node_name']
-        for node in v1.list_node().items:
-            if node.metadata and node.metadata.name == local_node_name:
-                continue
-            peer_ip = self._node_peer_ip(node)
-            if peer_ip is None:
-                continue
-            peer_ips.append(peer_ip)
-        self.peer_ips = sorted(set(peer_ips))
 
     async def ensure_segment(
         self,
