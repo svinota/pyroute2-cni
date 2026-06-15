@@ -11,12 +11,11 @@ from pyroute2 import AsyncIPRoute
 from kubernetes import client as k8s_client
 from kubernetes import config as k8s_config
 from kubernetes import watch as k8s_watch  # type: ignore[attr-defined]
-
-from .address_pool import AddressPool
-from .firewall import FirewallManager
-from .frr_manager import FRRManager
-from .kubernetes import get_cluster_custom_object
-from .vrf_domain import VRFAttachment, VRFDomain, parse_vrf_domain
+from pyroute2_cni.address_pool import AddressPool
+from pyroute2_cni.firewall import FirewallManager
+from pyroute2_cni.frr_manager import FRRManager
+from pyroute2_cni.kubernetes import get_cluster_custom_object
+from pyroute2_cni.vrf_domain import VRFAttachment, VRFDomain, parse_vrf_domain
 
 
 def set_sysctl(config: dict[str, int]) -> None:

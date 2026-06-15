@@ -15,13 +15,13 @@ from typing import Any, Awaitable, Callable, Optional
 from pydantic import ValidationError
 
 from pyroute2_cni.address_pool import AddressPool
+from pyroute2_cni.controllers.namespace_controller import NamespaceController
+from pyroute2_cni.controllers.vrf_controller import VRFController
 from pyroute2_cni.frr_manager import FRRManager
 from pyroute2_cni.kubernetes import get_node_ip
-from pyroute2_cni.namespace_controller import NamespaceController
 from pyroute2_cni.network import CNIError
 from pyroute2_cni.protocols import PluginProtocol
 from pyroute2_cni.request import CNIRequest
-from pyroute2_cni.vrf_controller import VRFController
 
 READINESS_HOST = '0.0.0.0'
 READINESS_PORT = '24800'

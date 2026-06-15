@@ -7,6 +7,8 @@ spec:
   nodeRef:
     name: k8s02
   routerId: 192.168.124.142
+  routeReflectors:
+    - 192.168.124.1
   interfaces:
     - name: enp1s0
       local: 192.168.124.142
@@ -19,6 +21,8 @@ spec:
   nodeRef:
     name: k8s03
   routerId: 192.168.124.125
+  routeReflectors:
+    - 192.168.124.1
   interfaces:
     - name: enp1s0
       local: 192.168.124.125
