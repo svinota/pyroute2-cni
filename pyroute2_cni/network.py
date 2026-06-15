@@ -179,7 +179,10 @@ class Plugin(PluginProtocol):
         logging.info(f'segment {info}')
 
         async with AsyncIPRoute() as ipr_main:
-            bridge_idx = (await ipr_main.link_lookup(ifname=bridge_ifname))[0]
+            dump = await ipr_main.poll(
+                ipr_main.link, 'dump', ifname=bridge_ifname, timeout=15
+            )
+            bridge_idx = dump[0].get('index')
 
             # create & attach veth pair
             veth = await ipr_main.ensure(
