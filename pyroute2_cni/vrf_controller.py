@@ -274,6 +274,24 @@ class VRFController:
         return domain
 
     async def resync(self) -> None:
+        async with AsyncIPRoute() as ipr:
+            logging.info('Trying to load VRF module')
+            (vrf1,) = await ipr.ensure(
+                ipr.link, present=True, ifname='vrf-1', kind='vrf', vrf_table=1
+            )
+            await ipr.ensure(ipr.link, present=False, index=vrf1['index'])
+            logging.info('Trying to calculate host_if')
+            default_route = await ipr.route('get', dst='1.1.1.1')
+            self.host_link = default_route[0].get('oif')
+            self.host_src = default_route[0].get('prefsrc') or '127.0.0.1'
+            self.host_ifname = (await ipr.link('get', index=self.host_link))[
+                0
+            ].get('ifname')
+            logging.info(
+                f'Host discovery: {self.host_link}:'
+                f'{self.host_ifname}:{self.host_src}'
+            )
+        logging.info('Setting sysctl variables')
         set_sysctl(
             {
                 'net.ipv4.conf.all.rp_filter': 0,
@@ -282,22 +300,6 @@ class VRFController:
                 'net.ipv4.udp_l3mdev_accept': 1,
             }
         )
-        async with AsyncIPRoute() as ipr:
-            (vrf1,) = await ipr.ensure(
-                ipr.link, present=True, ifname='vrf-1', kind='vrf', vrf_table=1
-            )
-            await ipr.ensure(ipr.link, present=False, index=vrf1['index'])
-            logging.info('trying to calculate host_if')
-            default_route = await ipr.route('get', dst='1.1.1.1')
-            self.host_link = default_route[0].get('oif')
-            self.host_src = default_route[0].get('prefsrc') or '127.0.0.1'
-            self.host_ifname = (await ipr.link('get', index=self.host_link))[
-                0
-            ].get('ifname')
-            logging.info(
-                f'host discovery: {self.host_link}:'
-                f'{self.host_ifname}:{self.host_src}'
-            )
 
         domains: dict[int, VRFDomain] = self._vrf_domain_items()
         default_vrf = int(self.config['default']['vrf'])
@@ -310,7 +312,7 @@ class VRFController:
         for vrf, domain in sorted_domains.items():
             if domain.network is None:
                 continue
-            logging.info(f'vrfdomain: {domain.vrf}->{domain.network}')
+            logging.info(f'VRFDomain: {domain.vrf}->{domain.network}')
             await self.ensure(domain)
 
     def _watch_worker(
