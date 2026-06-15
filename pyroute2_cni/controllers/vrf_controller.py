@@ -13,9 +13,12 @@ from pyroute2_cni.crds.vrf_domain import (
     VRFDomain,
     parse_vrf_domain,
 )
+from pyroute2_cni.crds.vrf_node_config import (
+    VRFNodeConfig,
+    parse_vrf_node_config,
+)
 from pyroute2_cni.firewall import FirewallManager
 from pyroute2_cni.frr_manager import FRRManager
-from pyroute2_cni.kubernetes import get_cluster_custom_object
 
 
 def set_sysctl(config: dict[str, int]) -> None:
@@ -100,31 +103,36 @@ class VRFController(BaseCRDWatchController[VRFDomain]):
             )
 
         try:
-            obj = get_cluster_custom_object(
-                'cni.pyroute2.org',
-                'v1alpha1',
-                'vrfnodeconfigs',
-                self.node_name,
+            response = (
+                self.frr_manager.vrf_custom_api.list_cluster_custom_object(
+                    'cni.pyroute2.org', 'v1alpha1', 'vrfnodeconfigs'
+                )
             )
-            spec = obj.get('spec') or {}
+            node_config: VRFNodeConfig | None = None
+            for item in response.get('items', []):
+                node_config = parse_vrf_node_config(item)
+                if node_config.node_ref.name == self.node_name:
+                    break
+            if node_config is None:
+                raise KeyError('nodeRef')
             #
             # Iterate through the definitions and pick the first matching
             #
             interfaces = sorted(
                 (
                     x
-                    for x in spec.get('interfaces', [])
-                    if x.get('name') is None or x.get('name') in links
+                    for x in node_config.interfaces
+                    if x.name is None or x.name in links
                 ),
-                key=lambda x: x.get('name') is None,
+                key=lambda x: x.name is None,
             )
 
             for item in interfaces:
-                if item.get('name') in links:
+                if item.name in links:
                     return VTEPInfo(
-                        ifname=item.get('name'),
-                        local=item.get('local'),
-                        link=links[item.get('name')].get('index'),
+                        ifname=item.name,
+                        local=item.local,
+                        link=links[item.name].get('index'),
                     )
         except ApiException as e:
             status = (

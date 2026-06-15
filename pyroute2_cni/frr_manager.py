@@ -9,7 +9,10 @@ from kubernetes.client.exceptions import ApiException
 
 from kubernetes import client as k8s_client
 from pyroute2_cni.crds.vrf_domain import VRFDomain, parse_vrf_domain
-from pyroute2_cni.kubernetes import get_cluster_custom_object
+from pyroute2_cni.crds.vrf_node_config import (
+    VRFNodeConfig,
+    parse_vrf_node_config,
+)
 
 
 class FRRManager:
@@ -33,46 +36,31 @@ class FRRManager:
                 return addr.address
         return None
 
-    def _node_router_id(self, node_name: str, node: Any | None = None) -> str:
+    def _get_node_config(self, node_name: str) -> VRFNodeConfig | None:
         try:
-            obj = get_cluster_custom_object(
-                'cni.pyroute2.org', 'v1alpha1', 'vrfnodeconfigs', node_name
+            response = self.vrf_custom_api.list_cluster_custom_object(
+                'cni.pyroute2.org', 'v1alpha1', 'vrfnodeconfigs'
             )
-            spec = obj.get('spec') or {}
-            router_id = spec.get('routerId')
-            if router_id:
-                return str(router_id)
         except ApiException as e:
             if e.status != 404:
                 raise
+            return None
 
-        if node is not None:
-            peer_ip = self._node_peer_ip(node)
-            if peer_ip is not None:
-                return peer_ip
-
-        return self.config['network']['ipaddr']
-
-    def _node_route_reflectors(self, node_name: str) -> list[str]:
-        try:
-            obj = get_cluster_custom_object(
-                'cni.pyroute2.org', 'v1alpha1', 'vrfnodeconfigs', node_name
-            )
-            spec = obj.get('spec') or {}
-            rr_list = spec.get('routeReflectors') or []
-            if rr_list:
-                return [str(item) for item in rr_list if str(item)]
-        except ApiException as e:
-            if e.status != 404:
-                raise
-        return []
+        for item in response.get('items', []):
+            node_config = parse_vrf_node_config(item)
+            if node_config.node_ref.name == node_name:
+                return node_config
+        return None
 
     def refresh_peers(self, v1: k8s_client.CoreV1Api) -> set[str]:
         peer_ips: set[str] = set()
         local_node_name = self.config['network']['node_name']
-        self.router_id = self._node_router_id(local_node_name)
-        for peer in self._node_route_reflectors(local_node_name):
-            peer_ips.add(peer)
+        node_config = self._get_node_config(local_node_name)
+        if node_config is not None:
+            if node_config.router_id:
+                self.router_id = node_config.router_id
+            for peer in node_config.route_reflectors:
+                peer_ips.add(peer)
         if peer_ips:
             # RR are fetched, stop and return
             return peer_ips
@@ -82,7 +70,13 @@ class FRRManager:
                 continue
             if node.metadata.name == local_node_name:
                 continue
-            peer_ips.add(self._node_router_id(node.metadata.name, node))
+            node_config = self._get_node_config(node.metadata.name)
+            if node_config is not None and node_config.router_id:
+                peer_ips.add(node_config.router_id)
+                continue
+            peer_ip = self._node_peer_ip(node)
+            if peer_ip is not None:
+                peer_ips.add(peer_ip)
         return peer_ips
 
     def vrf_domain_items(self) -> dict[int, VRFDomain]:
