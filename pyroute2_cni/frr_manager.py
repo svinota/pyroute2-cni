@@ -99,10 +99,12 @@ class FRRManager:
             )
         )
 
-    def render_config(self, cleanup: dict[int, VRFDomain]) -> str:
+    def render_config(
+        self, vrf_cleanup: dict[int, VRFDomain], peer_cleanup: set[str]
+    ) -> str:
         vrf_sections = []
         vrf_router_sections = []
-        for item in cleanup.values():
+        for item in vrf_cleanup.values():
             vrf_sections.append(
                 f'no vrf vrf-{item.vrf}\n'
                 f'no router bgp 65000 vrf vrf-{item.vrf}\n'
@@ -110,7 +112,7 @@ class FRRManager:
         vrfs = {
             k: v
             for k, v in self.vrf_domain_items().items()
-            if k not in cleanup
+            if k not in vrf_cleanup
         }
         for item in vrfs.values():
             section = (
@@ -140,21 +142,31 @@ class FRRManager:
         peer_records = '\n'.join(
             f' neighbor {peer} peer-group PR2' for peer in self.peer_ips
         )
+        peer_cleanup_records = '\n'.join(
+            f' no neighbor {peer} peer-group PR2'
+            for peer in sorted(peer_cleanup)
+        )
 
         template = Template(self.template_path.read_text(encoding='utf-8'))
         return template.substitute(
             router_id=self.router_id,
-            peer_records=peer_records,
+            peer_records='\n'.join(
+                item for item in (peer_cleanup_records, peer_records) if item
+            ),
             vrf_sections='\n!\n'.join(vrf_sections),
             vrf_router_sections='\n!\n'.join(vrf_router_sections),
         )
 
-    async def reload(self, cleanup: dict[int, VRFDomain]) -> None:
+    async def reload(
+        self, vrf_cleanup: dict[int, VRFDomain], peer_cleanup: set[str]
+    ) -> None:
         self.peer_ips = list(
             sorted(self.refresh_peers(k8s_client.CoreV1Api()))
         )
+        if peer_cleanup is None:
+            peer_cleanup = set()
         self.output_path.write_text(
-            self.render_config(cleanup), encoding='utf-8'
+            self.render_config(vrf_cleanup, peer_cleanup), encoding='utf-8'
         )
         deadline = time.monotonic() + 120
         read_timeout = 30

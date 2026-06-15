@@ -8,7 +8,6 @@ from kubernetes.client.exceptions import ApiException
 from kubernetes import client as k8s_client
 from kubernetes import config as k8s_config
 from kubernetes import watch as k8s_watch  # type: ignore[attr-defined]
-
 from pyroute2_cni.frr_manager import FRRManager
 
 
@@ -17,10 +16,14 @@ class VRFNodeConfigController:
         self.config = config
         self.frr_manager = frr_manager
         self.vrf_custom_api = k8s_client.CustomObjectsApi()
+        self.peer_cache: set[str] = set()
 
     async def reconcile(self, node_name: str, event_type: str) -> None:
         logging.info(f'VRFNodeConfig {event_type} event: {node_name}')
-        await self.frr_manager.reload({})
+        current_peers = self.frr_manager.refresh_peers(k8s_client.CoreV1Api())
+        peer_cleanup = self.peer_cache - current_peers
+        await self.frr_manager.reload({}, peer_cleanup)
+        self.peer_cache = current_peers
 
     def _watch_worker(
         self,
@@ -69,7 +72,10 @@ class VRFNodeConfigController:
                         if rv:
                             resource_version = rv
                         name = str(metadata.get('name') or '')
-                        if event_type in {'ADDED', 'MODIFIED', 'DELETED'} and name:
+                        if (
+                            event_type in {'ADDED', 'MODIFIED', 'DELETED'}
+                            and name
+                        ):
                             loop.call_soon_threadsafe(
                                 queue.put_nowait, (event_type, name)
                             )
@@ -83,7 +89,8 @@ class VRFNodeConfigController:
                         resource_version = refresh_resource_version()
                         continue
                     logging.warning(
-                        'vrfnodeconfig watch api exception, restarting rv=%s: %s',
+                        'vrfnodeconfig watch api exception, '
+                        'restarting rv=%s: %s',
                         resource_version,
                         e,
                     )

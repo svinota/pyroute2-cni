@@ -55,7 +55,7 @@ class VRFController:
         vrf_ifname = f'vrf-{domain.vrf}'
         async with AsyncIPRoute() as ipr:
             await ipr.ensure(ipr.link, present=False, ifname=vrf_ifname)
-        await self.frr_manager.reload({domain.vrf: domain})
+        await self.frr_manager.reload({domain.vrf: domain}, set())
 
     async def remove_vni(
         self, domain: VRFDomain, attachment: VRFAttachment, prefix: str
@@ -68,7 +68,7 @@ class VRFController:
 
     async def ensure_vrf(self, domain: VRFDomain) -> int:
         logging.info(f'Ensure VRF: {domain}')
-        await self.frr_manager.reload({})
+        await self.frr_manager.reload({}, set())
         vrf_ifname = f'vrf-{domain.vrf}'
         async with AsyncIPRoute() as ipr:
             return (
