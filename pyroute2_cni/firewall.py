@@ -182,7 +182,7 @@ class FirewallManager:
         self.table_name = 'pyroute2-cni'
         self.version = 'v2'
 
-    async def setup(self) -> None:
+    async def setup_tables(self) -> None:
         if self.has_setup:
             return
         self.has_setup = True

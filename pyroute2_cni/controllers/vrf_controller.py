@@ -266,6 +266,7 @@ class VRFController(BaseCRDWatchController[VRFDomain]):
         return domain
 
     async def resync(self) -> None:
+        await self.firewall.setup_tables()
         async with AsyncIPRoute() as ipr:
             logging.info('Trying to load VRF module')
             (vrf1,) = await ipr.ensure(
