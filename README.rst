@@ -1,7 +1,5 @@
-pyroute2-cni
+Introduction
 ------------
-
-A rather simple CNI with EVPN-VXLAN / VRF support
 
 Requirements
 ============

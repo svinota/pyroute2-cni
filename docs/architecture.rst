@@ -1,7 +1,7 @@
 .. architecture:
 
-pyroute2 CNI architecture and protocols
-=======================================
+CNI architecture and protocols
+==============================
 
 Network topology
 ----------------

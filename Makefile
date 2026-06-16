@@ -66,3 +66,7 @@ test nox:
 .PHONY: format
 format:
 	$(call nox,-e linter)
+
+.PHONY: docs
+docs:
+	$(call nox,-e docs)
