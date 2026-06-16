@@ -8,17 +8,27 @@
 pyroute2-cni
 ============
 
-pyroute2-cni is a Kubernetes networking layer for service provider and enterprise environments built around VRFs and BGP-routed network fabrics.
+pyroute2-cni is a Kubernetes networking layer for service provider and
+enterprise environments built around VRFs and BGP-routed network fabrics.
 
-Instead of introducing a Kubernetes-specific networking model, pyroute2-cni integrates workloads directly into existing routing domains, allowing Kubernetes clusters to participate as first-class citizens in established network architectures.
+Instead of introducing a Kubernetes-specific networking model, pyroute2-cni
+integrates workloads directly into existing routing domains, allowing
+Kubernetes clusters to participate as first-class citizens in established
+network architectures.
 
 Core capabilities
 -----------------
 
-* **VRF-native workload networking**: Workloads are attached directly to VRFs, making routing domains the primary mechanism for segmentation and connectivity.
-* **BGP-driven integration**: Clusters integrate with existing routing infrastructures through BGP, supporting both internal mesh deployments and external route reflectors.
-* **EVPN-VXLAN interoperability**: EVPN-VXLAN integration enables interoperability with modern L2/L3 service fabrics and data center networks.
-* **Multi-tenant operation**: The design supports large-scale multi-tenancy, including overlapping IP address spaces across independent tenants.
+* **VRF-native workload networking**: Workloads are attached directly to
+  VRFs, making routing domains the primary mechanism for segmentation and
+  connectivity.
+* **BGP-driven integration**: Clusters integrate with existing routing
+  infrastructures through BGP, supporting both internal mesh deployments
+  and external route reflectors.
+* **EVPN-VXLAN interoperability**: EVPN-VXLAN integration enables
+  interoperability with modern L2/L3 service fabrics and data center networks.
+* **Multi-tenant operation**: The design supports large-scale multi-tenancy,
+  including overlapping IP address spaces across independent tenants.
 
 Architectural principles
 ------------------------
@@ -33,10 +43,12 @@ Target environments
 -------------------
 
 - Service provider Kubernetes platforms
-- Network Functions Virtualization (NFV) and cloud-native network functions (CNFs)
+- Network Functions Virtualization (NFV) and cloud-native network functions
+  (CNFs)
 - Multi-tenant container platforms with overlapping address spaces
 - Enterprise and provider networks built around VRFs, BGP, and EVPN fabrics
-- Hybrid infrastructures combining containers, virtual machines, and traditional network services
+- Hybrid infrastructures combining containers, virtual machines, and
+  traditional network services
 
 Non-goals
 ---------

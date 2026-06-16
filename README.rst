@@ -1,6 +1,12 @@
 Introduction
 ------------
 
+pyroute2-cni is a Kubernetes networking layer for service provider and
+enterprise environments built around VRFs and BGP-routed network fabrics.
+
+* Documentation Home: https://cni.pyroute2.org/
+* Project Sources: https://github.com/svinota/pyroute2-cni
+
 Requirements
 ============
 
