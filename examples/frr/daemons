@@ -1,0 +1,4 @@
+bgpd=yes
+vtysh_enable=yes
+bgpd_options="   -A 127.0.0.1 --log=file:/tmp/bgpd.log --log-level=debug"
+zebra_options="  -A 127.0.0.1 -s 90000000 --log=file:/tmp/zebra.log --log-level=debug"

@@ -63,5 +63,6 @@ pyroute2-cni is not intended to be:
    :maxdepth: 2
    :caption: Contents:
 
+   quickstart
    general
    architecture

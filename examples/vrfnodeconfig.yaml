@@ -2,27 +2,13 @@
 apiVersion: cni.pyroute2.org/v1alpha1
 kind: VRFNodeConfig
 metadata:
-  name: k8s02
+  name: cni-test-vrnc
 spec:
   nodeRef:
-    name: k8s02
-  routerId: 192.168.124.142
+    name: cni-test
+  routerId: 192.168.124.54
   routeReflectors:
     - 192.168.124.1
   interfaces:
     - name: enp1s0
-      local: 192.168.124.142
----
-apiVersion: cni.pyroute2.org/v1alpha1
-kind: VRFNodeConfig
-metadata:
-  name: k8s03
-spec:
-  nodeRef:
-    name: k8s03
-  routerId: 192.168.124.125
-  routeReflectors:
-    - 192.168.124.1
-  interfaces:
-    - name: enp1s0
-      local: 192.168.124.125
+      local: 192.168.124.54

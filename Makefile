@@ -34,6 +34,7 @@ clean:
 	rm -rf dist
 	rm -rf *egg-info
 	rm -rf __pycache__
+	./tests/test_install/cleanup.sh
 
 .PHONY: image-clean
 image-clean:
@@ -44,7 +45,7 @@ ghcr-clean:
 	for i in `gh api -H 'Accept: application/vnd.github+json' /user/packages/container/pyroute2-cni/versions --jq '.[] | [.id, .metadata.container.tags[0]] | @csv' | awk -F, 'NR==FNR {tags[$$1]; next} {tag=$$2; gsub(/"/, "", tag); if (!(tag in tags)) print($$1":"tag)}' tags -`; do echo -n "DEL `echo $$i | sed 's/.*://'`: "; gh api -H 'Accept: application/vnd.github+json' -X DELETE /user/packages/container/pyroute2-cni/versions/`echo $$i | sed 's/:.*//'`; echo $$?; done
 
 .PHONY: frr-image-version
-cni-image-version:
+frr-image-version:
 	echo `cat images/frr/VERSION | awk -F . '{print($$1"."$$2"."$$3 + 1)}'` >images/frr/VERSION
 
 .PHONY: frr-image-build
