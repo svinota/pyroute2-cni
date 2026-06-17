@@ -2,9 +2,19 @@
 
 export LIBVIRT_DEFAULT_URI=qemu:///system
 
+[ "$1" = "24" ] && {
+    export IMAGE_NAME="ubuntu-24.04-server-cloudimg-amd64.img"
+    export IMAGE_BASE="https://cloud-images.ubuntu.com/releases/noble/release/"
+} ||:
+
+[ "$1" = "25" ] && {
+    export IMAGE_NAME="ubuntu-25.10-server-cloudimg-amd64.img"
+    export IMAGE_BASE="https://cloud-images.ubuntu.com/releases/questing/release/"
+} ||:
+
+[ -z "${IMAGE_NAME}" -o -z "${IMAGE_BASE}" ] && { echo -e "# Image not defined\nexit 100"; exit 100; }
+
 VM_NAME="cni-test"
-IMAGE_NAME="ubuntu-24.04-server-cloudimg-amd64.img"
-IMAGE_BASE="https://cloud-images.ubuntu.com/releases/noble/release/"
 SCRIPT_PATH="$(realpath "${BASH_SOURCE[0]}")"
 SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
 WORK_DIR="vm-test"

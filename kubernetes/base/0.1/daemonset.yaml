@@ -51,6 +51,8 @@ spec:
         image: ghcr.io/svinota/pyroute2-frr:0.0.7
         securityContext:
           privileged: true
+          appArmorProfile:
+            type: Unconfined
         ports:
         - name: frr-probe
           containerPort: 24801

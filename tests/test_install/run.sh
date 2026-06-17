@@ -1,8 +1,11 @@
 #!/bin/bash
 
-echo -e "\nPrepare the environment\n"
+echo -e "\nPrepare the environment: Ubuntu $1\n"
 
-./examples/scripts/create-ubuntu-vm.sh | tee env.sh
+SCRIPT_PATH="$(realpath "${BASH_SOURCE[0]}")"
+SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
+
+${SCRIPT_DIR}/scripts/create-ubuntu-vm.sh $1 | tee env.sh
 . env.sh
 
 echo -e "\nRun the tests\n"

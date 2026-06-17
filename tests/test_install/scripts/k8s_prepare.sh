@@ -43,8 +43,11 @@ sudo systemctl enable --now containerd
 sudo systemctl restart docker
 sudo systemctl restart containerd
 
-# extra kernel modules for VRF
-apt-run install -y linux-modules-extra-`uname -r`
+# extra kernel modules for VRF (24 only)
+UBUNTU_RELEASE=`lsb_release -r -s 2>/dev/null | sed 's/\..\+//'`
+[ "${UBUNTU_RELEASE}" = "24" ] && {
+    apt-run install -y linux-modules-extra-`uname -r`
+} ||:
 
 # kubernetes
 apt-run install curl ca-certificates apt-transport-https  -y

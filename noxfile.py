@@ -160,6 +160,12 @@ def test_functional(session, config):
         env={'PYTHONPATH': os.getcwd()},
     )
 
+@nox.session
+@nox.parametrize('ubuntu', ['24', '25'])
+def test_install(session, ubuntu):
+    '''Run installation tests.'''
+    session.run('./tests/test_install/run.sh', ubuntu, external=True)
+    session.run('./tests/test_install/cleanup.sh', external=True)
 
 @nox.session
 def build(session):
@@ -168,3 +174,5 @@ def build(session):
     session.install('twine')
     session.run('python', '-m', 'build')
     session.run('python', '-m', 'twine', 'check', 'dist/*')
+
+
