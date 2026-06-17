@@ -48,9 +48,25 @@ spec:
       containers:
 
       - name: pyroute2-frr
-        image: ghcr.io/svinota/pyroute2-frr:0.0.5
+        image: ghcr.io/svinota/pyroute2-frr:0.0.7
         securityContext:
           privileged: true
+        ports:
+        - name: frr-probe
+          containerPort: 24801
+          protocol: TCP
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: frr-probe
+          periodSeconds: 5
+          timeoutSeconds: 1
+        livenessProbe:
+          httpGet:
+            path: /livez
+            port: frr-probe
+          periodSeconds: 10
+          timeoutSeconds: 1
         volumeMounts:
         - name: frr-run
           mountPath: /var/run/frr
@@ -64,7 +80,7 @@ spec:
             cpu: "100m"
             memory: "100Mi"
         ports:
-        - name: readiness
+        - name: cni-probe
           containerPort: 24800
           protocol: TCP
         securityContext:
@@ -72,13 +88,13 @@ spec:
         readinessProbe:
           httpGet:
             path: /readyz
-            port: readiness
+            port: cni-probe
           periodSeconds: 5
           timeoutSeconds: 1
         livenessProbe:
           httpGet:
             path: /livez
-            port: readiness
+            port: cni-probe
           periodSeconds: 10
           timeoutSeconds: 1
         env:

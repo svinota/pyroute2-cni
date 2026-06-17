@@ -8,7 +8,7 @@ images:
   - name: ghcr.io/svinota/pyroute2-cni
     newTag: {cni_image}
   - name: ghcr.io/svinota/pyroute2-frr
-    newTag: 0.0.5
+    newTag: {frr_image}
 
 
 labels:

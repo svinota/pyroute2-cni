@@ -6,6 +6,7 @@ RUN apk add socat
 
 COPY init /init
 COPY handle-command /handle-command
+COPY probe.py /probe
 
 RUN chmod +x /init /handle-command
 

@@ -29,6 +29,8 @@ $FRR_WATCH \
     --max-restart-interval 20 \
     zebra staticd bgpd &
 
+python3 probe &
+
 while [[ "$STOP" -eq 0 ]]; do
   socat -u "UNIX-LISTEN:$SOCK,fork,unlink-close" EXEC:/handle-command &
   SOCAT_PID=$!
