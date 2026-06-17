@@ -1,37 +1,44 @@
 #!/bin/bash
 
-LIBVIRT_DEFAULT_URI=qemu:///system
+export LIBVIRT_DEFAULT_URI=qemu:///system
+
 VM_NAME="cni-test"
 IMAGE_NAME="ubuntu-25.10-server-cloudimg-amd64.img"
 IMAGE_BASE="https://cloud-images.ubuntu.com/releases/questing/release/"
 SCRIPT_PATH="$(realpath "${BASH_SOURCE[0]}")"
 SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
 WORK_DIR="vm-test"
+TMP_DIR="tmp"
 
 mkdir -p ${WORK_DIR}
-pushd ${WORK_DIR}
+mkdir -p ${TMP_DIR}
+pushd ${WORK_DIR} >/dev/null
 
 
 # sanity check
 ls -1 |\
     grep -v ${IMAGE_NAME} |\
     wc -l |\
-    grep ^0 >/dev/null || { echo "Start in an empty directory"; exit 1; }
+    grep ^0 >/dev/null || { echo "# Start in an empty directory"; exit 1; }
 
 for i in ssh-keygen virsh cloud-localds qemu-img curl virt-install; do {
-    echo -n "Check $i ... "
-    which $i >/dev/null 2>&1 || { echo "required $i missing"; exit 2; }
+    echo -n "# Check $i ... "
+    which $i >/dev/null 2>&1 || { echo "# required $i missing"; exit 2; }
     echo "ok"
 } done
 
-[ -f "${IMAGE_NAME}" ] || {
-    echo "Download Ubuntu cloud image"
-    curl -Lo ${IMAGE_NAME} ${IMAGE_BASE}/${IMAGE_NAME}
+[ -f "../${TMP_DIR}/${IMAGE_NAME}" ] || {
+    echo -n "# Download Ubuntu cloud image ... "
+    curl -SsLo ../${TMP_DIR}/${IMAGE_NAME} ${IMAGE_BASE}/${IMAGE_NAME} >/dev/null && echo "ok"
 }
 
-ssh-keygen -f id-${VM_NAME} -N ''
+[ -f "${IMAGE_NAME}" ] || {
+    cp ../${TMP_DIR}/${IMAGE_NAME} .
+}
 
-echo "Create cloud-init"
+ssh-keygen -f id-${VM_NAME} -N '' >/dev/null
+
+echo -n "# Create cloud-init "
 cat <<EOF >user-data
 #cloud-config
 hostname: ${VM_NAME}
@@ -54,12 +61,12 @@ instance-id: ${VM_NAME}-01
 local-hostname: ${VM_NAME}
 EOF
 
-cloud-localds seed.iso user-data meta-data
+cloud-localds seed.iso user-data meta-data && echo "ok"
 
-echo "Create VM image"
-qemu-img create -f qcow2 -b ${IMAGE_NAME} -F qcow2 ${VM_NAME}.qcow2 30G
+echo -n "# Create VM image "
+qemu-img create -f qcow2 -b ${IMAGE_NAME} -F qcow2 ${VM_NAME}.qcow2 30G >/dev/null && echo "ok"
 
-echo "Create VM"
+echo -n "# Create VM "
 virt-install \
     --name ${VM_NAME} \
     --memory 4096 \
@@ -69,9 +76,9 @@ virt-install \
     --network network=default \
     --import \
     --noautoconsole \
-    --os-variant ubuntu25.10
+    --os-variant ubuntu25.10 >/dev/null && echo "ok"
 
-echo -n "Waiting for IP address "
+echo -n "# Waiting for IP address "
 for i in `seq 100`; do {
     NODE_IP=`virsh domifaddr cni-test 2>/dev/null | awk '/ipv4/ {print gensub(/\/.+/, "", "g", $4)}'`
     [ -z "${NODE_IP}" ] || break
@@ -79,23 +86,30 @@ for i in `seq 100`; do {
     sleep 1
 } done
 
-[ -z "${NODE_IP}" ] && { echo "Could not get node IP"; exit 3; }
+[ -z "${NODE_IP}" ] && { echo "# Could not get node IP"; exit 3; }
 
-echo -e "\nNode address: ${NODE_IP}"
+echo -e "\n# Node address:\nexport NODE_IP=${NODE_IP}"
 
-echo -n "Waiting for SSH "
+ephemeral_opts="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i id-${VM_NAME}"
+ephemeral_ssh="ssh ${ephemeral_opts} ubuntu@${NODE_IP} "
+ephemeral_scp="scp ${ephemeral_opts} "
+
+echo -n "# Waiting for SSH "
 for i in `seq 1 100`; do {
-    ssh -o StrictHostKeyChecking=no -i id-${VM_NAME} ubuntu@${NODE_IP} uname -a && break
+    ${ephemeral_ssh} uname -a >/dev/null 2>&1 && break
     echo .
     sleep 1
 } done
 
-scp -i id-${VM_NAME} ${SCRIPT_DIR}/k8s_prepare.sh ubuntu@${NODE_IP}:./
-scp -i id-${VM_NAME} ${SCRIPT_DIR}/k8s_init.sh ubuntu@${NODE_IP}:./
-ssh -i id-${VM_NAME} ubuntu@${NODE_IP} sudo bash ./k8s_prepare.sh
-ssh -i id-${VM_NAME} ubuntu@${NODE_IP} sudo bash ./k8s_init.sh
-ssh -i id-${VM_NAME} ubuntu@${NODE_IP} sudo cat /etc/kubernetes/admin.conf >kubeconfig
+${ephemeral_scp} ${SCRIPT_DIR}/k8s_prepare.sh ubuntu@${NODE_IP}:./ >/dev/null 2>&1
+${ephemeral_scp} ${SCRIPT_DIR}/k8s_init.sh ubuntu@${NODE_IP}:./ >/dev/null 2>&1
+echo -en "\n# Prepare the system to run kubernetes ... "
+${ephemeral_ssh} sudo bash ./k8s_prepare.sh >/dev/null 2>&1 && echo "ok"
+echo -n "# Init the cluster ... "
+${ephemeral_ssh} sudo bash ./k8s_init.sh >/dev/null 2>&1 && echo "ok"
+${ephemeral_ssh} sudo cat /etc/kubernetes/admin.conf >kubeconfig 2>/dev/null
 
-popd
+popd >/dev/null
 
-echo "Use KUBECONFIG=`realpath ${WORK_DIR}/kubeconfig`"
+echo "# Use config:"
+echo "export KUBECONFIG=`realpath ${WORK_DIR}/kubeconfig`"

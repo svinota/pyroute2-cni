@@ -6,3 +6,6 @@ dist
 docs/_build
 docs/html
 kubernetes/releases/dev/kustomization.yaml
+vm-test/
+env.sh
+tmp/
