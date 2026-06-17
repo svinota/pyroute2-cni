@@ -43,6 +43,9 @@ sudo systemctl enable --now containerd
 sudo systemctl restart docker
 sudo systemctl restart containerd
 
+# extra kernel modules for VRF
+apt-run install -y linux-modules-extra-`uname -r`
+
 # kubernetes
 apt-run install curl ca-certificates apt-transport-https  -y
 curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.36/deb/Release.key |\

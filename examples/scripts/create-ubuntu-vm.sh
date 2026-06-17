@@ -3,8 +3,8 @@
 export LIBVIRT_DEFAULT_URI=qemu:///system
 
 VM_NAME="cni-test"
-IMAGE_NAME="ubuntu-25.10-server-cloudimg-amd64.img"
-IMAGE_BASE="https://cloud-images.ubuntu.com/releases/questing/release/"
+IMAGE_NAME="ubuntu-24.04-server-cloudimg-amd64.img"
+IMAGE_BASE="https://cloud-images.ubuntu.com/releases/noble/release/"
 SCRIPT_PATH="$(realpath "${BASH_SOURCE[0]}")"
 SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
 WORK_DIR="vm-test"
@@ -97,16 +97,16 @@ ephemeral_scp="scp ${ephemeral_opts} "
 echo -n "# Waiting for SSH "
 for i in `seq 1 100`; do {
     ${ephemeral_ssh} uname -a >/dev/null 2>&1 && break
-    echo .
+    echo -n "."
     sleep 1
 } done
 
 ${ephemeral_scp} ${SCRIPT_DIR}/k8s_prepare.sh ubuntu@${NODE_IP}:./ >/dev/null 2>&1
 ${ephemeral_scp} ${SCRIPT_DIR}/k8s_init.sh ubuntu@${NODE_IP}:./ >/dev/null 2>&1
 echo -en "\n# Prepare the system to run kubernetes ... "
-${ephemeral_ssh} sudo bash ./k8s_prepare.sh >/dev/null 2>&1 && echo "ok"
+${ephemeral_ssh} sudo bash ./k8s_prepare.sh >k8s_prepare.log 2>&1 && echo "ok"
 echo -n "# Init the cluster ... "
-${ephemeral_ssh} sudo bash ./k8s_init.sh >/dev/null 2>&1 && echo "ok"
+${ephemeral_ssh} sudo bash ./k8s_init.sh >k8s_init.log 2>&1 && echo "ok"
 ${ephemeral_ssh} sudo cat /etc/kubernetes/admin.conf >kubeconfig 2>/dev/null
 
 popd >/dev/null

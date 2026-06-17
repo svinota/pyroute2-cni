@@ -11,8 +11,9 @@ Requirements
 ============
 
 * Kubernetes 1.31+
-* Ubuntu 24.04+ or Talos 1.13.0+
-* Linux VRF kernel module
+* Ubuntu 24.04 or Talos 1.13.0+
+* vrf support
+* nftables support
 
 Install
 =======
