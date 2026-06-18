@@ -1,5 +1,10 @@
 .. quickstart:
 
+.. container:: rightside
+
+   .. image:: _images/CNI-quickstart.svg
+      :target: _images/CNI-quickstart.svg
+
 Quickstart Guide
 ================
 
@@ -34,15 +39,11 @@ Components involved
    * - Component
      - Role
      - Where it runs
-     - Introduced in this guide
+     - Document anchors
    * - CNI plugin
-     - Reconciles networking state and configures FRR
-     - In the `pyroute2-cni` container
-     - :ref:`quickstart-install-cni`
-   * - FRR container
-     - Runs BGP and EVPN control-plane services
-     - In the `pyroute2-frr` container
-     - :ref:`quickstart-access-vtysh`
+     - Reconciles networking state, runs BGP and EVPN control-plane
+     - In the Kubernetes cluster as a `daemonset`
+     - :ref:`quickstart-install-cni`, :ref:`quickstart-access-vtysh`
    * - Route reflector
      - Aggregates BGP sessions for the cluster
      - Outside the Kubernetes node
