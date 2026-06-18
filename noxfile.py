@@ -162,7 +162,7 @@ def test_functional(session, config):
 
 
 @nox.session
-@nox.parametrize('ubuntu', ['24'])
+@nox.parametrize('ubuntu', ['24', '25'])
 def test_install(session, ubuntu):
     '''Run installation tests.'''
     session.run('./tests/test_install/run.sh', ubuntu, external=True)

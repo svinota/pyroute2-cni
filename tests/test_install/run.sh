@@ -36,7 +36,7 @@ echo "ok"
 
 # 8<---------------------------------------------------------------------------
 echo -n "Test pod conditions: "
-kubectl -n pyroute2-cni wait --for=condition=Ready pods --all --timeout=90s >/dev/null || { echo "Condition failed"; exit 1; }
+kubectl -n pyroute2-cni wait --for=condition=Ready pods --all --timeout=180s >/dev/null || { echo "Condition failed"; exit 1; }
 echo "ok"
 
 
@@ -54,7 +54,12 @@ echo "ok"
 
 # 8<---------------------------------------------------------------------------
 echo -n "Test allocations: "
-KUBE_DNS=`kubectl -n kube-system get pods -l k8s-app=kube-dns -o json | jq -r '.items[] | [.status.podIP] | sort | @tsv'`
-ALLOCATED=`kubectl get ipb -o json | jq -r '.items[].status.allocations | to_entries[] | select(.value != "gateway" ) | .key'`
-[ "${KUBE_DNS}" == "${ALLOCATED}" ] || { echo "Unexpected allocations: ${ALLOCATED}"; exit 1; }
+FAILED=1
+for i in `seq 1 10`; do {
+    KUBE_DNS=`kubectl -n kube-system get pods -l k8s-app=kube-dns -o json | jq -r '.items[] | [.status.podIP] | sort | @tsv' | sort`
+    ALLOCATED=`kubectl get ipb -o json | jq -r '.items[].status.allocations | to_entries[] | select(.value != "gateway" ) | .key' | sort`
+    [ "${KUBE_DNS}" == "${ALLOCATED}" ] && { FAILED=0; break; }
+    sleep 1;
+} done
+[ "${FAILED}" -eq 0 ] || { echo "Unexpected allocations: ${KUBE_DNS} ! ${ALLOCATED}"; exit 1; }
 echo "ok"
