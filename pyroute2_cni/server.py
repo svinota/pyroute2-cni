@@ -111,6 +111,8 @@ class CNIProtocol(asyncio.Protocol):
     async def cni_response_task(
         self, func: Callable, data: dict[str, Any], request: CNIRequest
     ) -> None:
+        # forget RID
+        self.registry.pop(str(request.rid), None)
         try:
             self.cni_response(await func(data, request))
         except CNIError as e:
