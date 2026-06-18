@@ -48,7 +48,7 @@ spec:
       containers:
 
       - name: pyroute2-frr
-        image: ghcr.io/svinota/pyroute2-frr:0.0.7
+        image: ghcr.io/svinota/pyroute2-frr:0.0.9
         securityContext:
           privileged: true
           appArmorProfile:

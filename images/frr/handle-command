@@ -5,13 +5,13 @@ FRR_CONF=/etc/frr/frr.conf
 
 read -r cmd
 case "$cmd" in
-  test)
-    /usr/lib/frr/frr-reload.py --test /etc/frr/frr.conf
-    echo "test: $?"
-    ;;
   reload)
-    /usr/lib/frr/frr-reload.py --reload /etc/frr/frr.conf
-    echo "reload: $?"
+    vtysh -b "$FRR_CONF"
+    echo OK
+    ;;
+  restart)
+    /usr/lib/frr/watchfrr.sh restart bgpd
+    echo OK
     ;;
   *)
     echo ERR unknown command
