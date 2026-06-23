@@ -516,6 +516,7 @@ class AddressPool:
         ipblocklen: int,
         vrf_table: int,
         pod_uid: str = '',
+        is_gateway: bool = False,
     ) -> AddressAllocation:
         logging.info(f'Starting allocation pod_uid={pod_uid}')
         async with self._alloc_lock:
@@ -534,18 +535,23 @@ class AddressPool:
             used_ips.add(gateway.compressed)
             # gateway is ALWAYS not None with prefixlen < 32
             logging.info(f'allocate: acquired gateway={gateway}')
-            if pod_uid in reverse_lookup:
-                ip = IPv4Address(reverse_lookup[pod_uid])
+            if is_gateway:
+                ip = IPv4Address('0.0.0.0')
+                logging.info(f'Done allocation for gateway={gateway}')
             else:
-                ip = self._find_free_ip_excluding(
-                    block.cidr, allocations, used_ips
+                if pod_uid in reverse_lookup:
+                    ip = IPv4Address(reverse_lookup[pod_uid])
+                else:
+                    ip = self._find_free_ip_excluding(
+                        block.cidr, allocations, used_ips
+                    )
+                # ip is always not None with prefixlen < 32
+                logging.info(f'allocate: acquired ip={ip}')
+                allocations[ip.compressed] = pod_uid
+                logging.info(
+                    f'Done allocation pod_uid={pod_uid} '
+                    f'ip={ip} gateway={gateway}'
                 )
-            # ip is always not None with prefixlen < 32
-            logging.info(f'allocate: acquired ip={ip}')
-            allocations[ip.compressed] = pod_uid
             self._patch_block_status(block, allocations)
-            logging.info(
-                f'Done allocation pod_uid={pod_uid} '
-                f'ip={ip} gateway={gateway}'
-            )
+            logging.info(f'Patched block {block.name}')
             return AddressAllocation(ip, gateway)

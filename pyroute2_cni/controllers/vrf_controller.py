@@ -2,6 +2,7 @@ import logging
 import os
 from configparser import ConfigParser
 from dataclasses import dataclass
+from ipaddress import IPv4Network
 
 from kubernetes.client.exceptions import ApiException
 from pyroute2 import AsyncIPRoute
@@ -174,6 +175,22 @@ class VRFController(BaseCRDWatchController[VRFDomain]):
                     state='up',
                 )
             )[0].get('index')
+            prefix = domain.prefix or str(self.config['default']['prefix'])
+            prefixlen = domain.prefixlen or int(
+                self.config['default']['prefixlen']
+            )
+            network = IPv4Network(f'{prefix}/{prefixlen}')
+            allocation = await self.address_pool.allocate(
+                network, domain.ipblocklen, domain.vrf, is_gateway=True
+            )
+            bridge_ipaddr = allocation.gateway.compressed
+            await ipr.ensure(
+                ipr.addr,
+                present=True,
+                index=br_idx,
+                address=bridge_ipaddr,
+                prefixlen=domain.bridge_prefixlen(),
+            )
 
             #
             # NB: vxlan_link is the output device for VXLAN, not a
