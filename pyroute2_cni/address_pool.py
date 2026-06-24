@@ -273,7 +273,7 @@ class AddressPool:
     async def gc_empty_blocks(self) -> int:
         logging.debug('Starting IPBlock GC')
         limit: int = 1
-        keep: int = 0
+        keep: int = 1
         live_domains: set[int] = set()
         response = self.k8s_custom_api.list_cluster_custom_object(
             'cni.pyroute2.org', 'v1alpha1', 'vrfdomains'

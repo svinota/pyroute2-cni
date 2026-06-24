@@ -35,7 +35,10 @@ def test_ipblock_gateways(env_namespace):
     for pod in pods:
         wait_for(lambda pod_name=pod.name: pod_gone(v1, namespace, pod_name))
 
-    wait_for(lambda: not _list_ipblocks_for_vrf(custom_api, 200))
+    wait_for(
+        lambda: len(_list_ipblocks_for_vrf(custom_api, 200))
+        == len(v1.list_node().items)
+    )
 
 
 def _list_ipblocks_for_vrf(
