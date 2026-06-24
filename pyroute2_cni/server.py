@@ -3,6 +3,7 @@ import contextlib
 import json
 import logging
 import os
+import shutil
 import signal
 import socket
 import struct
@@ -10,6 +11,7 @@ import uuid
 from configparser import ConfigParser
 from functools import partial
 from importlib.metadata import entry_points
+from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
 
 from pydantic import ValidationError
@@ -29,6 +31,8 @@ READINESS_PORT = '24800'
 DEFAULT_LOG_LEVEL = 'INFO'
 GC_INTERVAL_SECONDS = '300'
 FW_INTERVAL_SECONDS = '30'
+CONFLIST_NAME = '05-chain.conflist'
+PLUGIN_NAME = 'pyroute2-cni-plugin'
 
 
 class CNIProtocol(asyncio.Protocol):
@@ -314,6 +318,16 @@ def load_plugin(config: ConfigParser, address_pool: AddressPool):
     raise RuntimeError('No plugin found for the network plugin')
 
 
+def install_cni_assets() -> None:
+    image_dir = Path('/pyroute2-cni')
+    host_cni_dir = Path('/host/etc/cni/net.d')
+    host_bin_dir = Path('/host/opt/cni/bin')
+    host_cni_dir.mkdir(parents=True, exist_ok=True)
+    host_bin_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(image_dir / CONFLIST_NAME, host_cni_dir / CONFLIST_NAME)
+    shutil.copy2(image_dir / PLUGIN_NAME, host_bin_dir / PLUGIN_NAME)
+
+
 async def main(config: ConfigParser) -> None:
     registry: dict[str, CNIRequest] = {}
     ready = asyncio.Event()
@@ -454,6 +468,7 @@ def config_set_defaults(config: ConfigParser) -> None:
 
 
 def run():
+    install_cni_assets()
     config = ConfigParser()
     config.read('config/server.ini')
     config_set_defaults(config)
