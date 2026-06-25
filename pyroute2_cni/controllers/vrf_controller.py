@@ -18,8 +18,8 @@ from pyroute2_cni.crds.vrf_node_config import (
     VRFNodeConfig,
     parse_vrf_node_config,
 )
-from pyroute2_cni.firewall import FirewallManager
-from pyroute2_cni.frr_manager import FRRManager
+from pyroute2_cni.managers.firewall_manager import FirewallManager
+from pyroute2_cni.managers.frr_manager import FRRManager
 
 
 def set_sysctl(config: dict[str, int]) -> None:

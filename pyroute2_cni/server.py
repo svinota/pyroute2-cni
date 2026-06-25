@@ -23,8 +23,8 @@ from pyroute2_cni.address_pool import AddressPool
 from pyroute2_cni.controllers.namespace_controller import NamespaceController
 from pyroute2_cni.controllers.vrf_controller import VRFController
 from pyroute2_cni.controllers.vrnc_controller import VRFNodeConfigController
-from pyroute2_cni.frr_manager import FRRManager
 from pyroute2_cni.kubernetes import get_node_ip
+from pyroute2_cni.managers.frr_manager import FRRManager
 from pyroute2_cni.network import CNIError
 from pyroute2_cni.protocols import PluginProtocol
 from pyroute2_cni.request import CNIRequest
