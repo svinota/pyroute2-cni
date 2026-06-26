@@ -84,9 +84,6 @@ spec:
       served: true
       storage: true
       additionalPrinterColumns:
-        - name: Mode
-          type: string
-          jsonPath: .spec.mode
         - name: Enabled
           type: boolean
           jsonPath: .spec.enabled
@@ -106,28 +103,18 @@ spec:
           properties:
             spec:
               type: object
-              required: ["mode", "enabled", "priority", "fileName", "plugins"]
+              required: ["enabled", "priority", "plugins"]
               properties:
-                mode:
-                  type: string
-                  enum: ["primary", "chained", "disabled"]
                 enabled:
                   type: boolean
                 priority:
                   type: integer
-                fileName:
-                  type: string
                 plugins:
                   type: array
                   items:
                     type: object
-                    required: ["type"]
-                    properties:
-                      type:
-                        type: string
-                      raw:
-                        type: object
-                        additionalProperties: true
+                    x-kubernetes-preserve-unknown-fields: true
+                    additionalProperties: true
             status:
               type: object
               properties:

@@ -21,7 +21,7 @@ rules:
     verbs: ["get", "patch", "update"]
   - apiGroups: ["cni.pyroute2.org"]
     resources: ["cniconfigs"]
-    verbs: ["get", "list", "watch"]
+    verbs: ["get", "list", "watch", "create", "patch", "update", "delete"]
   - apiGroups: ["cni.pyroute2.org"]
     resources: ["cniconfigs/status"]
     verbs: ["get", "patch", "update"]
