@@ -1,0 +1,60 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: frr-config
+  namespace: pyroute2-cni
+data:
+  frr.conf.tpl: |
+    !
+    service integrated-vtysh-config
+    !
+    $vrf_sections
+    !
+    router bgp 65000
+     bgp router-id $router_id
+     neighbor PR2 peer-group
+     neighbor PR2 remote-as internal
+    $peer_records
+     !
+     address-family ipv4 unicast
+      network $router_id/32
+     exit-address-family
+     !
+     address-family l2vpn evpn
+      neighbor PR2 activate
+      advertise-all-vni
+      advertise-svi-ip
+     exit-address-family
+    exit
+    !
+    $vrf_router_sections
+    !
+    end
+  vtysh.conf: |
+    service integrated-vtysh-config
+  daemons: |
+    bgpd=yes
+    vtysh_enable=yes
+    zebra_options="  -A 127.0.0.1 -s 90000000"
+    bgpd_options="   -A 127.0.0.1"
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: server-config
+  namespace: pyroute2-cni
+data:
+  server.ini: |
+    [api]
+    socket_path_api = /var/run/pyroute2/api
+    socket_path_fd = /var/run/pyroute2/fdpass
+
+    [default]
+    prefix = 10.244.0.0
+    prefixlen = 16
+    system_vrf_type = l3vni
+
+    [logging]
+    level = info
