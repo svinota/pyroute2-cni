@@ -9,6 +9,8 @@ metadata:
     k8s-app: pyroute2-cm
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: pyroute2-cm
@@ -18,6 +20,7 @@ spec:
         app: pyroute2-cm
     spec:
       serviceAccountName: pyroute2-cni-sa
+      hostNetwork: true
       containers:
       - name: pyroute2-cm
         image: ghcr.io/svinota/pyroute2-cni:0.0.705

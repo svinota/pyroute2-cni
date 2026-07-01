@@ -3,6 +3,7 @@ import logging
 from configparser import ConfigParser
 from typing import Any
 
+from pyroute2_cni.config_defaults import DEFAULT_LOG_LEVEL, config_set_defaults
 from pyroute2_cni.controllers.cniconfig_controller import CNIConfigController
 
 
@@ -21,10 +22,11 @@ async def main(config: ConfigParser) -> None:
 def run() -> None:
     config = ConfigParser()
     config.read('config/server.ini')
+    config_set_defaults(config)
     logging.basicConfig(
         level=getattr(
             logging,
-            config.get('logging', 'level', fallback='INFO').upper(),
+            config.get('logging', 'level', fallback=DEFAULT_LOG_LEVEL).upper(),
             logging.INFO,
         )
     )

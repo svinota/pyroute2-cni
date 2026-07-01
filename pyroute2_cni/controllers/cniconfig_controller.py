@@ -2,11 +2,18 @@ import logging
 import time
 from configparser import ConfigParser
 
+from kubernetes.client.exceptions import ApiException
+
 from pyroute2_cni.controllers.base_crd_controller import BaseCRDWatchController
 from pyroute2_cni.crds.cni_config import (
     CNIConfig,
     default_cni_config,
     parse_cni_config,
+)
+from pyroute2_cni.crds.cni_config_selection import (
+    CNIConfigSelection,
+    CNIConfigSelectionActiveRef,
+    parse_cni_config_selection,
 )
 
 
@@ -70,10 +77,44 @@ class CNIConfigController(BaseCRDWatchController[CNIConfig]):
                         config.name,
                         {'status': {'active': desired_active}},
                     )
+                if active_name:
+                    self.reconcile_selection(active_name)
                 return listed_count
             except Exception as e:
                 logging.error('CNIConfig reconcile failed: %s', e)
                 time.sleep(1)
+
+    def reconcile_selection(self, active_name: str) -> None:
+        try:
+            selection = parse_cni_config_selection(
+                self.custom_api.get_cluster_custom_object(
+                    self.group, self.version, 'cniconfigselections', 'default'
+                )
+            )
+            if selection.active_ref.name == (active_name):
+                return
+            self.custom_api.patch_namespaced_custom_object(
+                self.group,
+                self.version,
+                '',
+                'cniconfigselections',
+                'default',
+                {'spec': {'activeRef': {'name': active_name}}},
+            )
+        except ApiException as e:
+            if e.status != 404:
+                raise
+            self.custom_api.create_cluster_custom_object(
+                self.group,
+                self.version,
+                'cniconfigselections',
+                CNIConfigSelection(
+                    name='default',
+                    generation=0,
+                    active_ref=CNIConfigSelectionActiveRef(name=active_name),
+                    status=None,
+                ).render(),
+            )
 
     async def ensure(self, cniconfig: CNIConfig) -> None:
         logging.info(f'CNIConfig ADD/MODIFY event: {cniconfig.name}')

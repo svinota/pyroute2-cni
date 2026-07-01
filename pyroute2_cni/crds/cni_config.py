@@ -17,6 +17,7 @@ class CNIConfig:
     generation: int
     enabled: bool
     priority: int
+    file_name: str
     plugins: list[dict[str, Any]]
     status: CNIConfigStatus | None
 
@@ -28,6 +29,7 @@ class CNIConfig:
             'spec': {
                 'enabled': self.enabled,
                 'priority': self.priority,
+                'fileName': self.file_name,
                 'plugins': self.plugins,
             },
         }
@@ -65,6 +67,7 @@ def parse_cni_config(item: dict[str, Any]) -> CNIConfig:
         generation=int(metadata.get('generation') or 0),
         enabled=bool(spec.get('enabled', False)),
         priority=int(spec.get('priority', 0)),
+        file_name=str(spec['fileName']),
         plugins=[dict(plugin) for plugin in (spec.get('plugins') or [])],
         status=parsed_status,
     )
@@ -79,6 +82,7 @@ def default_cni_config() -> CNIConfig:
         generation=0,
         enabled=True,
         priority=0,
+        file_name='99-pyroute2.conflist',
         plugins=[dict(plugin) for plugin in (conflist.get('plugins') or [])],
         status=CNIConfigStatus(ready=None, active=None, conditions=[]),
     )
