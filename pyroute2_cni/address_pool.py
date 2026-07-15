@@ -12,7 +12,8 @@ from pyroute2 import AsyncIPRoute
 
 from kubernetes import client as k8s_client
 from kubernetes import config as k8s_config  # type: ignore[attr-defined]
-from pyroute2_cni.crds.vrf_domain import parse_vrf_domain
+from pyroute2_cni.crds.vrf_domain import VRFDomain, parse_vrf_domain
+from pyroute2_cni.managers.gateway_manager import GatewayManager
 
 IPBLOCK_GROUP = 'ipam.pyroute2.org'
 IPBLOCK_VERSION = 'v1alpha1'
@@ -221,9 +222,44 @@ class AddressPool:
             IPBLOCK_GROUP, IPBLOCK_VERSION, IPBLOCK_PLURAL, name
         )
 
-    async def _cleanup_allocations(self, allocations: dict[str, str]) -> None:
+    def _vrf_domain_for_block(self, block: IPBlock) -> VRFDomain:
+        response = self.k8s_custom_api.list_cluster_custom_object(
+            'cni.pyroute2.org', 'v1alpha1', 'vrfdomains'
+        )
+        for item in response.get('items', []):
+            domain = parse_vrf_domain(item)
+            if domain.vrf == block.vrf_table:
+                return domain
+        raise KeyError(f'VRFDomain not found for vrf={block.vrf_table}')
+
+    async def _cleanup_allocations(self, block: IPBlock) -> None:
+        domain = self._vrf_domain_for_block(block)
+        gateway_ip = next(
+            (
+                IPv4Address(ip)
+                for ip, ref in block.allocations.items()
+                if ref == 'gateway'
+            ),
+            None,
+        )
+        if gateway_ip is not None:
+            bridge_name = domain.bridge_name()
+            async with AsyncIPRoute() as ipr:
+                dump = await ipr.poll(
+                    ipr.link, 'dump', ifname=bridge_name, timeout=15
+                )
+                if dump:
+                    bridge_idx = dump[0].get('index')
+                    if bridge_idx is not None:
+                        await GatewayManager(self.config).ensure(
+                            present=False,
+                            domain=domain,
+                            index=bridge_idx,
+                            address=gateway_ip.compressed,
+                            prefixlen=domain.bridge_prefixlen(),
+                        )
         async with AsyncIPRoute() as ipr:
-            for record in allocations:
+            for record in block.allocations:
                 dump = [
                     x async for x in await ipr.addr('dump', address=record)
                 ]
@@ -308,7 +344,7 @@ class AddressPool:
         for block in orphaned_blocks:
             logging.info(f'Deleting orphaned IPBlock {block.name}')
             try:
-                await self._cleanup_allocations(block.allocations)
+                await self._cleanup_allocations(block)
                 self._delete_block(block.name)
             except ApiException as err:
                 logging.warning(
@@ -325,7 +361,7 @@ class AddressPool:
             empty_block: IPBlock = empty_blocks.pop(0)
             logging.info(f'Deleting IPBlock {empty_block.name}')
             try:
-                await self._cleanup_allocations(empty_block.allocations)
+                await self._cleanup_allocations(empty_block)
                 self._delete_block(empty_block.name)
                 deletions += 1
             except ApiException as err:

@@ -49,7 +49,7 @@ class VRFController(BaseCRDWatchController[VRFDomain]):
         super().__init__()
         self.config = config
         self.firewall = FirewallManager(config)
-        self.gateway_manager = GatewayManager()
+        self.gateway_manager = GatewayManager(config)
         self.address_pool = address_pool
         self.frr_manager = frr_manager
         self.host_link: int = 0
@@ -187,6 +187,8 @@ class VRFController(BaseCRDWatchController[VRFDomain]):
             )
             bridge_ipaddr = allocation.gateway.compressed
             await self.gateway_manager.ensure(
+                present=True,
+                domain=domain,
                 index=br_idx,
                 address=bridge_ipaddr,
                 prefixlen=domain.bridge_prefixlen(),

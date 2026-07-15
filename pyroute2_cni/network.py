@@ -82,7 +82,7 @@ class Plugin(PluginProtocol):
         self, config: ConfigParser, address_pool: AddressPool
     ) -> None:
         self.config = config
-        self.gateway_manager = GatewayManager()
+        self.gateway_manager = GatewayManager(config)
         self.address_pool = address_pool
         self.is_control_plane = False
         self.on_frr_ready: Callable[[], None] | None = None
@@ -193,6 +193,8 @@ class Plugin(PluginProtocol):
 
             # ensure gateway address
             await self.gateway_manager.ensure(
+                present=True,
+                domain=domain,
                 index=bridge_idx,
                 address=bridge_ipaddr,
                 prefixlen=domain.bridge_prefixlen(),
