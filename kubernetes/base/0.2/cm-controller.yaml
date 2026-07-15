@@ -21,6 +21,10 @@ spec:
     spec:
       serviceAccountName: pyroute2-cni-sa
       hostNetwork: true
+      tolerations:
+        - key: node.kubernetes.io/not-ready
+          operator: Exists
+          effect: NoSchedule
       containers:
       - name: pyroute2-cm
         image: ghcr.io/svinota/pyroute2-cni:0.0.705
