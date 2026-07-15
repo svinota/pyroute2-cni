@@ -20,6 +20,7 @@ from pyroute2_cni.crds.vrf_node_config import (
 )
 from pyroute2_cni.managers.firewall_manager import FirewallManager
 from pyroute2_cni.managers.frr_manager import FRRManager
+from pyroute2_cni.managers.gateway_manager import GatewayManager
 
 
 def set_sysctl(config: dict[str, int]) -> None:
@@ -48,6 +49,7 @@ class VRFController(BaseCRDWatchController[VRFDomain]):
         super().__init__()
         self.config = config
         self.firewall = FirewallManager(config)
+        self.gateway_manager = GatewayManager()
         self.address_pool = address_pool
         self.frr_manager = frr_manager
         self.host_link: int = 0
@@ -184,9 +186,7 @@ class VRFController(BaseCRDWatchController[VRFDomain]):
                 network, domain.ipblocklen, domain.vrf, is_gateway=True
             )
             bridge_ipaddr = allocation.gateway.compressed
-            await ipr.ensure(
-                ipr.addr,
-                present=True,
+            await self.gateway_manager.ensure(
                 index=br_idx,
                 address=bridge_ipaddr,
                 prefixlen=domain.bridge_prefixlen(),

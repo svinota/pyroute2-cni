@@ -14,6 +14,7 @@ from pyroute2.common import uifname
 from pyroute2_cni.address_pool import AddressPool
 from pyroute2_cni.crds.vrf_domain import parse_vrf_domain
 from pyroute2_cni.kubernetes import get_pod_tag
+from pyroute2_cni.managers.gateway_manager import GatewayManager
 from pyroute2_cni.protocols import PluginProtocol
 from pyroute2_cni.request import CNIRequest
 
@@ -81,6 +82,7 @@ class Plugin(PluginProtocol):
         self, config: ConfigParser, address_pool: AddressPool
     ) -> None:
         self.config = config
+        self.gateway_manager = GatewayManager()
         self.address_pool = address_pool
         self.is_control_plane = False
         self.on_frr_ready: Callable[[], None] | None = None
@@ -190,9 +192,7 @@ class Plugin(PluginProtocol):
             await ipr_main.brport('set', index=veth[0].get('index'), mode=1)
 
             # ensure gateway address
-            await ipr_main.ensure(
-                ipr_main.addr,
-                present=True,
+            await self.gateway_manager.ensure(
                 index=bridge_idx,
                 address=bridge_ipaddr,
                 prefixlen=domain.bridge_prefixlen(),
