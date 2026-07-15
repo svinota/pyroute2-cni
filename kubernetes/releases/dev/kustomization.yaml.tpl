@@ -2,7 +2,7 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
 resources:
-  - ../../base/0.1
+  - ../../base/0.2
 
 images:
   - name: ghcr.io/svinota/pyroute2-cni

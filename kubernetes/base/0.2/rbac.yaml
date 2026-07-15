@@ -1,0 +1,61 @@
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: pyroute2-cni-sa
+  namespace: pyroute2-cni
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: pyroute2-cni-clusterrole
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces", "pods", "nodes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["cni.pyroute2.org"]
+    resources: ["vrfnodeconfigs"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["cni.pyroute2.org"]
+    resources: ["vrfnodeconfigs/status"]
+    verbs: ["get", "patch", "update"]
+  - apiGroups: ["cni.pyroute2.org"]
+    resources: ["cniconfigs"]
+    verbs: ["get", "list", "watch", "create", "patch", "update", "delete"]
+  - apiGroups: ["cni.pyroute2.org"]
+    resources: ["cniconfigs/status"]
+    verbs: ["get", "patch", "update"]
+  - apiGroups: ["cni.pyroute2.org"]
+    resources: ["cniconfigselections"]
+    verbs: ["get", "list", "watch", "create", "patch", "update", "delete"]
+  - apiGroups: ["cni.pyroute2.org"]
+    resources: ["cniconfigselections/status"]
+    verbs: ["get", "patch", "update"]
+  - apiGroups: ["cni.pyroute2.org"]
+    resources: ["vrfdomainbindings"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["cni.pyroute2.org"]
+    resources: ["vrfdomains"]
+    verbs: ["get", "list", "watch", "create", "patch", "update", "delete"]
+  - apiGroups: ["cni.pyroute2.org"]
+    resources: ["vrfdomains/status"]
+    verbs: ["get", "patch", "update"]
+  - apiGroups: ["ipam.pyroute2.org"]
+    resources: ["ipblocks"]
+    verbs: ["get", "list", "watch", "create", "patch", "update", "delete"]
+  - apiGroups: ["ipam.pyroute2.org"]
+    resources: ["ipblocks/status"]
+    verbs: ["get", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: pyroute2-cni-binding
+subjects:
+  - kind: ServiceAccount
+    name: pyroute2-cni-sa
+    namespace: pyroute2-cni
+roleRef:
+  kind: ClusterRole
+  name: pyroute2-cni-clusterrole
+  apiGroup: rbac.authorization.k8s.io

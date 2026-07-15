@@ -11,7 +11,7 @@ from pyroute2_cni.crds.vrf_node_config import (
     parse_vrf_node_config,
     render_vrf_node_config_conditions,
 )
-from pyroute2_cni.frr_manager import FRRManager
+from pyroute2_cni.managers.frr_manager import FRRManager
 
 
 class VRFNodeConfigEventType(StrEnum):

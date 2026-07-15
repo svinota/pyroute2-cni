@@ -4,8 +4,8 @@ import threading
 from functools import partial
 from typing import Any, Generic, TypeVar
 
-from kubernetes import client as k8s_client
 from pyroute2_cni.controllers.watch_helper import run_watch_loop
+from pyroute2_cni.kubernetes import get_custom_objects_api
 
 T = TypeVar('T')
 
@@ -17,7 +17,7 @@ class BaseCRDWatchController(Generic[T]):
     watch_name = 'crd'
 
     def __init__(self) -> None:
-        self.custom_api = k8s_client.CustomObjectsApi()
+        self.custom_api = get_custom_objects_api()
         self._generation_cache: dict[str, int] = {}
 
     async def resync(self) -> None:

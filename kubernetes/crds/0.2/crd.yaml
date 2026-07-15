@@ -1,0 +1,431 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: ipblocks.ipam.pyroute2.org
+spec:
+  group: ipam.pyroute2.org
+  scope: Cluster
+  names:
+    plural: ipblocks
+    singular: ipblock
+    kind: IPBlock
+    shortNames:
+      - ipb
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      additionalPrinterColumns:
+        - name: CIDR
+          type: string
+          jsonPath: .spec.cidr
+        - name: Node
+          type: string
+          jsonPath: .spec.nodeName
+        - name: VRF
+          type: integer
+          jsonPath: .spec.vrfTable
+        - name: Allocated
+          type: integer
+          jsonPath: .status.allocated
+        - name: Capacity
+          type: integer
+          jsonPath: .status.capacity
+      schema:
+        openAPIV3Schema:
+          type: object
+          required: ["spec"]
+          properties:
+            spec:
+              type: object
+              required: ["cidr", "nodeName", "vrfTable"]
+              properties:
+                cidr:
+                  type: string
+                  description: "CIDR of the block, e.g. 10.244.1.0/26"
+                nodeName:
+                  type: string
+                  description: "Owner node name"
+                vrfTable:
+                  type: integer
+                  description: "VRF table id"
+            status:
+              type: object
+              properties:
+                allocated:
+                  type: integer
+                  description: "Allocated addresses"
+                capacity:
+                  type: integer
+                  description: "Total block capacity"
+                allocations:
+                  type: object
+                  description: "map[ip] -> reference"
+                  additionalProperties:
+                    type: string
+      subresources:
+        status: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: cniconfigs.cni.pyroute2.org
+spec:
+  group: cni.pyroute2.org
+  scope: Cluster
+  names:
+    plural: cniconfigs
+    singular: cniconfig
+    kind: CNIConfig
+    shortNames:
+      - cnic
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      additionalPrinterColumns:
+        - name: Enabled
+          type: boolean
+          jsonPath: .spec.enabled
+        - name: Priority
+          type: integer
+          jsonPath: .spec.priority
+        - name: Active
+          type: boolean
+          jsonPath: .status.active
+        - name: Applied
+          type: integer
+          jsonPath: .status.nodes.applied
+      schema:
+        openAPIV3Schema:
+          type: object
+          required: ["spec"]
+          properties:
+            spec:
+              type: object
+              required: ["fileName", "enabled", "priority", "plugins"]
+              properties:
+                fileName:
+                  type: string
+                enabled:
+                  type: boolean
+                priority:
+                  type: integer
+                plugins:
+                  type: array
+                  items:
+                    type: object
+                    x-kubernetes-preserve-unknown-fields: true
+                    additionalProperties: true
+            status:
+              type: object
+              properties:
+                active:
+                  type: boolean
+                nodes:
+                  type: object
+                  properties:
+                    applied:
+                      type: integer
+                      minimum: 0
+      subresources:
+        status: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: cniconfigselections.cni.pyroute2.org
+spec:
+  group: cni.pyroute2.org
+  scope: Cluster
+  names:
+    plural: cniconfigselections
+    singular: cniconfigselection
+    kind: CNIConfigSelection
+    shortNames:
+      - cnics
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      additionalPrinterColumns:
+        - name: Active
+          type: string
+          jsonPath: .spec.activeRef.name
+      schema:
+        openAPIV3Schema:
+          type: object
+          required: ["spec"]
+          properties:
+            spec:
+              type: object
+              required: ["activeRef"]
+              properties:
+                activeRef:
+                  type: object
+                  required: ["name"]
+                  properties:
+                    name:
+                      type: string
+            status:
+              type: object
+              properties:
+                observedGeneration:
+                  type: integer
+      subresources:
+        status: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: vrfdomains.cni.pyroute2.org
+spec:
+  group: cni.pyroute2.org
+  scope: Cluster
+  names:
+    plural: vrfdomains
+    singular: vrfdomain
+    kind: VRFDomain
+    shortNames:
+      - vrd
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      additionalPrinterColumns:
+        - name: VRF
+          type: integer
+          jsonPath: .spec.vrf
+        - name: Table
+          type: integer
+          jsonPath: .spec.table
+        - name: Prefix
+          type: string
+          jsonPath: .spec.prefix
+        - name: PrefixLen
+          type: integer
+          jsonPath: .spec.prefixlen
+        - name: IPBlockLen
+          type: integer
+          jsonPath: .spec.ipblocklen
+      schema:
+        openAPIV3Schema:
+          type: object
+          required: ["spec"]
+          properties:
+            spec:
+              type: object
+              required: ["vrf", "table", "prefix", "prefixlen", "ipblocklen", "attachments"]
+              properties:
+                vrf:
+                  type: integer
+                  description: "VRF id"
+                table:
+                  type: integer
+                  description: "Routing table id"
+                prefix:
+                  type: string
+                  description: "Pod network prefix"
+                prefixlen:
+                  type: integer
+                  description: "Pod network prefix length"
+                ipblocklen:
+                  type: integer
+                  description: "IPBlock sub-prefix length"
+                attachments:
+                  type: array
+                  items:
+                    type: object
+                    required: ["type"]
+                    properties:
+                      type:
+                        type: string
+                        enum: ["l2vni", "l3vni"]
+                        description: "Attachment type to be deployed in the VRF"
+                      vni:
+                        type: integer
+                        description: "VXLAN network identifier"
+                      local:
+                        type: string
+                        description: "VXLAN local VTEP"
+                      port:
+                        type: integer
+                        description: "VXLAN port"
+      subresources:
+        status: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: vrfdomainbindings.cni.pyroute2.org
+spec:
+  group: cni.pyroute2.org
+  scope: Cluster
+  names:
+    plural: vrfdomainbindings
+    singular: vrfdomainbinding
+    kind: VRFDomainBinding
+    shortNames:
+      - vrb
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      additionalPrinterColumns:
+        - name: Namespace
+          type: string
+          jsonPath: .spec.namespaceRef.name
+        - name: VRFDomain
+          type: string
+          jsonPath: .spec.vrfDomainRef.name
+      schema:
+        openAPIV3Schema:
+          type: object
+          required: ["spec"]
+          properties:
+            spec:
+              type: object
+              required: ["namespaceRef", "vrfDomainRef"]
+              properties:
+                namespaceRef:
+                  type: object
+                  required: ["name"]
+                  properties:
+                    name:
+                      type: string
+                      description: "Name of the target namespace"
+                vrfDomainRef:
+                  type: object
+                  required: ["name"]
+                  properties:
+                    name:
+                      type: string
+                      description: "Name of the cluster-scoped VRFDomain resource"
+      subresources:
+        status: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: vrfnodeconfigs.cni.pyroute2.org
+spec:
+  group: cni.pyroute2.org
+  scope: Cluster
+  names:
+    plural: vrfnodeconfigs
+    singular: vrfnodeconfig
+    kind: VRFNodeConfig
+    shortNames:
+      - vrnc
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      additionalPrinterColumns:
+        - name: routerId
+          type: string
+          jsonPath: .spec.routerId
+        - name: routeReflectors
+          type: integer
+          jsonPath: .status.routeReflectorsCount
+        - name: interfaces
+          type: integer
+          jsonPath: .status.interfacesCount
+        - name: Accepted
+          type: boolean
+          jsonPath: .status.accepted
+        - name: Ready
+          type: boolean
+          jsonPath: .status.ready
+      schema:
+        openAPIV3Schema:
+          type: object
+          required: ["spec"]
+          properties:
+            spec:
+              type: object
+              required: ["nodeRef", "interfaces"]
+              properties:
+                nodeRef:
+                  type: object
+                  required: ["name"]
+                  properties:
+                    name:
+                      type: string
+                      description: "Name of the target node"
+                routerId:
+                  type: string
+                  description: "Preferred router ID for this node"
+                routeReflectors:
+                  type: array
+                  items:
+                    type: string
+                  description: "Explicit BGP route reflector peers for this node"
+                interfaces:
+                  type: array
+                  items:
+                    type: object
+                    required: ["name", "local"]
+                    properties:
+                      name:
+                        type: string
+                        description: "Interface name"
+                      local:
+                        type: string
+                        description: "Preferred local address"
+            status:
+              type: object
+              properties:
+                accepted:
+                  type: boolean
+                ready:
+                  type: boolean
+                routeReflectorsCount:
+                  type: integer
+                  minimum: 0
+                interfacesCount:
+                  type: integer
+                  minimum: 0
+                conditions:
+                  type: array
+                  x-kubernetes-list-type: map
+                  x-kubernetes-list-map-keys:
+                    - type
+                  items:
+                    type: object
+                    required:
+                      - type
+                      - status
+                      - observedGeneration
+                      - reason
+                      - message
+                      - lastTransitionTime
+                    properties:
+                      type:
+                        type: string
+                        enum:
+                          - "Ready"
+                          - "Accepted"
+                      status:
+                        type: string
+                        enum:
+                          - "True"
+                          - "False"
+                          - "Unknown"
+                      observedGeneration:
+                        type: integer
+                        format: int64
+                        minimum: 0
+                      reason:
+                        type: string
+                        minLength: 1
+                        maxLength: 1024
+                        pattern: '^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$'
+                      message:
+                        type: string
+                        maxLength: 32768
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+      subresources:
+        status: {}

@@ -20,21 +20,23 @@ from typing import Any, Awaitable, Callable, Optional
 from pydantic import ValidationError
 
 from pyroute2_cni.address_pool import AddressPool
+from pyroute2_cni.config_defaults import (
+    DEFAULT_LOG_LEVEL,
+    READINESS_HOST,
+    READINESS_PORT,
+    config_set_defaults,
+)
+from pyroute2_cni.controllers.cniconfigselection_controller import (
+    CNIConfigSelectionController,
+)
 from pyroute2_cni.controllers.namespace_controller import NamespaceController
 from pyroute2_cni.controllers.vrf_controller import VRFController
 from pyroute2_cni.controllers.vrnc_controller import VRFNodeConfigController
-from pyroute2_cni.frr_manager import FRRManager
-from pyroute2_cni.kubernetes import get_node_ip
+from pyroute2_cni.managers.frr_manager import FRRManager
 from pyroute2_cni.network import CNIError
 from pyroute2_cni.protocols import PluginProtocol
 from pyroute2_cni.request import CNIRequest
 
-READINESS_HOST = '0.0.0.0'
-READINESS_PORT = '24800'
-DEFAULT_LOG_LEVEL = 'INFO'
-GC_INTERVAL_SECONDS = '300'
-FW_INTERVAL_SECONDS = '30'
-CONFLIST_NAME = '05-chain.conflist'
 PLUGIN_NAME = 'pyroute2-cni-plugin'
 
 
@@ -335,19 +337,11 @@ def temp_asset_path(dir: Path, prefix: str):
 
 def install_cni_assets() -> None:
     image_dir = Path('/pyroute2-cni')
-    host_etc_dir = Path('/host/etc/cni/net.d')
     host_bin_dir = Path('/host/opt/cni/bin')
-    conflist_src = image_dir / CONFLIST_NAME
-    conflist_dst = host_etc_dir / CONFLIST_NAME
     plugin_src = image_dir / PLUGIN_NAME
-    if not conflist_src.is_file():
-        raise FileNotFoundError(f'Missing CNI conflist: {conflist_src}')
     if not plugin_src.is_file():
         raise FileNotFoundError(f'Missing CNI plugin: {plugin_src}')
-    host_etc_dir.mkdir(parents=True, exist_ok=True)
     host_bin_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(conflist_src, conflist_dst)
-    logging.info(f'Installed conflist: {conflist_dst}')
     plugin_dst = host_bin_dir / PLUGIN_NAME
     with temp_asset_path(host_bin_dir, f'.{PLUGIN_NAME}.') as temp_path:
         for _ in range(10):
@@ -404,6 +398,7 @@ async def main(config: ConfigParser) -> None:
     frr_manager = FRRManager('/pyroute2-cni/templates/frr.conf.tpl', config)
     vrf_controller = VRFController(config, address_pool, frr_manager)
     vrfnodeconfig_controller = VRFNodeConfigController(config, frr_manager)
+    cniconfigselection_controller = CNIConfigSelectionController(config)
     namespace_watch_task = asyncio.create_task(
         namespace_controller.watch(namespace_watch_queue, namespace_ready)
     )
@@ -413,6 +408,15 @@ async def main(config: ConfigParser) -> None:
     vrfnodeconfig_watch_task = asyncio.create_task(
         vrfnodeconfig_controller.watch(
             vrfnodeconfig_watch_queue, vrfnodeconfig_ready
+        )
+    )
+    cniconfigselection_watch_queue: asyncio.Queue[tuple[str, Any] | None] = (
+        asyncio.Queue()
+    )
+    cniconfigselection_ready = asyncio.Event()
+    cniconfigselection_watch_task = asyncio.create_task(
+        cniconfigselection_controller.watch(
+            cniconfigselection_watch_queue, cniconfigselection_ready
         )
     )
     address_pool_gc_task = asyncio.create_task(
@@ -431,7 +435,10 @@ async def main(config: ConfigParser) -> None:
     )
 
     await asyncio.gather(
-        namespace_ready.wait(), vrf_ready.wait(), vrfnodeconfig_ready.wait()
+        namespace_ready.wait(),
+        vrf_ready.wait(),
+        vrfnodeconfig_ready.wait(),
+        cniconfigselection_ready.wait(),
     )
     cni_server = CNIServer(config, registry, plugin)
     await cni_server.setup_endpoint()
@@ -446,6 +453,7 @@ async def main(config: ConfigParser) -> None:
                     namespace_watch_task,
                     vrf_domain_watch_task,
                     vrfnodeconfig_watch_task,
+                    cniconfigselection_watch_task,
                     address_pool_gc_task,
                     vrf_periodic_task,
                 ],
@@ -457,6 +465,7 @@ async def main(config: ConfigParser) -> None:
             namespace_watch_task,
             vrf_domain_watch_task,
             vrfnodeconfig_watch_task,
+            cniconfigselection_watch_task,
             address_pool_gc_task,
             vrf_periodic_task,
         )
@@ -464,6 +473,7 @@ async def main(config: ConfigParser) -> None:
         namespace_watch_task.cancel()
         vrf_domain_watch_task.cancel()
         vrfnodeconfig_watch_task.cancel()
+        cniconfigselection_watch_task.cancel()
         address_pool_gc_task.cancel()
         vrf_periodic_task.cancel()
         readiness_server.close()
@@ -475,31 +485,11 @@ async def main(config: ConfigParser) -> None:
         with contextlib.suppress(asyncio.CancelledError):
             await vrfnodeconfig_watch_task
         with contextlib.suppress(asyncio.CancelledError):
+            await cniconfigselection_watch_task
+        with contextlib.suppress(asyncio.CancelledError):
             await address_pool_gc_task
         with contextlib.suppress(asyncio.CancelledError):
             await vrf_periodic_task
-
-
-def config_set_defaults(config: ConfigParser) -> None:
-    config.setdefault('api', {})
-    config.setdefault('network', {})
-    config.setdefault('readiness', {})
-    config.setdefault('logging', {})
-    config.setdefault('default', {})
-    config['api'].setdefault('socket_path_api', '/var/run/pyroute2/api')
-    config['api'].setdefault('socket_path_fd', '/var/run/pyroute2/fdpass')
-    config['network'].setdefault('node_name', os.environ['NODE_NAME'])
-    node_ip = get_node_ip(config['network']['node_name'])
-    config['network'].setdefault('ipaddr', node_ip)
-    config['logging'].setdefault('level', DEFAULT_LOG_LEVEL)
-    config['default'].setdefault('vrf', '42')
-    config['default'].setdefault('ipblocklen', '26')
-    config['default'].setdefault('service_vrf_max', '512')
-    config['default'].setdefault('system_vrf_type', 'l3vni')
-    config['default'].setdefault('gc_interval_seconds', GC_INTERVAL_SECONDS)
-    config['default'].setdefault('fw_interval_seconds', FW_INTERVAL_SECONDS)
-    config['readiness'].setdefault('host', READINESS_HOST)
-    config['readiness'].setdefault('port', READINESS_PORT)
 
 
 def run():

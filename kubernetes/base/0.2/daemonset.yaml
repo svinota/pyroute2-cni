@@ -1,0 +1,148 @@
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: pyroute2-cni
+  namespace: pyroute2-cni
+  labels:
+    tier: node
+    app: pyroute2-cni
+    k8s-app: pyroute2-cni
+spec:
+  selector:
+    matchLabels:
+      app: pyroute2-cni
+  template:
+    metadata:
+      labels:
+        tier: node
+        app: pyroute2-cni
+    spec:
+      initContainers:
+      - name: init-frr-config
+        image: busybox:1.36
+        command:
+        - sh
+        - -ec
+        - cp -a /config/. /etc/frr/
+        volumeMounts:
+        - name: frr-conf
+          mountPath: /etc/frr
+        - name: frr-templates
+          mountPath: /config
+      serviceAccountName: pyroute2-cni-sa
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: kubernetes.io/os
+                operator: In
+                values:
+                - linux
+      hostNetwork: true
+      priorityClassName: system-node-critical
+      tolerations:
+      - operator: Exists
+        effect: NoSchedule
+      containers:
+
+      - name: pyroute2-frr
+        image: ghcr.io/svinota/pyroute2-frr:0.0.9
+        securityContext:
+          privileged: true
+          appArmorProfile:
+            type: Unconfined
+        ports:
+        - name: frr-probe
+          containerPort: 24801
+          protocol: TCP
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: frr-probe
+          periodSeconds: 5
+          timeoutSeconds: 1
+        livenessProbe:
+          httpGet:
+            path: /livez
+            port: frr-probe
+          periodSeconds: 10
+          timeoutSeconds: 1
+        volumeMounts:
+        - name: frr-run
+          mountPath: /var/run/frr
+        - name: frr-conf
+          mountPath: /etc/frr
+
+      - name: pyroute2-cni
+        image: ghcr.io/svinota/pyroute2-cni:0.0.705
+        command:
+        - /usr/local/bin/pyroute2-cni
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "100Mi"
+        ports:
+        - name: cni-probe
+          containerPort: 24800
+          protocol: TCP
+        securityContext:
+          privileged: true
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: cni-probe
+          periodSeconds: 5
+          timeoutSeconds: 1
+        livenessProbe:
+          httpGet:
+            path: /livez
+            port: cni-probe
+          periodSeconds: 10
+          timeoutSeconds: 1
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        volumeMounts:
+        - name: host-root
+          mountPath: /host
+        - name: pyroute2-run
+          mountPath: /var/run/pyroute2
+        - name: frr-run
+          mountPath: /var/run/frr
+        - name: frr-conf
+          mountPath: /etc/frr
+        - name: server-config
+          mountPath: /pyroute2-cni/config
+        - name: frr-templates
+          mountPath: /pyroute2-cni/templates
+
+      volumes:
+      - name: host-root
+        hostPath:
+          path: /
+      - name: pyroute2-run
+        hostPath:
+          path: /var/run/pyroute2
+          type: DirectoryOrCreate
+      - name: frr-run
+        emptyDir: {}
+      - name: frr-conf
+        emptyDir: {}
+      - name: server-config
+        configMap:
+          name: server-config
+      - name: frr-templates
+        configMap:
+          name: frr-config

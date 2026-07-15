@@ -1,0 +1,41 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pyroute2-cm
+  namespace: pyroute2-cni
+  labels:
+    app: pyroute2-cm
+    k8s-app: pyroute2-cm
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: pyroute2-cm
+  template:
+    metadata:
+      labels:
+        app: pyroute2-cm
+    spec:
+      serviceAccountName: pyroute2-cni-sa
+      hostNetwork: true
+      containers:
+      - name: pyroute2-cm
+        image: ghcr.io/svinota/pyroute2-cni:0.0.705
+        command:
+        - /usr/local/bin/pyroute2-cm
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
