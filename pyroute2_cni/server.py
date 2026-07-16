@@ -493,17 +493,17 @@ async def main(config: ConfigParser) -> None:
 
 
 def run():
-    install_cni_assets()
     config = ConfigParser()
     config.read('config/server.ini')
     config_set_defaults(config)
-    logging.basicConfig(
-        level=getattr(
-            logging,
-            config.get('logging', 'level', fallback=DEFAULT_LOG_LEVEL).upper(),
-            logging.INFO,
-        )
+    logging_level = getattr(
+        logging,
+        config.get('logging', 'level', fallback=DEFAULT_LOG_LEVEL).upper(),
+        logging.INFO,
     )
+    logging.basicConfig(level=logging_level)
+
+    install_cni_assets()
     try:
         asyncio.run(main(config=config))
     except asyncio.exceptions.CancelledError:
