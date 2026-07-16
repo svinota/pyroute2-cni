@@ -73,6 +73,26 @@ def namespace_gone(v1: client.CoreV1Api, name: str) -> bool:
     return False
 
 
+def vrd_gone(custom_api: client.CustomObjectsApi, name: str) -> bool:
+    try:
+        custom_api.get_cluster_custom_object(
+            'cni.pyroute2.org', 'v1alpha1', 'vrfdomains', name
+        )
+    except client.exceptions.ApiException as err:
+        return err.status == 404
+    return False
+
+
+def vrb_gone(custom_api: client.CustomObjectsApi, name: str) -> bool:
+    try:
+        custom_api.get_cluster_custom_object(
+            'cni.pyroute2.org', 'v1alpha1', 'vrfdomainbindings', name
+        )
+    except client.exceptions.ApiException as err:
+        return err.status == 404
+    return False
+
+
 def unique_name(prefix: str) -> str:
     return f'{prefix}-{uuid.uuid4().hex[:8]}'
 

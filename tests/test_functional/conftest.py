@@ -10,6 +10,8 @@ from .utils import (
     pod_gone,
     pod_running,
     unique_name,
+    vrb_gone,
+    vrd_gone,
     wait_for,
 )
 
@@ -68,6 +70,8 @@ def env_namespace():
         custom_api.delete_cluster_custom_object(
             'cni.pyroute2.org', 'v1alpha1', 'vrfdomains', vrfdomain_name
         )
+        wait_for(lambda: vrb_gone(custom_api, vrfdomainbinding_name))
+        wait_for(lambda: vrd_gone(custom_api, vrfdomain_name))
 
 
 @pytest.fixture
