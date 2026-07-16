@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 from configparser import ConfigParser
@@ -39,6 +40,7 @@ class VTEPInfo:
 class VRFController(BaseCRDWatchController[VRFDomain]):
     plural = 'vrfdomains'
     watch_name = 'vrfdomain'
+    finalizer = 'cni.pyroute2.org/vrfdomains'
 
     def __init__(
         self,
@@ -220,6 +222,10 @@ class VRFController(BaseCRDWatchController[VRFDomain]):
         return br_idx
 
     async def ensure(self, domain: VRFDomain) -> None:
+        if domain.deletion_timestamp:
+            await self._finalize_deletion(domain)
+            return
+        await self.ensure_finalizer(present=True, domain=domain)
         vrf_idx = await self.ensure_vrf(domain)
         bridges: dict[str, int] = {}
         for attachment in domain.attachments:
@@ -236,6 +242,72 @@ class VRFController(BaseCRDWatchController[VRFDomain]):
                     pass
         await self.firewall.ensure_vrf_firewall(domain)
 
+    async def ensure_finalizer(self, present: bool, domain: VRFDomain) -> None:
+        try:
+            response = (
+                self.frr_manager.vrf_custom_api.get_cluster_custom_object(
+                    'cni.pyroute2.org', 'v1alpha1', 'vrfdomains', domain.name
+                )
+            )
+        except ApiException as e:
+            if e.status == 404:
+                logging.info(
+                    f'skip finalizer update for missing VRFDomain '
+                    f'{domain.name}'
+                )
+                return
+            raise
+        metadata = response.get('metadata') or {}
+        old_finalizers = set(metadata.get('finalizers') or [])
+        new_finalizers = old_finalizers.copy()
+        fix_finalizer = (
+            new_finalizers.add if present else new_finalizers.discard
+        )
+        fix_finalizer(self.finalizer)
+        if old_finalizers == new_finalizers:
+            return
+        body = {'metadata': {'finalizers': list(new_finalizers)}}
+        try:
+            self.frr_manager.vrf_custom_api.patch_cluster_custom_object(
+                'cni.pyroute2.org', 'v1alpha1', 'vrfdomains', domain.name, body
+            )
+        except ApiException as e:
+            if e.status == 404:
+                logging.info(
+                    f'skip finalizer patch for missing VRFDomain '
+                    f'{domain.name}'
+                )
+                return
+            if e.status == 409:
+                logging.warning(
+                    f'stale VRFDomain while updating finalizer: '
+                    f'{domain.name}'
+                )
+                return
+            raise
+
+    async def _finalize_deletion(self, domain: VRFDomain) -> None:
+        for attempt in range(30):
+            await self.address_pool.cleanup_domain(domain)
+            if not self._has_domain_blocks(domain):
+                await self.ensure_finalizer(present=False, domain=domain)
+                return
+            logging.info(
+                f'waiting for IPBlocks to disappear for VRFDomain '
+                f'{domain.name}, attempt {attempt + 1}/30'
+            )
+            await asyncio.sleep(1)
+        logging.warning(
+            f'giving up waiting for IPBlocks to disappear for VRFDomain '
+            f'{domain.name}'
+        )
+
+    def _has_domain_blocks(self, domain: VRFDomain) -> bool:
+        return any(
+            block.vrf_table == domain.vrf
+            for block in self.address_pool._node_block_items()
+        )
+
     async def reconcile_firewall(self) -> int:
         counter = 0
         for domain in self.frr_manager.vrf_domain_items().values():
@@ -244,6 +316,7 @@ class VRFController(BaseCRDWatchController[VRFDomain]):
         return counter
 
     async def remove(self, domain: VRFDomain) -> None:
+        await self.address_pool.cleanup_domain(domain)
         for attachment in domain.attachments:
             match attachment.kind:
                 case 'l2vni':

@@ -232,8 +232,16 @@ class AddressPool:
                 return domain
         raise KeyError(f'VRFDomain not found for vrf={block.vrf_table}')
 
-    async def _cleanup_allocations(self, block: IPBlock) -> None:
-        domain = self._vrf_domain_for_block(block)
+    async def _cleanup_allocations(
+        self, block: IPBlock, domain: VRFDomain | None = None
+    ) -> None:
+        if domain is None:
+            try:
+                domain = self._vrf_domain_for_block(block)
+            except KeyError as e:
+                logging.error(f'Loading VRFDomain for block {block}: {e}')
+                return
+
         gateway_ip = next(
             (
                 IPv4Address(ip)
@@ -276,6 +284,27 @@ class AddressPool:
                         address=address.get('address'),
                         prefixlen=address.get('prefixlen'),
                     )
+
+    async def cleanup_domain(self, domain: VRFDomain) -> int:
+        deleted = 0
+        for block in self._node_block_items():
+            if block.vrf_table != domain.vrf:
+                continue
+            logging.info(
+                'Deleting IPBlock %s for VRFDomain %s', block.name, domain.name
+            )
+            try:
+                await self._cleanup_allocations(block, domain)
+                self._delete_block(block.name)
+                deleted += 1
+            except ApiException as err:
+                logging.warning(
+                    'failed to delete IPBlock %s for VRFDomain %s: %s',
+                    block.name,
+                    domain.name,
+                    err,
+                )
+        return deleted
 
     def _list_allocated_pods(self) -> list[RunningPod]:
         response = self.k8s_v1.list_pod_for_all_namespaces(

@@ -25,6 +25,7 @@ class VRFDomain:
     prefixlen: int
     ipblocklen: int
     attachments: list[VRFAttachment]
+    deletion_timestamp: str = ''
 
     @property
     def vrf_name(self) -> str:
@@ -73,10 +74,13 @@ class VRFDomain:
         return f'{self.bridge_prefix()}-{self.vrf}'
 
     def render(self) -> dict[str, Any]:
+        metadata: dict[str, Any] = {'name': self.name}
+        if self.deletion_timestamp:
+            metadata['deletionTimestamp'] = self.deletion_timestamp
         return {
             'apiVersion': 'cni.pyroute2.org/v1alpha1',
             'kind': 'VRFDomain',
-            'metadata': {'name': self.name},
+            'metadata': metadata,
             'spec': {
                 'vrf': self.vrf,
                 'table': self.table,
@@ -110,4 +114,5 @@ def parse_vrf_domain(item: dict[str, Any]) -> VRFDomain:
         prefixlen=int(spec['prefixlen']),
         ipblocklen=int(spec['ipblocklen']),
         attachments=attachments,
+        deletion_timestamp=str(metadata.get('deletionTimestamp') or ''),
     )
