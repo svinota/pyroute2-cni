@@ -21,6 +21,16 @@ Install
 Standard Kubernetes install
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
+Development version:
+
+.. code::
+
+    kubectl apply -k https://github.com/svinota/pyroute2-cni/kubernetes/crds/0.2/
+    kubectl wait --for=condition=Established crd/ipblocks.ipam.pyroute2.org
+    kubectl apply -k https://github.com/svinota/pyroute2-cni/kubernetes/releases/dev/
+
+Stable version:
+
 .. code::
 
     kubectl apply -k https://github.com/svinota/pyroute2-cni/kubernetes/crds/0.1/
