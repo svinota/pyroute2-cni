@@ -1,3 +1,4 @@
+---
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
@@ -251,6 +252,67 @@ spec:
                       port:
                         type: integer
                         description: "VXLAN port"
+      subresources:
+        status: {}
+
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: vrfroutingpolicies.cni.pyroute2.org
+spec:
+  group: cni.pyroute2.org
+  scope: Cluster
+  names:
+    plural: vrfroutingpolicies
+    singular: vrfroutingpolicy
+    kind: VRFRoutingPolicy
+    shortNames:
+      - vrp
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      additionalPrinterColumns:
+        - name: VRFDomain
+          type: string
+          jsonPath: .spec.vrfDomainRef.name
+      schema:
+        openAPIV3Schema:
+          type: object
+          required: ["spec"]
+          properties:
+            spec:
+              type: object
+              required: ["vrfDomainRef", "match"]
+              properties:
+                vrfDomainRef:
+                  type: object
+                  required: ["name"]
+                  properties:
+                    name:
+                      type: string
+                      description: "Name of the cluster-scoped VRFDomain resource"
+                match:
+                  type: array
+                  minItems: 1
+                  description: "RPDB selectors"
+                  items:
+                    type: object
+                    properties:
+                      dst:
+                        type: string
+                        description: "Destination network/prefixlen"
+                      src:
+                        type: string
+                        description: "Source network/prefixlen"
+                      oifname:
+                        type: string
+                        description: "Output interface"
+                      iifname:
+                        type: string
+                        description: "Input interface"
+
       subresources:
         status: {}
 ---

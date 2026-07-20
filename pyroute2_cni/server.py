@@ -31,6 +31,9 @@ from pyroute2_cni.controllers.cniconfigselection_controller import (
 )
 from pyroute2_cni.controllers.namespace_controller import NamespaceController
 from pyroute2_cni.controllers.vrf_controller import VRFController
+from pyroute2_cni.controllers.vrf_routing_policy_controller import (
+    VRFRoutingPolicyController,
+)
 from pyroute2_cni.controllers.vrnc_controller import VRFNodeConfigController
 from pyroute2_cni.managers.frr_manager import FRRManager
 from pyroute2_cni.network import CNIError
@@ -363,6 +366,7 @@ async def main(config: ConfigParser) -> None:
     namespace_ready = asyncio.Event()
     vrf_ready = asyncio.Event()
     vrfnodeconfig_ready = asyncio.Event()
+    vrfroutingpolicy_ready = asyncio.Event()
 
     await run_fd_receiver(
         registry, socket_path=config['api']['socket_path_fd']
@@ -394,10 +398,14 @@ async def main(config: ConfigParser) -> None:
     vrfnodeconfig_watch_queue: asyncio.Queue[tuple[str, Any] | None] = (
         asyncio.Queue()
     )
+    vrfroutingpolicy_watch_queue: asyncio.Queue[tuple[str, Any] | None] = (
+        asyncio.Queue()
+    )
     namespace_controller = NamespaceController(config)
     frr_manager = FRRManager('/pyroute2-cni/templates/frr.conf.tpl', config)
     vrf_controller = VRFController(config, address_pool, frr_manager)
     vrfnodeconfig_controller = VRFNodeConfigController(config, frr_manager)
+    vrfroutingpolicy_controller = VRFRoutingPolicyController(config)
     cniconfigselection_controller = CNIConfigSelectionController(config)
     namespace_watch_task = asyncio.create_task(
         namespace_controller.watch(namespace_watch_queue, namespace_ready)
@@ -408,6 +416,11 @@ async def main(config: ConfigParser) -> None:
     vrfnodeconfig_watch_task = asyncio.create_task(
         vrfnodeconfig_controller.watch(
             vrfnodeconfig_watch_queue, vrfnodeconfig_ready
+        )
+    )
+    vrfroutingpolicy_watch_task = asyncio.create_task(
+        vrfroutingpolicy_controller.watch(
+            vrfroutingpolicy_watch_queue, vrfroutingpolicy_ready
         )
     )
     cniconfigselection_watch_queue: asyncio.Queue[tuple[str, Any] | None] = (
@@ -438,6 +451,7 @@ async def main(config: ConfigParser) -> None:
         namespace_ready.wait(),
         vrf_ready.wait(),
         vrfnodeconfig_ready.wait(),
+        vrfroutingpolicy_ready.wait(),
         cniconfigselection_ready.wait(),
     )
     cni_server = CNIServer(config, registry, plugin)
@@ -453,6 +467,7 @@ async def main(config: ConfigParser) -> None:
                     namespace_watch_task,
                     vrf_domain_watch_task,
                     vrfnodeconfig_watch_task,
+                    vrfroutingpolicy_watch_task,
                     cniconfigselection_watch_task,
                     address_pool_gc_task,
                     vrf_periodic_task,
@@ -465,6 +480,7 @@ async def main(config: ConfigParser) -> None:
             namespace_watch_task,
             vrf_domain_watch_task,
             vrfnodeconfig_watch_task,
+            vrfroutingpolicy_watch_task,
             cniconfigselection_watch_task,
             address_pool_gc_task,
             vrf_periodic_task,
@@ -473,6 +489,7 @@ async def main(config: ConfigParser) -> None:
         namespace_watch_task.cancel()
         vrf_domain_watch_task.cancel()
         vrfnodeconfig_watch_task.cancel()
+        vrfroutingpolicy_watch_task.cancel()
         cniconfigselection_watch_task.cancel()
         address_pool_gc_task.cancel()
         vrf_periodic_task.cancel()
@@ -484,6 +501,8 @@ async def main(config: ConfigParser) -> None:
             await vrf_domain_watch_task
         with contextlib.suppress(asyncio.CancelledError):
             await vrfnodeconfig_watch_task
+        with contextlib.suppress(asyncio.CancelledError):
+            await vrfroutingpolicy_watch_task
         with contextlib.suppress(asyncio.CancelledError):
             await cniconfigselection_watch_task
         with contextlib.suppress(asyncio.CancelledError):

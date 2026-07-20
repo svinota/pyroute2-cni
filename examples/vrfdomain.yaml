@@ -23,3 +23,14 @@ spec:
     name: test-namespace
   vrfDomainRef:
     name: vrf-200
+---
+apiVersion: cni.pyroute2.org/v1alpha1
+kind: VRFRoutingPolicy
+metadata:
+  name: vrf-200-leak
+spec:
+  vrfDomainRef:
+    name: vrf-200
+  match:
+  - iifname: "lo"
+    dst: "10.150.0.0/16"

@@ -57,4 +57,4 @@ data:
     system_vrf_type = l3vni
 
     [logging]
-    level = debug
+    level = info

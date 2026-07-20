@@ -215,6 +215,7 @@ class FirewallManager:
                     hook='postrouting',
                     type='nat',
                     policy=1,
+                    priority=100,
                 )
 
             # 8<-------------------------------------------------------
@@ -235,6 +236,7 @@ class FirewallManager:
                     hook='prerouting',
                     type='filter',
                     policy=1,
+                    priority=-150,
                 )
 
             # 8<-------------------------------------------------------
