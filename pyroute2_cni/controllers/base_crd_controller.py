@@ -123,8 +123,13 @@ class BaseCRDWatchController(Generic[T]):
             args=(queue, loop, stop_event),
             daemon=True,
         )
+        logging.info('%s watch: starting resync', self.watch_name)
         await self.resync()
+        logging.info(
+            '%s watch: resync finished, starting worker', self.watch_name
+        )
         worker.start()
+        logging.info('%s watch: setting ready event', self.watch_name)
         ready.set()
         try:
             while True:

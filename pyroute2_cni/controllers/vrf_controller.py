@@ -201,6 +201,9 @@ class VRFController(BaseCRDWatchController[VRFDomain]):
             # NB: vxlan_link is the output device for VXLAN, not a
             #     master device; the master device will be the bridge
             #
+            logging.info(
+                'ensure_vni: fetching VTEP info for domain=%s', domain.name
+            )
             vtep_info = await self._fetch_vtep(domain, attachment)
             logging.info(f'vtep info: {vtep_info}')
             vx_idx = links.get(vx_ifname, {}).get('index') or (
@@ -217,8 +220,19 @@ class VRFController(BaseCRDWatchController[VRFDomain]):
                     state='up',
                 )
             )[0].get('index')
+            logging.info(
+                'ensure_vni: linking bridge->vrf br_idx=%s vrf_idx=%s',
+                br_idx,
+                vrf_idx,
+            )
             await ipr.link('set', index=br_idx, master=vrf_idx)
+            logging.info(
+                'ensure_vni: linking vxlan->bridge vx_idx=%s br_idx=%s',
+                vx_idx,
+                br_idx,
+            )
             await ipr.link('set', index=vx_idx, master=br_idx)
+            logging.info('ensure_vni: completed for domain=%s', domain.name)
         set_sysctl({f'net.ipv4.conf.{br_ifname}.rp_filter': 0})
         return br_idx
 
@@ -423,6 +437,7 @@ class VRFController(BaseCRDWatchController[VRFDomain]):
         return domain
 
     async def resync(self) -> None:
+        logging.info('vrf resync: start')
         await self.firewall.setup_tables()
         async with AsyncIPRoute() as ipr:
             logging.info('Trying to load VRF module')
@@ -442,16 +457,25 @@ class VRFController(BaseCRDWatchController[VRFDomain]):
             }
         )
 
+        logging.info('vrf resync: loading VRFDomain list')
         domains: dict[int, VRFDomain] = self.frr_manager.vrf_domain_items()
         default_vrf = int(self.config['default']['vrf'])
         if default_vrf not in domains:
+            logging.info('vrf resync: default VRF missing, creating')
             domains[default_vrf] = await self.make_default_vrf()
         vrfs: list[int] = [default_vrf] + list(
             filter(lambda x: x != default_vrf, sorted(domains))
         )
         sorted_domains = dict(((k, domains[k]) for k in vrfs))
+        logging.info(
+            'vrf resync: reconciling %s domains ordered_vrfs=%s',
+            len(sorted_domains),
+            list(sorted_domains.keys()),
+        )
         for vrf, domain in sorted_domains.items():
             if domain.network is None:
                 continue
             logging.info(f'VRFDomain: {domain.vrf}->{domain.network}')
+            logging.info('vrf resync: ensuring domain=%s', domain.name)
             await self.ensure(domain)
+        logging.info('vrf resync: complete')

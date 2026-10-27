@@ -46,8 +46,15 @@ class CNIConfigSelectionController(BaseCRDWatchController[CNIConfigSelection]):
             await self.reconcile(selections[0])
 
     async def reconcile(self, selection: CNIConfigSelection) -> None:
+        attempt = 0
         while True:
             try:
+                attempt += 1
+                logging.info(
+                    'CNIConfigSelection reconcile attempt=%s active_ref=%s',
+                    attempt,
+                    selection.active_ref.name,
+                )
                 response = self.custom_api.list_cluster_custom_object(
                     self.group, self.version, 'cniconfigs'
                 )
@@ -71,9 +78,14 @@ class CNIConfigSelectionController(BaseCRDWatchController[CNIConfigSelection]):
                     if config.name == active_name:
                         continue
                     self._remove_config(config)
+                logging.info(
+                    'CNIConfigSelection reconcile success attempt=%s', attempt
+                )
                 return
-            except Exception as e:
-                logging.error('CNIConfigSelection reconcile failed: %s', e)
+            except Exception:
+                logging.exception(
+                    'CNIConfigSelection reconcile failed attempt=%s', attempt
+                )
                 time.sleep(1)
 
     def _write_config(self, config: CNIConfig) -> None:

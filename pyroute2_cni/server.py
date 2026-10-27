@@ -447,15 +447,60 @@ async def main(config: ConfigParser) -> None:
         )
     )
 
-    await asyncio.gather(
-        namespace_ready.wait(),
-        vrf_ready.wait(),
-        vrfnodeconfig_ready.wait(),
-        vrfroutingpolicy_ready.wait(),
-        cniconfigselection_ready.wait(),
+    async def _log_readiness_wait() -> None:
+        while True:
+            logging.info(
+                (
+                    'waiting for controller readiness: '
+                    'namespace=%s vrf=%s vrfnodeconfig=%s '
+                    'vrfroutingpolicy=%s cniconfigselection=%s'
+                ),
+                namespace_ready.is_set(),
+                vrf_ready.is_set(),
+                vrfnodeconfig_ready.is_set(),
+                vrfroutingpolicy_ready.is_set(),
+                cniconfigselection_ready.is_set(),
+            )
+            await asyncio.sleep(1)
+
+    readiness_wait_log_task = asyncio.create_task(_log_readiness_wait())
+    try:
+        await asyncio.gather(
+            namespace_ready.wait(),
+            vrf_ready.wait(),
+            vrfnodeconfig_ready.wait(),
+            vrfroutingpolicy_ready.wait(),
+            cniconfigselection_ready.wait(),
+        )
+    finally:
+        readiness_wait_log_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await readiness_wait_log_task
+
+    logging.info(
+        'all controllers ready; creating CNI API socket at path=%s',
+        config['api']['socket_path_api'],
+    )
+    socket_parent = Path(config['api']['socket_path_api']).parent
+    logging.info(
+        'socket parent dir exists=%s writable=%s path=%s',
+        socket_parent.exists(),
+        os.access(socket_parent, os.W_OK),
+        socket_parent,
     )
     cni_server = CNIServer(config, registry, plugin)
-    await cni_server.setup_endpoint()
+    try:
+        await cni_server.setup_endpoint()
+        logging.info(
+            'CNI API socket created successfully at path=%s',
+            config['api']['socket_path_api'],
+        )
+    except Exception:
+        logging.exception(
+            'failed to create CNI API socket at path=%s',
+            config['api']['socket_path_api'],
+        )
+        raise
 
     loop = asyncio.get_event_loop()
     for signal_num in (signal.SIGTERM, signal.SIGINT, signal.SIGQUIT):
