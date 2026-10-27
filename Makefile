@@ -79,6 +79,10 @@ deploy: cni-image-build render-kustomization
 test nox:
 	$(call nox,-e ${session})
 
+.PHONY: list-sessions
+list-sessions:
+	$(call nox,-l)
+
 .PHONY: format
 format:
 	$(call nox,-e linter)
