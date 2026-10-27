@@ -25,6 +25,8 @@ EOF
 sudo tee /etc/sysctl.d/k8s.conf <<EOF
 net.bridge.bridge-nf-call-iptables = 1
 net.bridge.bridge-nf-call-ip6tables = 1
+fs.inotify.max_user_instances = 1024
+fs.inotify.max_user_watches = 524288
 net.ipv4.ip_forward = 1
 EOF
 sudo sysctl --system
