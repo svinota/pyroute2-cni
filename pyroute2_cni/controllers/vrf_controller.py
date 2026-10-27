@@ -366,12 +366,11 @@ class VRFController(BaseCRDWatchController[VRFDomain]):
             )
             await ipr.ensure(ipr.link, present=False, index=vrf1['index'])
             logging.info('Trying to calculate host_if')
-            default_route = await ipr.route('get', dst='1.1.1.1')
+            default_route = tuple(await ipr.route('get', dst='1.1.1.1'))
             self.host_link = default_route[0].get('oif')
             self.host_src = default_route[0].get('prefsrc') or '127.0.0.1'
-            self.host_ifname = (await ipr.link('get', index=self.host_link))[
-                0
-            ].get('ifname')
+            default_if = tuple(await ipr.link('get', index=self.host_link))
+            self.host_ifname = default_if[0].get('ifname')
             logging.info(
                 f'Host discovery: {self.host_link}:'
                 f'{self.host_ifname}:{self.host_src}'
