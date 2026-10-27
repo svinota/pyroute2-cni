@@ -4,6 +4,7 @@ import threading
 from functools import partial
 from typing import Any, Generic, TypeVar
 
+from pyroute2_cni.controllers.errors import is_transient_error
 from pyroute2_cni.controllers.watch_helper import run_watch_loop
 from pyroute2_cni.kubernetes import get_custom_objects_api
 
@@ -89,6 +90,29 @@ class BaseCRDWatchController(Generic[T]):
             return None
         return event_type, payload
 
+    def _on_reconcile_error(
+        self, event_type: str, payload: T, err: Exception
+    ) -> bool:
+        if is_transient_error(err):
+            logging.warning(
+                (
+                    '%s transient reconcile failure for event=%s payload=%r: '
+                    '%s; continuing watch loop'
+                ),
+                self.watch_name,
+                event_type,
+                payload,
+                err,
+            )
+            return True
+        logging.exception(
+            '%s reconcile failed for event=%s payload=%r',
+            self.watch_name,
+            event_type,
+            payload,
+        )
+        return False
+
     async def watch(
         self, queue: asyncio.Queue[tuple[str, T] | None], ready: asyncio.Event
     ) -> None:
@@ -115,16 +139,9 @@ class BaseCRDWatchController(Generic[T]):
                         await self.ensure(name)
                 except asyncio.CancelledError:
                     raise
-                except Exception:
-                    logging.exception(
-                        (
-                            '%s reconcile failed for event=%s payload=%r; '
-                            'continuing watch loop'
-                        ),
-                        self.watch_name,
-                        event_type,
-                        name,
-                    )
+                except Exception as e:
+                    if not self._on_reconcile_error(event_type, name, e):
+                        raise
         finally:
             stop_event.set()
             worker.join(timeout=5)

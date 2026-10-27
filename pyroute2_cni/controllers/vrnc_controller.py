@@ -1,3 +1,4 @@
+import contextlib
 import logging
 from configparser import ConfigParser
 from datetime import datetime, timezone
@@ -97,12 +98,14 @@ class VRFNodeConfigController(BaseCRDWatchController[VRFNodeConfig]):
         self._set_conditions(node_config, True, event_type)
 
     async def ensure(self, node_config: VRFNodeConfig) -> None:
-        try:
-            await self.reconcile(node_config, VRFNodeConfigEventType.MODIFY)
-        except Exception as e:
-            logging.error(f'VRFNodeConfig error: {e}')
-            self._set_conditions(node_config, False)
-            raise
+        await self.reconcile(node_config, VRFNodeConfigEventType.MODIFY)
+
+    def _on_reconcile_error(
+        self, event_type: str, payload: VRFNodeConfig, err: Exception
+    ) -> bool:
+        with contextlib.suppress(Exception):
+            self._set_conditions(payload, False)
+        return super()._on_reconcile_error(event_type, payload, err)
 
     async def remove(self, node_config: VRFNodeConfig) -> None:
         await self.reconcile(node_config, VRFNodeConfigEventType.DEL)
