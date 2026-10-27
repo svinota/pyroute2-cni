@@ -108,10 +108,23 @@ class BaseCRDWatchController(Generic[T]):
                 if item is None:
                     break
                 event_type, name = item
-                if event_type == 'DELETED':
-                    await self.remove(name)
-                else:
-                    await self.ensure(name)
+                try:
+                    if event_type == 'DELETED':
+                        await self.remove(name)
+                    else:
+                        await self.ensure(name)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logging.exception(
+                        (
+                            '%s reconcile failed for event=%s payload=%r; '
+                            'continuing watch loop'
+                        ),
+                        self.watch_name,
+                        event_type,
+                        name,
+                    )
         finally:
             stop_event.set()
             worker.join(timeout=5)
