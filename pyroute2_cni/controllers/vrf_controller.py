@@ -328,6 +328,50 @@ class VRFController(BaseCRDWatchController[VRFDomain]):
         await self.remove_vrf(domain)
         await self.firewall.remove_vrf_firewall(domain)
 
+    async def _discover_host_if_with_retry(
+        self, attempts: int = 10, delay_seconds: float = 1.0
+    ) -> None:
+        last_error: Exception | None = None
+        for attempt in range(1, attempts + 1):
+            try:
+                async with AsyncIPRoute() as ipr:
+                    default_route = tuple(
+                        await ipr.route('get', dst='1.1.1.1')
+                    )
+                    self.host_link = default_route[0].get('oif')
+                    self.host_src = (
+                        default_route[0].get('prefsrc') or '127.0.0.1'
+                    )
+                    default_if = tuple(
+                        await ipr.link('get', index=self.host_link)
+                    )
+                    self.host_ifname = default_if[0].get('ifname')
+                logging.info(
+                    f'Host discovery: {self.host_link}:'
+                    f'{self.host_ifname}:{self.host_src}'
+                )
+                return
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                last_error = e
+                if attempt == attempts:
+                    break
+                logging.warning(
+                    (
+                        'host discovery attempt %s/%s failed: %s; '
+                        'retrying in %.1fs'
+                    ),
+                    attempt,
+                    attempts,
+                    e,
+                    delay_seconds,
+                )
+                await asyncio.sleep(delay_seconds)
+        raise RuntimeError(
+            'host discovery failed after retries'
+        ) from last_error
+
     async def make_default_vrf(self) -> VRFDomain:
         default_vrf = int(self.config['default']['vrf'])
         default_prefix = self.config['default']['prefix']
@@ -365,16 +409,8 @@ class VRFController(BaseCRDWatchController[VRFDomain]):
                 ipr.link, present=True, ifname='vrf-1', kind='vrf', vrf_table=1
             )
             await ipr.ensure(ipr.link, present=False, index=vrf1['index'])
-            logging.info('Trying to calculate host_if')
-            default_route = tuple(await ipr.route('get', dst='1.1.1.1'))
-            self.host_link = default_route[0].get('oif')
-            self.host_src = default_route[0].get('prefsrc') or '127.0.0.1'
-            default_if = tuple(await ipr.link('get', index=self.host_link))
-            self.host_ifname = default_if[0].get('ifname')
-            logging.info(
-                f'Host discovery: {self.host_link}:'
-                f'{self.host_ifname}:{self.host_src}'
-            )
+        logging.info('Trying to calculate host_if')
+        await self._discover_host_if_with_retry()
         logging.info('Setting sysctl variables')
         set_sysctl(
             {
