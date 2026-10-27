@@ -10,6 +10,7 @@ from pyroute2 import AsyncIPRoute
 
 from pyroute2_cni.address_pool import AddressPool
 from pyroute2_cni.controllers.base_crd_controller import BaseCRDWatchController
+from pyroute2_cni.controllers.errors import is_transient_error
 from pyroute2_cni.crds.vrf_domain import (
     VRFAttachment,
     VRFDomain,
@@ -309,11 +310,31 @@ class VRFController(BaseCRDWatchController[VRFDomain]):
         )
 
     async def reconcile_firewall(self) -> int:
-        counter = 0
+        reconciled = 0
         for domain in self.frr_manager.vrf_domain_items().values():
-            await self.firewall.ensure_vrf_firewall(domain)
-            counter += 1
-        return counter
+            try:
+                await self.firewall.ensure_vrf_firewall(domain)
+                reconciled += 1
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                if is_transient_error(e):
+                    logging.warning(
+                        (
+                            'firewall reconcile transient failure for '
+                            'vrf=%s domain=%s: %s; continuing'
+                        ),
+                        domain.vrf,
+                        domain.name,
+                        e,
+                    )
+                    continue
+                logging.exception(
+                    'firewall reconcile failed for vrf=%s domain=%s',
+                    domain.vrf,
+                    domain.name,
+                )
+        return reconciled
 
     async def remove(self, domain: VRFDomain) -> None:
         await self.address_pool.cleanup_domain(domain)
