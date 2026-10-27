@@ -91,7 +91,7 @@ class CNIConfigSelectionController(BaseCRDWatchController[CNIConfigSelection]):
             pass
 
     def _config_filename(self, config: CNIConfig) -> str:
-        return '99-pyroute2.conflist'
+        return config.file_name
 
     def _render_config(self, config: CNIConfig) -> str:
         return json.dumps(
