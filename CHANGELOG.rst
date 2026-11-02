@@ -1,6 +1,27 @@
 Changelog
 =========
 
+0.2.0 (2026-11-02)
+------------------
+
+Improve installation routines and add config management
+using CNIConfig and CNIConfigSelection.
+
+Added
+~~~~~
+
+- CRD: CNIConfig: define CNI config file
+- CRD: CNIConfigSelection: select the desired CNI configuration
+- CRD: VRFRoutingPolicy: define custom routing policies
+
+Changed
+~~~~~~~
+
+- FRR: restart container on FDB discrepancies
+- Tolerate network restart during CNI pod startup
+- Fix IPBlock management: don't remove the only IPBlock in VRF
+- Fix install: handle errors on config deployment
+
 0.1.0 (2026-06-18)
 ------------------
 
