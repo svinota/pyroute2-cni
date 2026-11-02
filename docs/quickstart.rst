@@ -116,7 +116,7 @@ Kubernetes. The output of the script is itself usable as a shell script: it
 exports two variables, `NODE_IP` and `KUBECONFIG`. You can simply source it
 with `. env.sh`, and then use `kubectl` against the test cluster.
 
-After this step, you should have an Ubuntu 24.04 VM with Kubernetes 1.36
+After this step, you should have an Ubuntu 24.04 VM with Kubernetes 1.37
 installed, but without any CNI. Installation logs, kubeconfig, and SSH keys
 are located in `vm-test` directory. Also, the script creates a `tmp`
 directory where it downloads the VM base image; if you do not remove it, it
@@ -164,13 +164,13 @@ controller starts reconciling them, and then install the CNI itself:
 .. code-block::
 
     # install required CRDs
-    kubectl apply -k https://github.com/svinota/pyroute2-cni/kubernetes/crds/0.1/
+    kubectl apply -k https://github.com/svinota/pyroute2-cni/kubernetes/crds/0.2/
 
     # wait for the CRD to become established
     kubectl wait --for=condition=Established crd/ipblocks.ipam.pyroute2.org
 
     # install the CNI namespace, RBAC, configs and other manifests
-    kubectl apply -k https://github.com/svinota/pyroute2-cni/kubernetes/releases/0.1.0/
+    kubectl apply -k https://github.com/svinota/pyroute2-cni/kubernetes/releases/dev/
 
     # wait for the CNI to start
     kubectl -n pyroute2-cni wait --for=condition=Ready pods --all
@@ -300,10 +300,10 @@ Once the configs are fixed, start FRR in a container:
 .. code-block::
 
     # Ubuntu / docker run:
-    docker run --rm -it -v ./examples/frr/:/etc/frr --privileged --network host --name frr ghcr.io/svinota/pyroute2-frr:0.0.7
+    docker run --rm -it -v ./examples/frr/:/etc/frr --privileged --network host --name frr ghcr.io/svinota/pyroute2-frr:0.0.14
 
     # Fedora / podman run:
-    sudo podman run --rm -it -v ./examples/frr/:/etc/frr:Z --privileged --network host --name frr ghcr.io/svinota/pyroute2-frr:0.0.7
+    sudo podman run --rm -it -v ./examples/frr/:/etc/frr:Z --privileged --network host --name frr ghcr.io/svinota/pyroute2-frr:0.0.14
 
 Alternatively, you can use your existing BGP routers, but then adjust
 your setup accordingly in order to inject prefixes.
@@ -404,6 +404,7 @@ CNI to attach pods in a namespace to a specific VRF:
     $ kubectl create -f ./examples/vrfdomain.yaml
     vrfdomain.cni.pyroute2.org/vrf-200 created
     vrfdomainbinding.cni.pyroute2.org/vrf-200 created
+    vrfroutingpolicy.cni.pyroute2.org/vrf-200-leak created
 
 Deploy the tenant workload:
 

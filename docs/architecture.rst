@@ -33,7 +33,7 @@ Server
 Container: pyroute2-frr
 ~~~~~~~~~~~~~~~~~~~~~~~
 
-* image: `ghcr.io/svinota/pyroute2-cni:{version}`
+* image: `ghcr.io/svinota/pyroute2-frr:{version}`
 * runs FRR: zebra, staticd, bgpd
 * runs EVPN-VXLAN controlplane
 * exposes and monitors a UNIX socket to reload configuratuion
