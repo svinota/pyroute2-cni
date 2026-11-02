@@ -5,10 +5,24 @@ SOCK=/var/run/frr/reload.sock
 FRR_CONF=/etc/frr/frr.conf
 FRR_WATCH=/usr/lib/frr/watchfrr
 FRR_INIT=/usr/lib/frr/frrinit.sh
+PROBE_PORT="${PROBE_PORT:-24801}"
 STOP=0
 SOCAT_PID=
 
+postmortem() {
+  printf '[postmortem] curl -i http://localhost:%s/livez\n' "$PROBE_PORT"
+  curl -sS -i "http://localhost:${PROBE_PORT}/livez" || true
+
+  printf '[postmortem] bridge fdb\n'
+  bridge fdb || true
+
+  printf '[postmortem] vtysh -c "show bgp l2vpn evpn route"\n'
+  vtysh -c "show bgp l2vpn evpn route" || true
+}
+
 cleanup() {
+  postmortem || true
+
   STOP=1
   if [[ -S "$SOCK" || -e "$SOCK" ]]; then
     rm -f "$SOCK"

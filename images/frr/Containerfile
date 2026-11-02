@@ -2,7 +2,7 @@ FROM frrouting/frr:v8.4.0
 
 USER root
 
-RUN apk add socat
+RUN apk add socat curl
 
 COPY init /init
 COPY handle-command /handle-command
