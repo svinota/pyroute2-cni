@@ -4,6 +4,9 @@ import time
 from configparser import ConfigParser
 from pathlib import Path
 
+from kubernetes.client.exceptions import ApiException
+
+from pyroute2_cni.config_defaults import DEFAULT_SELECTION_NAME
 from pyroute2_cni.controllers.base_crd_controller import BaseCRDWatchController
 from pyroute2_cni.crds.cni_config import CNIConfig, parse_cni_config
 from pyroute2_cni.crds.cni_config_selection import (
@@ -35,15 +38,30 @@ class CNIConfigSelectionController(BaseCRDWatchController[CNIConfigSelection]):
 
     async def resync(self) -> None:
         logging.info('Running resync')
-        response = self.custom_api.list_cluster_custom_object(
-            self.group, self.version, self.plural
-        )
-        selections = [
-            parse_cni_config_selection(item)
-            for item in response.get('items', [])
-        ]
-        if selections:
-            await self.reconcile(selections[0])
+        try:
+            selection = parse_cni_config_selection(
+                self.custom_api.get_cluster_custom_object(
+                    self.group,
+                    self.version,
+                    self.plural,
+                    DEFAULT_SELECTION_NAME,
+                )
+            )
+            await self.reconcile(selection)
+        except ApiException as e:
+            if e.status != 404:
+                raise
+            logging.error(
+                'CNIConfigSelection/%s is missing; bootstrap defaults',
+                DEFAULT_SELECTION_NAME,
+            )
+            logging.error(
+                (
+                    'CM pod must bootstrap CNIConfigSelection/%s; '
+                    'keep last good config'
+                ),
+                DEFAULT_SELECTION_NAME,
+            )
 
     async def reconcile(self, selection: CNIConfigSelection) -> None:
         attempt = 0
@@ -124,14 +142,25 @@ class CNIConfigSelectionController(BaseCRDWatchController[CNIConfigSelection]):
         )
 
     async def ensure(self, selection: CNIConfigSelection) -> None:
+        if selection.name != DEFAULT_SELECTION_NAME:
+            logging.info(
+                'Ignore CNIConfigSelection name=%s (only %s is supported)',
+                selection.name,
+                DEFAULT_SELECTION_NAME,
+            )
+            return
         logging.info(f'CNIConfigSelection ADD/MODIFY event: {selection.name}')
         await self.reconcile(selection)
 
     async def remove(self, selection: CNIConfigSelection) -> None:
+        if selection.name != DEFAULT_SELECTION_NAME:
+            return
         logging.info(f'CNIConfigSelection DEL event: {selection.name}')
         logging.error(
             (
-                'CNIConfigSelection removed; keep last good config '
-                'files unchanged'
-            )
+                'CNIConfigSelection/%s removed; '
+                'CM pod must recreate it; keep last good config'
+            ),
+            DEFAULT_SELECTION_NAME,
         )
+        return

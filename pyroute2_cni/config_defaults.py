@@ -9,6 +9,7 @@ FW_INTERVAL_SECONDS = '30'
 CNI_CONFIG_DIR = '/host/etc/cni/net.d'
 READINESS_HOST = '0.0.0.0'
 READINESS_PORT = '24800'
+DEFAULT_SELECTION_NAME = 'default'
 
 
 def config_set_defaults(config: ConfigParser) -> None:
