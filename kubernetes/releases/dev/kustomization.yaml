@@ -6,7 +6,7 @@ resources:
 
 images:
   - name: ghcr.io/svinota/pyroute2-cni
-    newTag: 0.0.753
+    newTag: 0.0.755
   - name: ghcr.io/svinota/pyroute2-frr
     newTag: 0.0.16
 
@@ -14,4 +14,4 @@ images:
 labels:
   - pairs:
       app.kubernetes.io/part-of: pyroute2-cni
-      app.kubernetes.io/version: "0.1.0"
+      app.kubernetes.io/version: "0.2.0"
