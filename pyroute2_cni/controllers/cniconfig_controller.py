@@ -31,6 +31,8 @@ class CNIConfigController(BaseCRDWatchController[CNIConfig]):
     async def resync(self) -> None:
         logging.info('Running resync')
         listed = await self.reconcile()
+        preferred_name: str | None = None
+        created_default = False
         if listed == 0:
             logging.info('Create default config')
             default = default_cni_config()
@@ -38,30 +40,83 @@ class CNIConfigController(BaseCRDWatchController[CNIConfig]):
                 self.custom_api.create_cluster_custom_object(
                     self.group, self.version, self.plural, default.render()
                 )
+                preferred_name = default.name
+                created_default = True
             except Exception as e:
                 logging.error('CNIConfig default create failed: %s', e)
             logging.info('Done')
 
-    async def reconcile(self, exclude: list[CNIConfig] | None = None) -> int:
-        exclude_names = {item.name for item in (exclude or [])}
+        self.ensure_default_selection(preferred_name=preferred_name)
+        if created_default:
+            await self.reconcile()
+
+    def ensure_default_selection(self, preferred_name: str | None = None) -> None:
+        try:
+            self.custom_api.get_cluster_custom_object(
+                self.group, self.version, 'cniconfigselections', 'default'
+            )
+            return
+        except ApiException as e:
+            if e.status != 404:
+                raise
+
+        response = self.custom_api.list_cluster_custom_object(
+            self.group, self.version, self.plural
+        )
+        configs = [parse_cni_config(item) for item in response.get('items', [])]
+        if not configs and preferred_name is None:
+            return
+
+        names = {cfg.name for cfg in configs}
+        active_name = preferred_name if preferred_name in names else None
+        if active_name is None and configs:
+            default_name = default_cni_config().name
+            active_name = default_name if default_name in names else sorted(names)[
+                0
+            ]
+        if active_name is None:
+            return
+
+        self.custom_api.create_cluster_custom_object(
+            self.group,
+            self.version,
+            'cniconfigselections',
+            CNIConfigSelection(
+                name='default',
+                generation=0,
+                active_ref=CNIConfigSelectionActiveRef(name=active_name),
+                status=None,
+            ).render(),
+        )
+        logging.info('Created default CNIConfigSelection default -> %s', active_name)
+
+    async def reconcile(self) -> int:
         while True:
             try:
                 response = self.custom_api.list_cluster_custom_object(
                     self.group, self.version, self.plural
                 )
-                items = [
-                    item
+                configs = [
+                    parse_cni_config(item)
                     for item in response.get('items', [])
-                    if (config := parse_cni_config(item)).enabled
-                    and config.name not in exclude_names
                 ]
-                configs = sorted(
-                    (parse_cni_config(item) for item in items),
-                    key=lambda item: item.priority,
-                    reverse=True,
-                )
                 listed_count = len(configs)
-                active_name = configs[0].name if configs else None
+
+                active_name = None
+                try:
+                    selection = parse_cni_config_selection(
+                        self.custom_api.get_cluster_custom_object(
+                            self.group,
+                            self.version,
+                            'cniconfigselections',
+                            'default',
+                        )
+                    )
+                    active_name = selection.active_ref.name or None
+                except ApiException as e:
+                    if e.status != 404:
+                        raise
+
                 for config in configs:
                     desired_active = config.name == active_name
                     current_active = bool(
@@ -77,44 +132,10 @@ class CNIConfigController(BaseCRDWatchController[CNIConfig]):
                         config.name,
                         {'status': {'active': desired_active}},
                     )
-                if active_name:
-                    self.reconcile_selection(active_name)
                 return listed_count
             except Exception as e:
                 logging.error('CNIConfig reconcile failed: %s', e)
                 time.sleep(1)
-
-    def reconcile_selection(self, active_name: str) -> None:
-        try:
-            selection = parse_cni_config_selection(
-                self.custom_api.get_cluster_custom_object(
-                    self.group, self.version, 'cniconfigselections', 'default'
-                )
-            )
-            if selection.active_ref.name == (active_name):
-                return
-            self.custom_api.patch_namespaced_custom_object(
-                self.group,
-                self.version,
-                '',
-                'cniconfigselections',
-                'default',
-                {'spec': {'activeRef': {'name': active_name}}},
-            )
-        except ApiException as e:
-            if e.status != 404:
-                raise
-            self.custom_api.create_cluster_custom_object(
-                self.group,
-                self.version,
-                'cniconfigselections',
-                CNIConfigSelection(
-                    name='default',
-                    generation=0,
-                    active_ref=CNIConfigSelectionActiveRef(name=active_name),
-                    status=None,
-                ).render(),
-            )
 
     async def ensure(self, cniconfig: CNIConfig) -> None:
         logging.info(f'CNIConfig ADD/MODIFY event: {cniconfig.name}')
@@ -122,15 +143,4 @@ class CNIConfigController(BaseCRDWatchController[CNIConfig]):
 
     async def remove(self, cniconfig: CNIConfig) -> None:
         logging.info(f'CNIConfig DEL event: {cniconfig.name}')
-        try:
-            self.custom_api.patch_namespaced_custom_object_status(
-                self.group,
-                self.version,
-                '',
-                self.plural,
-                cniconfig.name,
-                {'status': {'active': False}},
-            )
-        except Exception:
-            pass
-        await self.reconcile(exclude=[cniconfig])
+        await self.reconcile()

@@ -61,7 +61,6 @@ class CNIConfigSelectionController(BaseCRDWatchController[CNIConfigSelection]):
                 configs = [
                     parse_cni_config(item)
                     for item in response.get('items', [])
-                    if parse_cni_config(item).enabled
                 ]
                 active_name = selection.active_ref.name
                 active_config = next(
@@ -72,8 +71,17 @@ class CNIConfigSelectionController(BaseCRDWatchController[CNIConfigSelection]):
                     ),
                     None,
                 )
-                if active_config is not None:
-                    self._write_config(active_config)
+                if active_config is None:
+                    logging.error(
+                        (
+                            'CNIConfigSelection activeRef=%s does not match '
+                            'any CNIConfig; keep last good config'
+                        ),
+                        active_name,
+                    )
+                    return
+
+                self._write_config(active_config)
                 for config in configs:
                     if config.name == active_name:
                         continue
@@ -121,9 +129,9 @@ class CNIConfigSelectionController(BaseCRDWatchController[CNIConfigSelection]):
 
     async def remove(self, selection: CNIConfigSelection) -> None:
         logging.info(f'CNIConfigSelection DEL event: {selection.name}')
-        try:
-            for entry in self.cni_config_dir.iterdir():
-                if entry.is_file():
-                    entry.unlink()
-        except FileNotFoundError:
-            pass
+        logging.error(
+            (
+                'CNIConfigSelection removed; keep last good config '
+                'files unchanged'
+            )
+        )

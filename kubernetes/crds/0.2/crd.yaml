@@ -85,12 +85,6 @@ spec:
       served: true
       storage: true
       additionalPrinterColumns:
-        - name: Enabled
-          type: boolean
-          jsonPath: .spec.enabled
-        - name: Priority
-          type: integer
-          jsonPath: .spec.priority
         - name: Active
           type: boolean
           jsonPath: .status.active
@@ -104,14 +98,16 @@ spec:
           properties:
             spec:
               type: object
-              required: ["fileName", "enabled", "priority", "plugins"]
+              required: ["fileName", "plugins"]
               properties:
                 fileName:
                   type: string
                 enabled:
                   type: boolean
+                  description: "Deprecated compatibility field. Optional and ignored by selection-based activation."
                 priority:
                   type: integer
+                  description: "Deprecated compatibility field. Optional and ignored by selection-based activation."
                 plugins:
                   type: array
                   items:
