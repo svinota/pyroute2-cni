@@ -19,14 +19,14 @@ echo "ok"
 
 # 8<---------------------------------------------------------------------------
 echo -n "Test CRD install: "
-kubectl apply -k ./kubernetes/crds/0.1/ >/dev/null
+kubectl apply -k ./kubernetes/crds/0.2/ >/dev/null
 kubectl wait --for=condition=Established crd/ipblocks.ipam.pyroute2.org --timeout=30s >/dev/null || { echo "Condition failed"; exit 1; }
 kubectl apply -k ./kubernetes/releases/dev/ >/dev/null
 echo "ok"
 
 
 # 8<---------------------------------------------------------------------------
-echo -n "Test pod start: "
+echo -n "Test CNI pod start: "
 for i in `seq 1 30`; do {
     kubectl -n pyroute2-cni get pods 2>/dev/null | grep pyroute2 >/dev/null && break
     sleep 1
@@ -35,7 +35,7 @@ echo "ok"
 
 
 # 8<---------------------------------------------------------------------------
-echo -n "Test pod conditions: "
+echo -n "Test CNI pod conditions: "
 kubectl -n pyroute2-cni wait --for=condition=Ready pods --all --timeout=180s >/dev/null || { echo "Condition failed"; exit 1; }
 echo "ok"
 
@@ -53,6 +53,17 @@ echo "ok"
 
 
 # 8<---------------------------------------------------------------------------
+echo -n "Wait for CoreDNS: "
+FAILED=1
+# wait for coredns pods first
+for i in `seq 1 60`; do {
+    [ `kubectl get endpointslices -n kube-system -o json | jq -r '.items[].endpoints[] | select(.conditions.ready == true) | .addresses[]' 2>/dev/null | wc -l` -eq 2 ] && { FAILED=0; break; }
+    sleep 1;
+} done
+[ "${FAILED}" -eq 0 ] || { echo "CoreDNS is not ready"; exit 1; }
+echo "ok"
+
+# 8<---------------------------------------------------------------------------
 echo -n "Test allocations: "
 FAILED=1
 for i in `seq 1 10`; do {
@@ -63,3 +74,28 @@ for i in `seq 1 10`; do {
 } done
 [ "${FAILED}" -eq 0 ] || { echo "Unexpected allocations: ${KUBE_DNS} ! ${ALLOCATED}"; exit 1; }
 echo "ok"
+
+
+# 8<---------------------------------------------------------------------------
+echo -n "Test minimal workload: "
+declare -A ADDRS
+declare -A PEERS
+PEERS["test01"]="test02"
+PEERS["test02"]="test01"
+
+kubectl run --image alpine test01 -- sleep inf >/dev/null 2>&1
+kubectl run --image alpine test02 -- sleep inf >/dev/null 2>&1
+for pod in test01 test02; do {
+    for i in `seq 1 60`; do {
+        ADDRS["$pod"]=`kubectl get pods $pod -o jsonpath='{.status.podIP}'` 2>/dev/null
+        [ -z "${ADDRS[$pod]}" ] || break
+        sleep 1
+    } done
+} done
+[ `echo "${ADDRS[@]}" | wc -w` -eq 2 ] || { echo "Failed to get workload IP"; exit 1; }
+for pod in test01 test02; do {
+    PEER="${PEERS[$pod]}"
+    kubectl exec -i $pod -- ping -c 1 "${ADDRS[$PEER]}" >/dev/null 2>&1 || { echo "Failed to reach out peer: $pod -> $PEER"; exit 1; }
+} done
+echo "ok"
+
