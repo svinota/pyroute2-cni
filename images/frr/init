@@ -16,6 +16,9 @@ postmortem() {
   printf '[postmortem] bridge fdb\n'
   bridge fdb || true
 
+  printf '[postmortem] bgp summary'
+  vtysh -c "show bgp summary" || true
+
   printf '[postmortem] vtysh -c "show bgp l2vpn evpn route"\n'
   vtysh -c "show bgp l2vpn evpn route" || true
 }
