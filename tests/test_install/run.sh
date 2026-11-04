@@ -98,4 +98,3 @@ for pod in test01 test02; do {
     kubectl exec -i $pod -- ping -c 1 "${ADDRS[$PEER]}" >/dev/null 2>&1 || { echo "Failed to reach out peer: $pod -> $PEER"; exit 1; }
 } done
 echo "ok"
-
