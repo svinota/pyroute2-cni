@@ -52,8 +52,7 @@ class CNIConfigSelectionController(BaseCRDWatchController[CNIConfigSelection]):
             if e.status != 404:
                 raise
             logging.error(
-                'CNIConfigSelection/%s is missing; bootstrap defaults',
-                DEFAULT_SELECTION_NAME,
+                'CNIConfigSelection/%s is missing', DEFAULT_SELECTION_NAME
             )
             logging.error(
                 (

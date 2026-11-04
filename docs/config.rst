@@ -42,7 +42,7 @@ Ensure both controllers are running:
 Default CRDs
 ------------
 
-By default, the CNI creates `CNIConfig` `cbr0` and
+By default, `pyroute2-cm` creates `CNIConfig` `cbr0` and
 `CNIConfigSelection` `default`, which points to that `CNIConfig`.
 
 The config has `spec.fileName: 99-pyroute2.conflist`, so it's safe to

@@ -33,9 +33,9 @@ Stable version:
 
 .. code::
 
-    kubectl apply -k https://github.com/svinota/pyroute2-cni/kubernetes/crds/0.1/
+    kubectl apply -k https://github.com/svinota/pyroute2-cni/kubernetes/crds/0.2/
     kubectl wait --for=condition=Established crd/ipblocks.ipam.pyroute2.org
-    kubectl apply -k https://github.com/svinota/pyroute2-cni/kubernetes/releases/0.1.0/
+    kubectl apply -k https://github.com/svinota/pyroute2-cni/kubernetes/releases/0.2.0/
 
 
 This waits for the CRD to become established before applying the namespace,

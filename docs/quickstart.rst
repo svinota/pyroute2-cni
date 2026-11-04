@@ -138,7 +138,7 @@ Or use `kubectl` to access the Kubernetes API:
     $ . env.sh
     $ kubectl get nodes
     NAME       STATUS     ROLES           AGE    VERSION
-    cni-test   NotReady   control-plane   4m7s   v1.36.2
+    cni-test   NotReady   control-plane   4m7s   v1.37.0
 
     $ kubectl get pods -A
     NAMESPACE     NAME                               READY   STATUS    RESTARTS   AGE
@@ -300,10 +300,10 @@ Once the configs are fixed, start FRR in a container:
 .. code-block::
 
     # Ubuntu / docker run:
-    docker run --rm -it -v ./examples/frr/:/etc/frr --privileged --network host --name frr ghcr.io/svinota/pyroute2-frr:0.0.14
+    docker run --rm -it -v ./examples/frr/:/etc/frr --privileged --network host --name frr ghcr.io/svinota/pyroute2-frr:0.0.16
 
     # Fedora / podman run:
-    sudo podman run --rm -it -v ./examples/frr/:/etc/frr:Z --privileged --network host --name frr ghcr.io/svinota/pyroute2-frr:0.0.14
+    sudo podman run --rm -it -v ./examples/frr/:/etc/frr:Z --privileged --network host --name frr ghcr.io/svinota/pyroute2-frr:0.0.16
 
 Alternatively, you can use your existing BGP routers, but then adjust
 your setup accordingly in order to inject prefixes.

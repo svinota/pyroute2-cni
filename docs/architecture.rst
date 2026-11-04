@@ -65,8 +65,11 @@ The server keeps node state synchronised with background controllers:
 
 * `NamespaceController` watches namespaces and triggers namespace lifecycle hooks.
 * `VRFController` watches `VRFDomain` objects, creates or removes VRFs and VXLAN-backed bridges, and reconciles firewall rules.
+* `VRFNodeConfigController` watches `VRFNodeConfig` and applies node-specific BGP and interface settings.
+* `VRFRoutingPolicyController` watches `VRFRoutingPolicy` and applies routing policy rules.
+* `CNIConfigSelectionController` watches `CNIConfigSelection/default` and applies the selected CNI config on each node.
 
-Also it has managers:
+The server also has managers:
 
 * `AddressPool` handles allocation, reconciliation, and garbage collection of pod address blocks.
 * `FirewallManager` owns the nftables setup and per-VRF NAT and marking rules.
