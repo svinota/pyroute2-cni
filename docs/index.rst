@@ -66,3 +66,4 @@ pyroute2-cni is not intended to be:
    quickstart
    general
    architecture
+   config
