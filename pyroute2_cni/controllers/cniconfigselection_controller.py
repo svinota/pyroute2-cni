@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 import time
 from configparser import ConfigParser
 from pathlib import Path
@@ -13,6 +14,9 @@ from pyroute2_cni.crds.cni_config_selection import (
     CNIConfigSelection,
     parse_cni_config_selection,
 )
+
+_SAFE_CONFIG_FILENAME_RE = re.compile(r'^[A-Za-z0-9._-]+$')
+_INVALID_FILENAME_ERR = 'invalid CNI config filename'
 
 
 class CNIConfigSelectionController(BaseCRDWatchController[CNIConfigSelection]):
@@ -115,20 +119,46 @@ class CNIConfigSelectionController(BaseCRDWatchController[CNIConfigSelection]):
 
     def _write_config(self, config: CNIConfig) -> None:
         self.cni_config_dir.mkdir(parents=True, exist_ok=True)
-        path = self.cni_config_dir / self._config_filename(config)
-        logging.info(f'Ensure present=true, config: {path}')
-        path.write_text(self._render_config(config), encoding='utf-8')
+        path = self._resolve_config_path(config)
+        logging.info(
+            'Ensure present=true for active CNIConfig name=%s', config.name
+        )
+        try:
+            path.write_text(self._render_config(config), encoding='utf-8')
+        except OSError:
+            raise RuntimeError('failed to write active CNI config') from None
 
     def _remove_config(self, config: CNIConfig) -> None:
-        path = self.cni_config_dir / self._config_filename(config)
-        logging.info(f'Ensure present=false, config={path}')
+        path = self._resolve_config_path(config)
+        logging.info(
+            'Ensure present=false for non-selected CNIConfig name=%s',
+            config.name,
+        )
         try:
             path.unlink()
         except FileNotFoundError:
             pass
+        except OSError:
+            raise RuntimeError(
+                'failed to remove non-selected CNI config'
+            ) from None
 
-    def _config_filename(self, config: CNIConfig) -> str:
-        return config.file_name
+    def _resolve_config_path(self, config: CNIConfig) -> Path:
+        file_name = config.file_name
+        if not file_name:
+            raise ValueError(_INVALID_FILENAME_ERR)
+        if Path(file_name).name != file_name:
+            raise ValueError(_INVALID_FILENAME_ERR)
+        if file_name in {'.', '..'}:
+            raise ValueError(_INVALID_FILENAME_ERR)
+        if not _SAFE_CONFIG_FILENAME_RE.fullmatch(file_name):
+            raise ValueError(_INVALID_FILENAME_ERR)
+
+        base_dir = self.cni_config_dir.resolve()
+        target_path = (base_dir / file_name).resolve()
+        if target_path.parent != base_dir:
+            raise ValueError(_INVALID_FILENAME_ERR)
+        return target_path
 
     def _render_config(self, config: CNIConfig) -> str:
         return json.dumps(
