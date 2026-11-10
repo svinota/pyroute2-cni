@@ -67,3 +67,4 @@ pyroute2-cni is not intended to be:
    general
    architecture
    config
+   decisions
