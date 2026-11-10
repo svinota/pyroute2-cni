@@ -11,9 +11,11 @@ ${SCRIPT_DIR}/scripts/create-ubuntu-vm.sh $1 | tee env.sh
 echo -e "\nRun the tests\n"
 
 # 8<---------------------------------------------------------------------------
+TARGET="cni-test-0
+cni-test-1"
 echo -n "Test nodes: "
 NODES=`kubectl get nodes -o json | jq -r '.items[] | [ .metadata.name ] | @tsv'`
-[ "${NODES}" == "cni-test" ] || { echo "Unexpected nodes: ${NODES}"; exit 1; }
+[ "${NODES}" == "${TARGET}" ] || { echo "Unexpected nodes: ${NODES}"; exit 1; }
 echo "ok"
 
 
