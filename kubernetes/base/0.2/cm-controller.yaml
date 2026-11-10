@@ -19,7 +19,7 @@ spec:
       labels:
         app: pyroute2-cm
     spec:
-      serviceAccountName: pyroute2-cni-sa
+      serviceAccountName: pyroute2-cm-sa
       hostNetwork: true
       tolerations:
         - key: node.kubernetes.io/not-ready
