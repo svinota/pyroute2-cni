@@ -50,7 +50,7 @@ Index
    * - :ref:`20261110-01 <decision-20261110-01>`
      - CNI role is read-only for non-IPAM CRDs
      - accepted
-     - partial
+     - implemented
 
 
 Decision template
@@ -160,7 +160,7 @@ Revisit if CM polling becomes too latent/expensive.
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 :Status: accepted
-:Implementation: partial
+:Implementation: implemented
 
 Context
 ^^^^^^^
@@ -190,11 +190,8 @@ Consequences
 ^^^^^^^^^^^^
 
 * Reduced control-plane abuse surface from privileged node agents.
-* Gap: current manifests still allow the CNI role to create ``VRFDomain``
-  objects; this does not match this decision and must be fixed in a
-  follow-up session.
 
 Review trigger
 ^^^^^^^^^^^^^^
 
-Revisit when RBAC is refactored so CNI non-IPAM CRDs are strictly read-only.
+Revisit if non-IPAM CRD write verbs are requested for CNI SA.

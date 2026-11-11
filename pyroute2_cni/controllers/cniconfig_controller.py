@@ -16,6 +16,7 @@ from pyroute2_cni.crds.cni_config_selection import (
     CNIConfigSelectionActiveRef,
     parse_cni_config_selection,
 )
+from pyroute2_cni.crds.vrf_domain import VRFAttachment, VRFDomain
 
 
 class CNIConfigController(BaseCRDWatchController[CNIConfig]):
@@ -38,6 +39,7 @@ class CNIConfigController(BaseCRDWatchController[CNIConfig]):
             created_default = self.ensure_default_config()
             logging.info('Done')
 
+        self.ensure_default_vrf_domain()
         self.ensure_default_selection()
         if created_default:
             await self.reconcile()
@@ -101,6 +103,60 @@ class CNIConfigController(BaseCRDWatchController[CNIConfig]):
             return False
         except Exception as e:
             logging.error('CNIConfig default create failed: %s', e)
+            return False
+
+    def ensure_default_vrf_domain(self) -> bool:
+        default_vrf = int(self.config['default']['vrf'])
+        default_name = f'vrf-{default_vrf}'
+        try:
+            self.custom_api.get_cluster_custom_object(
+                self.group, self.version, 'vrfdomains', default_name
+            )
+            return False
+        except ApiException as e:
+            if e.status != 404:
+                raise
+
+        try:
+            default_prefix = self.config['default']['prefix']
+            default_prefixlen = int(self.config['default']['prefixlen'])
+            default_ipblocklen = int(self.config['default']['ipblocklen'])
+            default_vrf_type = self.config['default']['system_vrf_type']
+            domain = VRFDomain(
+                name=default_name,
+                vrf=default_vrf,
+                table=default_vrf,
+                prefix=default_prefix,
+                prefixlen=default_prefixlen,
+                ipblocklen=default_ipblocklen,
+                attachments=[
+                    VRFAttachment(
+                        kind=default_vrf_type, vni=default_vrf, port=4789
+                    )
+                ],
+            )
+        except (KeyError, TypeError, ValueError) as e:
+            logging.error(
+                (
+                    'Skip default VRFDomain bootstrap: invalid [default] '
+                    'config (required keys: vrf, prefix, prefixlen, '
+                    'ipblocklen, system_vrf_type): %s'
+                ),
+                e,
+            )
+            return False
+        try:
+            self.custom_api.create_cluster_custom_object(
+                self.group, self.version, 'vrfdomains', domain.render()
+            )
+            logging.info('Created default VRFDomain name=%s', default_name)
+            return True
+        except ApiException as e:
+            if e.status != 409:
+                raise
+            logging.info(
+                'Default VRFDomain already exists name=%s', default_name
+            )
             return False
 
     async def reconcile(self) -> int:

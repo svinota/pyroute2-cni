@@ -41,7 +41,6 @@ class VTEPInfo:
 class VRFController(BaseCRDWatchController[VRFDomain]):
     plural = 'vrfdomains'
     watch_name = 'vrfdomain'
-    finalizer = 'cni.pyroute2.org/vrfdomains'
 
     def __init__(
         self,
@@ -240,7 +239,6 @@ class VRFController(BaseCRDWatchController[VRFDomain]):
         if domain.deletion_timestamp:
             await self._finalize_deletion(domain)
             return
-        await self.ensure_finalizer(present=True, domain=domain)
         vrf_idx = await self.ensure_vrf(domain)
         bridges: dict[str, int] = {}
         for attachment in domain.attachments:
@@ -257,55 +255,10 @@ class VRFController(BaseCRDWatchController[VRFDomain]):
                     pass
         await self.firewall.ensure_vrf_firewall(domain)
 
-    async def ensure_finalizer(self, present: bool, domain: VRFDomain) -> None:
-        try:
-            response = (
-                self.frr_manager.vrf_custom_api.get_cluster_custom_object(
-                    'cni.pyroute2.org', 'v1alpha1', 'vrfdomains', domain.name
-                )
-            )
-        except ApiException as e:
-            if e.status == 404:
-                logging.info(
-                    f'skip finalizer update for missing VRFDomain '
-                    f'{domain.name}'
-                )
-                return
-            raise
-        metadata = response.get('metadata') or {}
-        old_finalizers = set(metadata.get('finalizers') or [])
-        new_finalizers = old_finalizers.copy()
-        fix_finalizer = (
-            new_finalizers.add if present else new_finalizers.discard
-        )
-        fix_finalizer(self.finalizer)
-        if old_finalizers == new_finalizers:
-            return
-        body = {'metadata': {'finalizers': list(new_finalizers)}}
-        try:
-            self.frr_manager.vrf_custom_api.patch_cluster_custom_object(
-                'cni.pyroute2.org', 'v1alpha1', 'vrfdomains', domain.name, body
-            )
-        except ApiException as e:
-            if e.status == 404:
-                logging.info(
-                    f'skip finalizer patch for missing VRFDomain '
-                    f'{domain.name}'
-                )
-                return
-            if e.status == 409:
-                logging.warning(
-                    f'stale VRFDomain while updating finalizer: '
-                    f'{domain.name}'
-                )
-                return
-            raise
-
     async def _finalize_deletion(self, domain: VRFDomain) -> None:
         for attempt in range(30):
             await self.address_pool.cleanup_domain(domain)
             if not self._has_domain_blocks(domain):
-                await self.ensure_finalizer(present=False, domain=domain)
                 return
             logging.info(
                 f'waiting for IPBlocks to disappear for VRFDomain '
@@ -407,35 +360,6 @@ class VRFController(BaseCRDWatchController[VRFDomain]):
             'host discovery failed after retries'
         ) from last_error
 
-    async def make_default_vrf(self) -> VRFDomain:
-        default_vrf = int(self.config['default']['vrf'])
-        default_prefix = self.config['default']['prefix']
-        default_prefixlen = int(self.config['default']['prefixlen'])
-        domain = VRFDomain(
-            name=f'vrf-{default_vrf}',
-            vrf=default_vrf,
-            table=default_vrf,
-            prefix=default_prefix,
-            prefixlen=default_prefixlen,
-            ipblocklen=int(self.config['default']['ipblocklen']),
-            attachments=[
-                VRFAttachment(
-                    kind=self.config['default']['system_vrf_type'],
-                    vni=default_vrf,
-                    port=4789,
-                )
-            ],
-        )
-        body = domain.render()
-        try:
-            self.frr_manager.vrf_custom_api.create_cluster_custom_object(
-                'cni.pyroute2.org', 'v1alpha1', 'vrfdomains', body
-            )
-        except ApiException as e:
-            if e.status != 409:
-                raise
-        return domain
-
     async def resync(self) -> None:
         logging.info('vrf resync: start')
         await self.firewall.setup_tables()
@@ -461,8 +385,12 @@ class VRFController(BaseCRDWatchController[VRFDomain]):
         domains: dict[int, VRFDomain] = self.frr_manager.vrf_domain_items()
         default_vrf = int(self.config['default']['vrf'])
         if default_vrf not in domains:
-            logging.info('vrf resync: default VRF missing, creating')
-            domains[default_vrf] = await self.make_default_vrf()
+            logging.warning(
+                'vrf resync: default VRFDomain vrf-%s missing; '
+                'waiting for CM bootstrap',
+                default_vrf,
+            )
+            return
         vrfs: list[int] = [default_vrf] + list(
             filter(lambda x: x != default_vrf, sorted(domains))
         )
