@@ -25,7 +25,7 @@ Development version:
 
 .. code::
 
-    kubectl apply -k https://github.com/svinota/pyroute2-cni/kubernetes/crds/0.2/
+    kubectl apply -k https://github.com/svinota/pyroute2-cni/kubernetes/crds/0.3/
     kubectl wait --for=condition=Established crd/ipblocks.ipam.pyroute2.org
     kubectl apply -k https://github.com/svinota/pyroute2-cni/kubernetes/releases/dev/
 
@@ -39,7 +39,7 @@ Stable version:
 
 
 This waits for the CRD to become established before applying the namespace,
-RBAC, ConfigMap, and DaemonSet.
+RBAC, ConfigMaps, CM deployment, and DaemonSet.
 
 Talos install
 ~~~~~~~~~~~~~
@@ -147,8 +147,8 @@ If no `routeReflectors` are given, the CNI builds a BGP mesh in the cluster.
 
 **VRFDomain**
 
-If there are no `VRFDomain` CRs defined, the CNI creates a default one
-(`vrf-42`) with one `l3vni` attachment.
+If there are no `VRFDomain` CRs defined, the cluster config manager
+(`pyroute2-cm`) creates a default one (`vrf-42`) with one `l3vni` attachment.
 
 Here is an example `VRFDomain` you can use to create your own:
 
@@ -212,7 +212,7 @@ The whole `VRFDomain` prefix is divided into `IPBlocks` in order to set up
 routing for the pods. `IPBlock` CRs are created and managed by the CNI, so no
 manual setup is needed. They describe the mapping of pods to IP addresses.
 Every sub-range has a gateway address that is used to announce the sub-range
-to neighbours.
+to neighbors.
 
 **ConfigMap**
 
@@ -241,4 +241,7 @@ if needed.
 Monitoring
 ==========
 
-The DaemonSet exposes `/livez`, `/readyz`, and `/metrics` on port `24800`.
+The `pyroute2-cni` container exposes `/livez`, `/readyz`, and `/metrics`
+on port `24800`.
+The `pyroute2-frr` container exposes probe endpoints (`/livez`, `/readyz`)
+on port `24801`.

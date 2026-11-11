@@ -1,12 +1,12 @@
-.. quickstart:
+.. rr-lab:
 
 .. container:: rightside
 
    .. image:: _images/CNI-quickstart.svg
       :target: _images/CNI-quickstart.svg
 
-Quickstart Guide
-================
+Route Reflector Lab Guide
+=========================
 
 In this guide, we will:
 
@@ -78,6 +78,8 @@ On the host system, you should have the following:
 
 Utilities:
 
+* bash
+* tee
 * ssh-keygen
 * curl
 * virsh
@@ -88,8 +90,8 @@ Utilities:
 Services and resources:
 
 * working libvirt / KVM
-* 30 GB disk space for the VM
-* 4 GB memory for the VM
+* 2×30 GB disk space for the VMs
+* 2×4 GB memory for the VMs
 * internet access
 
 Install the VM
@@ -105,7 +107,7 @@ credentials, and a kubeconfig under `vm-test`.
     git clone https://github.com/svinota/pyroute2-cni.git && cd pyroute2-cni
 
     # install the VM
-    ./tests/test_install/scripts/create-ubuntu-vm.sh 24 | tee env.sh
+    make vm
 
     # setup env
     . env.sh
@@ -116,9 +118,9 @@ Kubernetes. The output of the script is itself usable as a shell script: it
 exports two variables, `NODE_IP` and `KUBECONFIG`. You can simply source it
 with `. env.sh`, and then use `kubectl` against the test cluster.
 
-After this step, you should have an Ubuntu 24.04 VM with Kubernetes 1.37
+After this step, you should have a two-node Ubuntu 26.04 Kubernetes cluster
 installed, but without any CNI. Installation logs, kubeconfig, and SSH keys
-are located in `vm-test` directory. Also, the script creates a `tmp`
+are located in the `vm-test` directory. Also, the script creates a `tmp`
 directory where it downloads the VM base image; if you do not remove it, it
 will be used as the image cache.
 
@@ -137,8 +139,9 @@ Or use `kubectl` to access the Kubernetes API:
 
     $ . env.sh
     $ kubectl get nodes
-    NAME       STATUS     ROLES           AGE    VERSION
-    cni-test   NotReady   control-plane   4m7s   v1.37.0
+    NAME         STATUS     ROLES           AGE     VERSION
+    cni-test-0   NotReady   control-plane   2m28s   v1.37.2
+    cni-test-1   NotReady   control-plane   13s     v1.37.2
 
     $ kubectl get pods -A
     NAMESPACE     NAME                               READY   STATUS    RESTARTS   AGE
@@ -164,7 +167,7 @@ controller starts reconciling them, and then install the CNI itself:
 .. code-block::
 
     # install required CRDs
-    kubectl apply -k https://github.com/svinota/pyroute2-cni/kubernetes/crds/0.2/
+    kubectl apply -k https://github.com/svinota/pyroute2-cni/kubernetes/crds/0.3/
 
     # wait for the CRD to become established
     kubectl wait --for=condition=Established crd/ipblocks.ipam.pyroute2.org
@@ -227,7 +230,7 @@ the node they are set up on:
         ...
       spec:
         cidr: 10.244.0.0/26
-        nodeName: cni-test
+        nodeName: cni-test-0
         vrfTable: 42
       status:
         allocated: 3
@@ -256,22 +259,46 @@ state on the node.
     Hello, this is FRRouting (version 8.4_git).
     Copyright 1996-2005 Kunihiro Ishiguro, et al.
 
-    cni-test#
+    cni-test-0#
 
 Here you can check VRF, BGP status, routes and much more:
 
 .. code-block::
 
-    cni-test# show evpn vni
+    cni-test-0# show evpn vni
     VNI        Type VxLAN IF              # MACs   # ARPs   # Remote VTEPs  Tenant VRF
-    42         L3   l3vx-42               0        0        n/a             vrf-42
+    42         L3   l3vx-42               1        1        n/a             vrf-42
 
-There are no neighbors in a single-node cluster so far:
+There will be one neighbor visible, because there are two nodes in the
+cluster:
 
 .. code-block::
 
-    cni-test# show bgp summary
-    % No BGP neighbors found in VRF default
+    cni-test-0# show bgp summary
+
+    IPv4 Unicast Summary (VRF default):
+    BGP router identifier 192.168.124.47, local AS number 65000 vrf-id 0
+    BGP table version 0
+    RIB entries 1, using 192 bytes of memory
+    Peers 1, using 717 KiB of memory
+    Peer groups 1, using 64 bytes of memory
+
+    Neighbor        V         AS   MsgRcvd   MsgSent   TblVer  InQ OutQ  Up/Down State/PfxRcd   PfxSnt Desc
+    192.168.124.217 4      65000         7         7        0    0    0 00:02:38            0        0 N/A
+
+    Total number of neighbors 1
+
+    L2VPN EVPN Summary (VRF default):
+    BGP router identifier 192.168.124.47, local AS number 65000 vrf-id 0
+    BGP table version 0
+    RIB entries 3, using 576 bytes of memory
+    Peers 1, using 717 KiB of memory
+    Peer groups 1, using 64 bytes of memory
+
+    Neighbor        V         AS   MsgRcvd   MsgSent   TblVer  InQ OutQ  Up/Down State/PfxRcd   PfxSnt Desc
+    192.168.124.217 4      65000         7         7        0    0    0 00:02:38            1        1 N/A
+
+    Total number of neighbors 1
 
 But if you have a cluster with multiple nodes, then you'll see the BGP mesh
 by default.
@@ -293,7 +320,7 @@ and the host is `192.168.124.1`:
 
 .. code-block::
 
-    $ vim ./examples/frr/frr.conf  # add your peers
+    $ vim ./examples/frr/frr.conf  # set your peers
 
 Once the configs are fixed, start FRR in a container:
 
@@ -308,13 +335,6 @@ Once the configs are fixed, start FRR in a container:
 Alternatively, you can use your existing BGP routers, but then adjust
 your setup accordingly in order to inject prefixes.
 
-Once the container has started, you can check readiness from the host system:
-
-.. code-block::
-
-    $ curl http://localhost:24801/readyz
-    ok
-
 Now it's time to configure Kubernetes nodes to use our RR. Adjust and apply
 the VRFNodeConfig from examples:
 
@@ -328,16 +348,30 @@ the VRFNodeConfig from examples:
     apiVersion: cni.pyroute2.org/v1alpha1
     kind: VRFNodeConfig
     metadata:
-      name: cni-test-vrnc
+      name: cni-test-0
     spec:
       nodeRef:
-        name: cni-test
-      routerId: 192.168.124.54
+        name: cni-test-0
+      routerId: 192.168.124.47
       routeReflectors:
         - 192.168.124.1
       interfaces:
         - name: enp1s0
-          local: 192.168.124.54
+          local: 192.168.124.47
+    ---
+    apiVersion: cni.pyroute2.org/v1alpha1
+    kind: VRFNodeConfig
+    metadata:
+      name: cni-test-1
+    spec:
+      nodeRef:
+        name: cni-test-1
+      routerId: 192.168.124.217
+      routeReflectors:
+        - 192.168.124.1
+      interfaces:
+        - name: enp1s0
+          local: 192.168.124.217
  
 The `VRFNodeConfig` declares the local interface that participates in the
 BGP setup. Route reflectors are optional; if none are specified, the CNI
@@ -346,11 +380,13 @@ builds a BGP mesh within the cluster.
 .. code-block::
 
     $ kubectl create -f ./examples/vrfnodeconfig.yaml
-    vrfnodeconfig.cni.pyroute2.org/cni-test-vrnc created
+    vrfnodeconfig.cni.pyroute2.org/cni-test-0 unchanged
+    vrfnodeconfig.cni.pyroute2.org/cni-test-1 configured
 
     $ kubectl get vrnc
-    NAME            ROUTERID         ROUTEREFLECTORS   INTERFACES   ACCEPTED   READY
-    cni-test-vrnc   192.168.124.54   1                 1            true       true
+    NAME         ROUTERID          ROUTEREFLECTORS   INTERFACES   ACCEPTED   READY
+    cni-test-0   192.168.124.47    1                 1            true       true
+    cni-test-1   192.168.124.217   1                 1            true       true
 
 You can see a short summary of the node config: how many interfaces are
 defined there, how many route reflectors it is using, and whether it is
@@ -363,31 +399,49 @@ Let's check the BGP summary on the node:
     $ kubectl -n pyroute2-cni exec daemonsets/pyroute2-cni -c pyroute2-frr -- vtysh -c "show bgp summary"
 
     IPv4 Unicast Summary (VRF default):
-    BGP router identifier 192.168.124.54, local AS number 65000 vrf-id 0
+    BGP router identifier 192.168.124.47, local AS number 65000 vrf-id 0
     BGP table version 0
     RIB entries 1, using 192 bytes of memory
     Peers 1, using 717 KiB of memory
     Peer groups 1, using 64 bytes of memory
 
     Neighbor        V         AS   MsgRcvd   MsgSent   TblVer  InQ OutQ  Up/Down State/PfxRcd   PfxSnt Desc
-    192.168.124.1   4      65000         5         5        0    0    0 00:01:44        NoNeg    NoNeg N/A
+    192.168.124.1   4      65000        12        11        0    0    0 00:07:15        NoNeg    NoNeg N/A
 
     Total number of neighbors 1
 
     L2VPN EVPN Summary (VRF default):
-    BGP router identifier 192.168.124.54, local AS number 65000 vrf-id 0
+    BGP router identifier 192.168.124.47, local AS number 65000 vrf-id 0
     BGP table version 0
-    RIB entries 1, using 192 bytes of memory
+    RIB entries 3, using 576 bytes of memory
     Peers 1, using 717 KiB of memory
     Peer groups 1, using 64 bytes of memory
 
     Neighbor        V         AS   MsgRcvd   MsgSent   TblVer  InQ OutQ  Up/Down State/PfxRcd   PfxSnt Desc
-    192.168.124.1   4      65000         5         5        0    0    0 00:01:44            0        1 N/A
+    192.168.124.1   4      65000        12        11        0    0    0 00:07:15            1        1 N/A
 
     Total number of neighbors 1
 
-Here we see that the node has connected to the RR. We are halfway
-to success.
+Here we see that the node has connected to the RR.
+
+And for the RR:
+
+.. code-block::
+
+    $ sudo podman exec -ti frr vtysh -c "show bgp summary"
+
+    L2VPN EVPN Summary (VRF default):
+    BGP router identifier 192.168.124.1, local AS number 65000 vrf-id 0
+    BGP table version 0
+    RIB entries 3, using 576 bytes of memory
+    Peers 2, using 1434 KiB of memory
+    Peer groups 1, using 64 bytes of memory
+
+    Neighbor        V         AS   MsgRcvd   MsgSent   TblVer  InQ OutQ  Up/Down State/PfxRcd   PfxSnt Desc
+    192.168.124.47  4      65000        12        14        0    0    0 00:08:07            1        2 N/A
+    192.168.124.217 4      65000         9        12        0    0    0 00:05:26            1        2 N/A
+
+    Total number of neighbors 2
 
 .. _quickstart-tenant-vrf:
 
@@ -421,11 +475,11 @@ Check that L3 VRF `vrf-200` has appeared in the CNI BGP shell:
 
     $ kubectl -n pyroute2-cni exec -ti daemonsets/pyroute2-cni -c pyroute2-frr -- vtysh
     ...
-    cni-test# show evpn vni
+    cni-test-0# show evpn vni
     VNI        Type VxLAN IF              # MACs   # ARPs   # Remote VTEPs  Tenant VRF
     50200      L3   l3vx-50200            1        1        n/a             vrf-200
-    42         L3   l3vx-42               0        0        n/a             vrf-42
-    cni-test# 
+    42         L3   l3vx-42               1        1        n/a             vrf-42
+    cni-test-0# 
 
 .. _quickstart-inject-routes:
 
@@ -442,10 +496,10 @@ configuration, but the VRF itself still needs to be created on the host.
     ...
     rr-01# show evpn vni
     VNI        Type VxLAN IF              # MACs   # ARPs   # Remote VTEPs  Tenant VRF
-    50200      L3   None                  0        0        n/a             Unknown
+    50200      L3   None                  1        1        n/a             Unknown
 
 First, start the VRF. The script will create `bridge`, `vxlan`, and `vrf`
-interfaces, link them in the way FRR expects, set them up, and inject a route
+interfaces, link them as FRR expects, set them up, and inject a route
 in the VRF.
 
 .. code-block::
@@ -460,7 +514,7 @@ Then check FRR, look at the `Tenant VRF` field:
     ...
     rr-01# show evpn vni
     VNI        Type VxLAN IF              # MACs   # ARPs   # Remote VTEPs  Tenant VRF
-    50200      L3   vxlan-200             1        1        n/a             vrf-200
+    50200      L3   vxlan-200             2        2        n/a             vrf-200
 
 
 Check the routes. The script `create-vrf.sh` injects the `1.2.3.0/24` prefix.
@@ -472,7 +526,7 @@ inside the tenant VRF.
     $ sudo podman exec -ti frr vtysh
     ...
     rr-01# show bgp l2vpn evpn route
-    BGP table version is 3, local router ID is 192.168.124.1
+    BGP table version is 1, local router ID is 192.168.124.1
     Status codes: s suppressed, d damped, h history, * valid, > best, i - internal
     Origin codes: i - IGP, e - EGP, ? - incomplete
     EVPN type-1 prefix: [1]:[EthTag]:[ESI]:[IPlen]:[VTEP-IP]:[Frag-id]
@@ -489,15 +543,22 @@ inside the tenant VRF.
                         ET:8 RT:65000:200 Rmac:c6:23:4a:d0:c4:f3
     Route Distinguisher: 10.150.0.1:3
     *>i[5]:[0]:[26]:[10.150.0.0]
-                        192.168.124.54           0    100      0 ?
-                        RT:65000:200 ET:8 Rmac:a2:57:0e:2b:e5:d9
+                        192.168.124.217          0    100      0 ?
+                        RT:65000:200 ET:8 Rmac:32:91:8a:3b:9e:88
+    Route Distinguisher: 10.150.0.65:3
+    *>i[5]:[0]:[26]:[10.150.0.64]
+                        192.168.124.47           0    100      0 ?
+                        RT:65000:200 ET:8 Rmac:3e:67:df:83:fa:22
     Route Distinguisher: 10.244.0.1:2
     *>i[5]:[0]:[26]:[10.244.0.0]
-                        192.168.124.54           0    100      0 ?
-                        RT:65000:42 ET:8 Rmac:16:70:37:ba:22:d9
+                        192.168.124.47           0    100      0 ?
+                        RT:65000:42 ET:8 Rmac:ba:2a:f0:a8:22:39
+    Route Distinguisher: 10.244.0.65:2
+    *>i[5]:[0]:[26]:[10.244.0.64]
+                        192.168.124.217          0    100      0 ?
+                        RT:65000:42 ET:8 Rmac:7e:e7:81:30:f1:f5
 
-    Displayed 3 prefixes (3 paths)
-
+    Displayed 5 prefixes (5 paths)
 
 Here we see the route. But let's check it on the Kubernetes side:
 
@@ -505,7 +566,7 @@ Here we see the route. But let's check it on the Kubernetes side:
 
     $ kubectl -n pyroute2-cni exec -ti daemonsets/pyroute2-cni -c pyroute2-frr -- vtysh
     ...
-    cni-test# show ip route vrf vrf-200
+    cni-test-0# show ip route vrf vrf-200
     Codes: K - kernel route, C - connected, S - static, R - RIP,
            O - OSPF, I - IS-IS, B - BGP, E - EIGRP, N - NHRP,
            T - Table, v - VNC, V - VNC-Direct, A - Babel, F - PBR,
@@ -514,9 +575,9 @@ Here we see the route. But let's check it on the Kubernetes side:
            t - trapped, o - offload failure
 
     VRF vrf-200:
-    B>* 1.2.3.0/24 [200/0] via 192.168.124.1, l3br-200 onlink, weight 1, 00:04:03
-    C>* 10.150.0.0/26 is directly connected, l3br-200, 00:09:12
-
+    B>* 1.2.3.0/24 [200/0] via 192.168.124.1, l3br-200 onlink, weight 1, 00:02:38
+    B>* 10.150.0.0/26 [200/0] via 192.168.124.217, l3br-200 onlink, weight 1, 00:04:27
+    C>* 10.150.0.64/26 is directly connected, l3br-200, 00:04:27
 
 Now `1.2.3.0/24` is reachable from the Kubernetes pods in the tenant VRF.
 
@@ -526,12 +587,12 @@ Troubleshooting
 ---------------
 
 * a VM starts to fail: all the logs are in the `vm-test` directory; once
-  done with the debugging, feel free to clean up the workspace with eventually
-  started VM using `make clean`; then you can try again
+  done with the debugging, feel free to clean up the workspace with any
+  started VMs using `make clean`; then you can try again
 
 * `bgpd` and/or `zebra` don't start on the RR side in the container: in
   some setups you have to start them under root; also LSM/AppArmor can
-  affect the signals delivery between FRR daemons, you can see that in `dmesg`
+  affect signals delivery between FRR daemons, you can see that in `dmesg`
 
 * `podman` starts the container, but doesn't mount the `/etc/frr` directory:
   don't forget `:Z` in the volume mount argument, if you are using SELinux.

@@ -36,18 +36,18 @@ Container: pyroute2-frr
 * image: `ghcr.io/svinota/pyroute2-frr:{version}`
 * runs FRR: zebra, staticd, bgpd
 * runs EVPN-VXLAN controlplane
-* exposes and monitors a UNIX socket to reload configuratuion
+* exposes and monitors a UNIX socket to reload configuration
 
 Container: pyroute2-cni
 ~~~~~~~~~~~~~~~~~~~~~~~
 
 * image:  `ghcr.io/svinota/pyroute2-cni:{version}`
 * uses the host network namespace
-* exposes two UNIX sockets for the API and an HTTP readiness endpoint
+* exposes two UNIX sockets for the API and an HTTP probe/metrics endpoint
 
 The server workflow:
 
-#. watch namespaces and VRF domain objects
+#. start background controllers and watch cluster state
 #. reconcile periodic address-pool and firewall jobs
 #. await request init
 #. allocate and respond with a request id
@@ -73,3 +73,13 @@ The server also has managers:
 
 * `AddressPool` handles allocation, reconciliation, and garbage collection of pod address blocks.
 * `FirewallManager` owns the nftables setup and per-VRF NAT and marking rules.
+
+CM flow
+-------
+
+The `pyroute2-cm` deployment provides cluster bootstrap for config CRDs:
+
+* watches and reconciles `CNIConfig` resources
+* ensures `CNIConfigSelection/default` exists
+* ensures the default `VRFDomain` exists using values from `server-config`
+* keeps default/control-plane bootstrap logic out of the node-local privileged CNI daemon
