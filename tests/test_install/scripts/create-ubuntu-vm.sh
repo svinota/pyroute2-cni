@@ -2,17 +2,17 @@
 
 export LIBVIRT_DEFAULT_URI=qemu:///system
 
-[ "$1" = "24" ] && {
+[ "$1" = "ubuntu24" ] && {
     export IMAGE_NAME="ubuntu-24.04-server-cloudimg-amd64.img"
     export IMAGE_BASE="https://cloud-images.ubuntu.com/releases/noble/release/"
 } ||:
 
-[ "$1" = "25" ] && {
+[ "$1" = "ubuntu25" ] && {
     export IMAGE_NAME="ubuntu-25.10-server-cloudimg-amd64.img"
     export IMAGE_BASE="https://cloud-images.ubuntu.com/releases/questing/release/"
 } ||:
 
-[ "$1" = "26" ] && {
+[ "$1" = "ubuntu26" ] && {
     export IMAGE_NAME="ubuntu-26.04-server-cloudimg-amd64.img"
     export IMAGE_BASE="https://cloud-images.ubuntu.com/releases/resolute/release/"
 } ||:
@@ -145,6 +145,11 @@ EOF
 for i in 0 1; do {
     start_vm $i
 } done
+
+kubectl \
+    --kubeconfig ./kubeconfig \
+    taint node --all \
+    node-role.kubernetes.io/control-plane:NoSchedule- >/dev/null 2>&1
 
 popd >/dev/null
 

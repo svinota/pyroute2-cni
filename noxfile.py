@@ -11,9 +11,13 @@ nox.options.sessions = ['linter', 'test_unit', 'test_mock', 'test_functional']
 
 
 def load_global_config():
+    ret = {}
     if sys.argv[-2] == '--' and len(sys.argv[-1]):
-        return json.loads(sys.argv[-1])
-    return {}
+        ret = json.loads(sys.argv[-1])
+    ret.setdefault('crds', '0.3')
+    ret.setdefault('release', 'dev')
+    ret.setdefault('platform', 'ubuntu26')
+    return ret
 
 
 global_config = load_global_config()
@@ -162,11 +166,38 @@ def test_functional(session, config):
 
 
 @nox.session
-@nox.parametrize('ubuntu', ['24', '25', '26'])
-def test_install(session, ubuntu):
+@add_session_config
+def test_install(session, config):
     '''Run installation tests.'''
-    session.run('./tests/test_install/run.sh', ubuntu, external=True)
+    setup_venv_common(session, flavour='dev', config=config)
+    session.run(
+        './tests/test_install/run.sh',
+        config['crds'],
+        config['release'],
+        config['platform'],
+        external=True,
+    )
+    session.run(
+        *options('tests/test_functional', config),
+        env={
+            'PYTHONPATH': os.getcwd(),
+            'KUBECONFIG': f'{os.getcwd()}/vm-test/kubeconfig',
+        },
+    )
     session.run('./tests/test_install/cleanup.sh', external=True)
+
+
+@nox.session
+@add_session_config
+def vm(session, config):
+    '''Install lab VMs.'''
+    session.run(
+        'bash',
+        '-c',
+        f'./tests/test_install/scripts/create-ubuntu-vm.sh '
+        f'{config['platform']} | tee env.sh',
+        external=True,
+    )
 
 
 @nox.session

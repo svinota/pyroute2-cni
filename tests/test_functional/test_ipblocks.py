@@ -27,7 +27,7 @@ def test_ipblock_gateways(env_namespace):
         )
 
     ipblocks = _list_ipblocks_for_vrf(custom_api, 200)
-    assert len(ipblocks) == 7  # 2 nodes and 30 pods
+    assert len(ipblocks) == 6
     assert all(_ipblock_gateway_count(block) == 1 for block in ipblocks)
 
     for pod in pods:

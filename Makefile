@@ -75,9 +75,17 @@ render-kustomization:
 deploy: cni-image-build render-kustomization
 	kubectl apply -k kubernetes/releases/dev/
 
-.PHONY: test nox
-test nox:
+.PHONY: nox
+nox:
 	$(call nox,-e ${session})
+
+.PHONY: test
+test:
+	$(call nox,-e test_install)
+
+.PHONY: vm
+vm:
+	$(call nox,-e vm)
 
 .PHONY: list-sessions
 list-sessions:

@@ -1,14 +1,16 @@
 #!/bin/bash
 
-echo -e "\nPrepare the environment: Ubuntu $1\n"
+echo -e "\nPrepare the environment: crds=$1 release=$2 platform=$3\n"
 
 SCRIPT_PATH="$(realpath "${BASH_SOURCE[0]}")"
 SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
+CRDS="$1"
+RELEASE="$2"
 
-${SCRIPT_DIR}/scripts/create-ubuntu-vm.sh $1 | tee env.sh
+${SCRIPT_DIR}/scripts/create-ubuntu-vm.sh $3 | tee env.sh
 . env.sh
 
-echo -e "\nRun the tests\n"
+echo -e "\nRun initial tests\n"
 
 # 8<---------------------------------------------------------------------------
 TARGET="cni-test-0
@@ -21,9 +23,9 @@ echo "ok"
 
 # 8<---------------------------------------------------------------------------
 echo -n "Test CRD install: "
-kubectl apply -k ./kubernetes/crds/0.2/ >/dev/null
+kubectl apply -k ./kubernetes/crds/${CRDS}/ >/dev/null
 kubectl wait --for=condition=Established crd/ipblocks.ipam.pyroute2.org --timeout=30s >/dev/null || { echo "Condition failed"; exit 1; }
-kubectl apply -k ./kubernetes/releases/dev/ >/dev/null
+kubectl apply -k ./kubernetes/releases/${RELEASE}/ >/dev/null
 echo "ok"
 
 
