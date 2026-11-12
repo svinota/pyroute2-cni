@@ -60,7 +60,7 @@ cni-image-version:
 	echo `cat images/cni/VERSION | awk -F . '{print($$1"."$$2"."$$3 + 1)}'` >images/cni/VERSION
 
 .PHONY: cni-image-build
-cni-image-build: clean cni-image-version
+cni-image-build: cni-image-version
 	make -C pyroute2_plugin
 	$(call nox,-e build)
 	podman build -t ghcr.io/svinota/pyroute2-cni:`cat images/cni/VERSION` .
