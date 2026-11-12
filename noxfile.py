@@ -195,7 +195,7 @@ def vm(session, config):
         'bash',
         '-c',
         f'./tests/test_install/scripts/create-ubuntu-vm.sh '
-        f'{config['platform']} | tee env.sh',
+        f'{config["platform"]} | tee env.sh',
         external=True,
     )
 
