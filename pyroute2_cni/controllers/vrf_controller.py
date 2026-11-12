@@ -1,4 +1,5 @@
 import asyncio
+import errno
 import logging
 import os
 from configparser import ConfigParser
@@ -6,7 +7,7 @@ from dataclasses import dataclass
 from ipaddress import IPv4Network
 
 from kubernetes.client.exceptions import ApiException
-from pyroute2 import AsyncIPRoute
+from pyroute2 import AsyncIPRoute, NetlinkError
 
 from pyroute2_cni.address_pool import AddressPool
 from pyroute2_cni.controllers.base_crd_controller import BaseCRDWatchController
@@ -96,7 +97,26 @@ class VRFController(BaseCRDWatchController[VRFDomain]):
                 )
             )[0].get('index')
 
-    async def _fetch_vtep(
+    async def _fetch_existing_vtep_info(
+        self, vx_ifname: str
+    ) -> tuple[int, VTEPInfo]:
+        async with AsyncIPRoute() as ipr:
+            try:
+                (vxlan,) = await ipr.link('get', ifname=vx_ifname)
+                (uplink,) = await ipr.link(
+                    'get', index=vxlan.get(('linkinfo', 'data', 'vxlan_link'))
+                )
+                return vxlan.get('index'), VTEPInfo(
+                    ifname=uplink.get('ifname'),
+                    local=vxlan.get(('linkinfo', 'data', 'vxlan_local')),
+                    link=vxlan.get(('linkinfo', 'data', 'vxlan_link')),
+                )
+            except NetlinkError as e:
+                if e.code != errno.ENODEV:
+                    raise e
+        return 0, VTEPInfo(ifname='', local='', link=0)
+
+    async def _fetch_target_vtep_info(
         self, domain: VRFDomain, attachment: VRFAttachment
     ) -> VTEPInfo:
         #
@@ -203,22 +223,42 @@ class VRFController(BaseCRDWatchController[VRFDomain]):
             logging.info(
                 'ensure_vni: fetching VTEP info for domain=%s', domain.name
             )
-            vtep_info = await self._fetch_vtep(domain, attachment)
-            logging.info(f'vtep info: {vtep_info}')
-            vx_idx = links.get(vx_ifname, {}).get('index') or (
-                await ipr.ensure(
-                    ipr.link,
-                    present=True,
-                    ifname=vx_ifname,
-                    kind='vxlan',
-                    vxlan_link=vtep_info.link,
-                    vxlan_id=attachment.vni,
-                    vxlan_port=attachment.port,
-                    vxlan_local=vtep_info.local,
-                    vxlan_learning=0,
-                    state='up',
-                )
-            )[0].get('index')
+
+            vx_idx = 0
+            target_vtep_info = await self._fetch_target_vtep_info(
+                domain, attachment
+            )
+            logging.info(f'target vtep info: {target_vtep_info}')
+
+            vx_idx, existing_vtep_info = await self._fetch_existing_vtep_info(
+                vx_ifname
+            )
+            logging.info(f'existing vtep info: {existing_vtep_info}')
+
+            if target_vtep_info != existing_vtep_info:
+                if vx_idx > 0:
+                    #
+                    # Some VTEP attributes can not be changed, so if they
+                    # do not match, just remove the port
+                    #
+                    await ipr.ensure(ipr.link, present=False, index=vx_idx)
+                #
+                # Ensure VTEP
+                #
+                vx_idx = (
+                    await ipr.ensure(
+                        ipr.link,
+                        present=True,
+                        ifname=vx_ifname,
+                        kind='vxlan',
+                        vxlan_link=target_vtep_info.link,
+                        vxlan_id=attachment.vni,
+                        vxlan_port=attachment.port,
+                        vxlan_local=target_vtep_info.local,
+                        vxlan_learning=0,
+                        state='up',
+                    )
+                )[0].get('index')
             logging.info(
                 'ensure_vni: linking bridge->vrf br_idx=%s vrf_idx=%s',
                 br_idx,
