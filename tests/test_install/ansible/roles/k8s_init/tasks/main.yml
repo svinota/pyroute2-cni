@@ -1,0 +1,42 @@
+- name: Initialize Kubernetes
+  ansible.builtin.script:
+    cmd: "{{ playbook_dir }}/../scripts/k8s_init.sh"
+    creates: /etc/kubernetes/admin.conf
+  no_log: true
+
+- name: Verify the initial control-plane API
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig=/etc/kubernetes/admin.conf
+      - --request-timeout=10s
+      - get
+      - --raw=/readyz
+  register: k8s_api
+  changed_when: false
+  until: k8s_api.rc == 0
+  retries: 60
+  delay: 2
+
+- name: Generate a short-lived join command
+  ansible.builtin.command:
+    argv:
+      - kubeadm
+      - token
+      - create
+      - --print-join-command
+      - --ttl
+      - 15m
+  register: k8s_join_command
+  no_log: true
+
+- name: Upload certificates for joining control planes
+  ansible.builtin.command:
+    argv:
+      - kubeadm
+      - init
+      - phase
+      - upload-certs
+      - --upload-certs
+  register: k8s_certificate
+  no_log: true

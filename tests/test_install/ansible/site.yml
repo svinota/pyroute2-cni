@@ -1,0 +1,80 @@
+- name: Prepare Kubernetes nodes
+  hosts: all
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Wait for SSH and Python
+      ansible.builtin.wait_for_connection:
+        timeout: 300
+
+    - name: Wait for cloud-init
+      ansible.builtin.command: cloud-init status --wait
+      changed_when: false
+
+    - name: Prepare the guest
+      ansible.builtin.script:
+        cmd: "{{ playbook_dir }}/../scripts/k8s_prepare.sh"
+
+- name: Initialize the first control plane
+  hosts: k8s_init
+  become: true
+  gather_facts: false
+  roles:
+    - k8s_init
+
+- name: Join additional control planes
+  hosts: k8s_join
+  become: true
+  gather_facts: false
+  roles:
+    - k8s_join
+
+- name: Finalize the test cluster
+  hosts: k8s_init
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Wait for both nodes to register
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig=/etc/kubernetes/admin.conf
+          - --request-timeout=10s
+          - get
+          - nodes
+          - -o
+          - json
+      register: k8s_nodes
+      changed_when: false
+      until:
+        - k8s_nodes.rc == 0
+        - >-
+          ((k8s_nodes.stdout | from_json)['items']
+          | map(attribute='metadata.name') | sort)
+          == (groups['all'] | sort)
+      retries: 60
+      delay: 2
+
+    - name: Allow workloads on control-plane nodes
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig=/etc/kubernetes/admin.conf
+          - taint
+          - node
+          - "{{ item.metadata.name }}"
+          - "node-role.kubernetes.io/control-plane:NoSchedule-"
+      loop: "{{ (k8s_nodes.stdout | from_json)['items'] }}"
+      loop_control:
+        label: "{{ item.metadata.name }}"
+      when: >-
+        (item.spec.taints | default([])
+        | selectattr('key', 'equalto', 'node-role.kubernetes.io/control-plane')
+        | selectattr('effect', 'equalto', 'NoSchedule')
+        | list | length) > 0
+
+    - name: Fetch the administrator kubeconfig
+      ansible.builtin.fetch:
+        src: /etc/kubernetes/admin.conf
+        dest: "{{ inventory_dir }}/kubeconfig"
+        flat: true

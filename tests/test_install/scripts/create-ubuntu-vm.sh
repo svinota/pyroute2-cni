@@ -36,7 +36,7 @@ ls -1 |\
     wc -l |\
     grep ^0 >/dev/null || { echo "# Start in an empty directory"; exit 1; }
 
-for i in ssh-keygen jq curl tofu; do {
+for i in ssh-keygen jq curl tofu ansible-playbook; do {
     echo -n "# Check $i ... "
     which $i >/dev/null 2>&1 || { echo "# required $i missing"; exit 2; }
     echo "ok"
@@ -63,58 +63,45 @@ echo -n "# Create VMs "
 tofu apply -input=false -auto-approve >&2 || exit 1
 echo "ok"
 
-function start_vm() {
-    VM_IDX="$1"
+NODE_IPS=$(tofu output -json node_ips) || exit 3
+NODE_IP=$(jq -er '.[0]' <<<"${NODE_IPS}") || exit 3
 
-    echo -n "# Read node IP address "
-    NODE_IP=$(tofu output -json node_ips | jq -er ".[${VM_IDX}]") || exit 3
+umask 077
+jq -en \
+    --argjson ips "${NODE_IPS}" \
+    --arg key "$(realpath id-${VM_BASE})" '
+    {
+      all: {
+        vars: {
+          ansible_user: "ubuntu",
+          ansible_ssh_private_key_file: $key,
+          ansible_ssh_common_args:
+            "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o IdentitiesOnly=yes"
+        },
+        children: {
+          k8s_init: {
+            hosts: {
+              "cni-test-0": {
+                ansible_host: ($ips[0] // error("Missing node 0 address"))
+              }
+            }
+          },
+          k8s_join: {
+            hosts: {
+              "cni-test-1": {
+                ansible_host: ($ips[1] // error("Missing node 1 address"))
+              }
+            }
+          }
+        }
+      }
+    }' >inventory.json || exit 3
 
-    [ -z "${NODE_IP}" ] && { echo "# Could not get node IP"; exit 3; }
+ANSIBLE_LOG_PATH="$(pwd)/ansible.log" \
+    ansible-playbook -i inventory.json \
+    "${SCRIPT_DIR}/../ansible/site.yml" >&2 || exit 1
 
-    if [ -f "kubeconfig" ]; then {
-       printf "\n"
-    } else {
-       printf "\n# Node address:\nexport NODE_IP=%s\n" ${NODE_IP}
-    } fi
-
-    ephemeral_opts="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i id-${VM_BASE}"
-    ephemeral_ssh="ssh ${ephemeral_opts} ubuntu@${NODE_IP} "
-    ephemeral_scp="scp ${ephemeral_opts} "
-
-    echo -n "# Waiting for SSH "
-    for i in `seq 1 100`; do {
-        ${ephemeral_ssh} uname -a >/dev/null 2>&1 && break
-        echo -n "."
-        sleep 1
-    } done
-
-    ${ephemeral_scp} ${SCRIPT_DIR}/k8s_prepare.sh ubuntu@${NODE_IP}:./ >/dev/null 2>&1
-    ${ephemeral_scp} ${SCRIPT_DIR}/k8s_init.sh ubuntu@${NODE_IP}:./ >/dev/null 2>&1
-    echo -en "\n# Prepare the system to run kubernetes ... "
-    ${ephemeral_ssh} sudo bash ./k8s_prepare.sh >k8s_prepare.log 2>&1 && echo "ok"
-    if [ -f "kubeconfig" ]; then {
-        printf "# Join the cluster ... "
-        ${ephemeral_ssh} sudo $(cat token) --control-plane --certificate-key $(cat cert) >>k8s_join.log 2>&1 && printf "ok\n"
-    } else {
-        printf "# Init the cluster ... "
-        ${ephemeral_ssh} sudo bash ./k8s_init.sh >k8s_init.log 2>&1 && printf "ok\n"
-        printf "# Fetch the token ... "
-        ${ephemeral_ssh} sudo kubeadm token create --print-join-command --ttl 15m >token 2>/dev/null && printf "ok\n"
-        printf "# Fetch the cert ... "
-        ${ephemeral_ssh} sudo kubeadm init phase upload-certs --upload-certs 2>/dev/null | tail -1 >cert && printf "ok\n"
-        printf "# Fetch kubeconfig ... "
-        ${ephemeral_ssh} sudo cat /etc/kubernetes/admin.conf >kubeconfig 2>/dev/null && printf "ok\n"
-    } fi
-}
-
-for i in 0 1; do {
-    start_vm $i
-} done
-
-kubectl \
-    --kubeconfig ./kubeconfig \
-    taint node --all \
-    node-role.kubernetes.io/control-plane:NoSchedule- >/dev/null 2>&1
+printf "\n# Node address:\nexport NODE_IP=%s\n" "${NODE_IP}"
 
 popd >/dev/null
 

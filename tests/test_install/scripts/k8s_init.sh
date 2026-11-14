@@ -1,5 +1,7 @@
 #!/bin/bash
 
+set -euo pipefail
+
 IP_ADDRESS="`ip -j ro get 1.1.1.1 | jq -r '.[0].prefsrc'`"
 
 sudo kubeadm init \

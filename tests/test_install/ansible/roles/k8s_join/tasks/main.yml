@@ -1,0 +1,27 @@
+- name: Join the Kubernetes control plane
+  ansible.builtin.command:
+    argv: >-
+      {{
+        hostvars[groups['k8s_init'][0]].k8s_join_command.stdout.split()
+        + [
+          '--control-plane',
+          '--certificate-key',
+          hostvars[groups['k8s_init'][0]].k8s_certificate.stdout_lines[-1]
+        ]
+      }}
+    creates: /etc/kubernetes/admin.conf
+  no_log: true
+
+- name: Verify the joined control-plane API
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig=/etc/kubernetes/admin.conf
+      - --request-timeout=10s
+      - get
+      - --raw=/readyz
+  register: k8s_api
+  changed_when: false
+  until: k8s_api.rc == 0
+  retries: 60
+  delay: 2

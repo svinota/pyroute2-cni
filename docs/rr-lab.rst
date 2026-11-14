@@ -84,6 +84,7 @@ Utilities:
 * curl
 * jq
 * opentofu
+* ansible
 
 Services and resources:
 
@@ -121,6 +122,15 @@ installed, but without any CNI. Installation logs, kubeconfig, and SSH keys
 are located in the `vm-test` directory. Also, the script creates a `tmp`
 directory where it downloads the VM base image; if you do not remove it, it
 will be used as the image cache.
+
+OpenTofu creates the VMs, then the script generates
+``vm-test/inventory.json`` and runs Ansible to prepare and bootstrap
+the Kubernetes control planes. Ansible execution is logged to
+``vm-test/ansible.log``.
+
+The SSH key, kubeconfig, and environment exports retain their existing
+locations. Separate ``token`` and ``cert`` files are no longer written;
+join credentials are passed through in-memory Ansible variables.
 
 Terraform state is also stored under ``vm-test``. Use ``make clean``
 before deleting that directory so the VMs and storage pool are removed
