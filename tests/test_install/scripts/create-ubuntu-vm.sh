@@ -36,7 +36,7 @@ ls -1 |\
     wc -l |\
     grep ^0 >/dev/null || { echo "# Start in an empty directory"; exit 1; }
 
-for i in ssh-keygen virsh cloud-localds qemu-img curl virt-install; do {
+for i in ssh-keygen virsh cloud-localds curl tofu; do {
     echo -n "# Check $i ... "
     which $i >/dev/null 2>&1 || { echo "# required $i missing"; exit 2; }
     echo "ok"
@@ -52,6 +52,9 @@ for i in ssh-keygen virsh cloud-localds qemu-img curl virt-install; do {
 }
 
 ssh-keygen -f id-${VM_BASE} -N '' >/dev/null
+
+cp "${SCRIPT_DIR}/../terraform/main.tf" . || exit 1
+tofu init -input=false >&2 || exit 1
 
 function start_vm() {
     VM_IDX="$1"
@@ -81,20 +84,12 @@ EOF
 
     cloud-localds ${VM_NAME}-seed.iso user-data meta-data && echo "ok"
 
-    echo -n "# Create VM image "
-    qemu-img create -f qcow2 -b ${IMAGE_NAME} -F qcow2 ${VM_NAME}.qcow2 30G >/dev/null && echo "ok"
+    printf 'image_name = "%s"\nnode_count = %s\n' \
+        "${IMAGE_NAME}" "$((VM_IDX + 1))" >terraform.tfvars
 
     echo -n "# Create VM "
-    virt-install \
-        --name ${VM_NAME} \
-        --memory 4096 \
-        --vcpus 2 \
-        --disk path=${VM_NAME}.qcow2,format=qcow2,bus=virtio \
-        --disk path=${VM_NAME}-seed.iso,device=cdrom \
-        --network network=default \
-        --import \
-        --noautoconsole \
-        --os-variant ubuntu25.10 >/dev/null && echo "ok"
+    tofu apply -input=false -auto-approve >&2 || exit 1
+    echo "ok"
 
     echo -n "# Waiting for IP address "
     for i in `seq 100`; do {

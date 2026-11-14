@@ -84,8 +84,7 @@ Utilities:
 * curl
 * virsh
 * cloud-localds
-* qemu-img
-* virt-install
+* opentofu
 
 Services and resources:
 
@@ -123,6 +122,10 @@ installed, but without any CNI. Installation logs, kubeconfig, and SSH keys
 are located in the `vm-test` directory. Also, the script creates a `tmp`
 directory where it downloads the VM base image; if you do not remove it, it
 will be used as the image cache.
+
+Terraform state is also stored under ``vm-test``. Use ``make clean``
+before deleting that directory so the VMs and storage pool are removed
+before their state is discarded.
 
 You can use the SSH keys to access the VM shell:
 
