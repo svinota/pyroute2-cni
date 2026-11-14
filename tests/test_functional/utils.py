@@ -29,6 +29,26 @@ def run_cmd(
     )
 
 
+def run_cmd_in_container(
+    v1: client.CoreV1Api,
+    namespace: str,
+    name: str,
+    container: str,
+    command: list[str],
+) -> str:
+    return stream(
+        v1.connect_get_namespaced_pod_exec,
+        name=name,
+        namespace=namespace,
+        container=container,
+        command=command,
+        stderr=True,
+        stdin=False,
+        stdout=True,
+        tty=False,
+    )
+
+
 def get_ip(v1: client.CoreV1Api, name: str, namespace: str) -> str | None:
     pod = v1.read_namespaced_pod(name=name, namespace=namespace)
     return pod.status.pod_ip if pod.status is not None else None
@@ -37,6 +57,13 @@ def get_ip(v1: client.CoreV1Api, name: str, namespace: str) -> str | None:
 def pod_running(v1: client.CoreV1Api, name: str, namespace: str) -> bool:
     pod = v1.read_namespaced_pod(name=name, namespace=namespace)
     return pod.status is not None and pod.status.phase == 'Running'
+
+
+def get_node_name(
+    v1: client.CoreV1Api, name: str, namespace: str
+) -> str | None:
+    pod = v1.read_namespaced_pod(name=name, namespace=namespace)
+    return pod.spec.node_name if pod.spec is not None else None
 
 
 def get_mac(v1: client.CoreV1Api, name: str, namespace: str) -> str:
