@@ -36,7 +36,7 @@ ls -1 |\
     wc -l |\
     grep ^0 >/dev/null || { echo "# Start in an empty directory"; exit 1; }
 
-for i in ssh-keygen virsh cloud-localds curl tofu; do {
+for i in ssh-keygen jq curl tofu; do {
     echo -n "# Check $i ... "
     which $i >/dev/null 2>&1 || { echo "# required $i missing"; exit 2; }
     echo "ok"
@@ -56,48 +56,18 @@ ssh-keygen -f id-${VM_BASE} -N '' >/dev/null
 cp "${SCRIPT_DIR}/../terraform/main.tf" . || exit 1
 tofu init -input=false >&2 || exit 1
 
+printf 'image_name = "%s"\nnode_count = 2\n' \
+    "${IMAGE_NAME}" >terraform.tfvars
+
+echo -n "# Create VMs "
+tofu apply -input=false -auto-approve >&2 || exit 1
+echo "ok"
+
 function start_vm() {
     VM_IDX="$1"
-    VM_NAME="${VM_BASE}-${VM_IDX}"
-    echo -n "# Create cloud-init "
-    cat <<EOF >user-data
-#cloud-config
-hostname: ${VM_NAME}
 
-users:
-  - name: ubuntu
-    sudo: ALL=(ALL) NOPASSWD:ALL
-    shell: /bin/bash
-    ssh_authorized_keys:
-      - `cat id-${VM_BASE}.pub`
-
-package_update: true
-packages:
-  - curl
-EOF
-
-cat <<EOF >meta-data
-
-instance-id: ${VM_NAME}
-local-hostname: ${VM_NAME}
-EOF
-
-    cloud-localds ${VM_NAME}-seed.iso user-data meta-data && echo "ok"
-
-    printf 'image_name = "%s"\nnode_count = %s\n' \
-        "${IMAGE_NAME}" "$((VM_IDX + 1))" >terraform.tfvars
-
-    echo -n "# Create VM "
-    tofu apply -input=false -auto-approve >&2 || exit 1
-    echo "ok"
-
-    echo -n "# Waiting for IP address "
-    for i in `seq 100`; do {
-        NODE_IP=`virsh domifaddr ${VM_NAME} 2>/dev/null | awk '/ipv4/ {print gensub(/\/.+/, "", "g", $4)}'`
-        [ -z "${NODE_IP}" ] || break
-        echo -n .
-        sleep 1
-    } done
+    echo -n "# Read node IP address "
+    NODE_IP=$(tofu output -json node_ips | jq -er ".[${VM_IDX}]") || exit 3
 
     [ -z "${NODE_IP}" ] && { echo "# Could not get node IP"; exit 3; }
 

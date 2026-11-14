@@ -82,8 +82,7 @@ Utilities:
 * tee
 * ssh-keygen
 * curl
-* virsh
-* cloud-localds
+* jq
 * opentofu
 
 Services and resources:

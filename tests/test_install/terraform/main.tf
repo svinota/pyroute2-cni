@@ -35,6 +35,42 @@ resource "libvirt_pool" "test" {
   }
 }
 
+resource "libvirt_cloudinit_disk" "node" {
+  count = var.node_count
+
+  name = "cni-test-${count.index}-seed"
+  meta_data = yamlencode({
+    instance-id    = "cni-test-${count.index}"
+    local-hostname = "cni-test-${count.index}"
+  })
+  user_data = format("#cloud-config\n%s", yamlencode({
+    hostname = "cni-test-${count.index}"
+    users = [{
+      name                = "ubuntu"
+      sudo                = "ALL=(ALL) NOPASSWD:ALL"
+      shell               = "/bin/bash"
+      ssh_authorized_keys = [trimspace(file("${path.root}/id-cni-test.pub"))]
+    }]
+    package_update = true
+    packages       = ["curl"]
+  }))
+}
+
+resource "libvirt_volume" "seed" {
+  count = var.node_count
+
+  name = "cni-test-${count.index}-seed.iso"
+  pool = libvirt_pool.test.name
+  target = {
+    format = { type = "raw" }
+  }
+  create = {
+    content = {
+      url = libvirt_cloudinit_disk.node[count.index].path
+    }
+  }
+}
+
 resource "libvirt_volume" "node" {
   count = var.node_count
 
@@ -104,7 +140,7 @@ resource "libvirt_domain" "node" {
         driver    = { name = "qemu", type = "raw" }
         source = {
           file = {
-            file = "${abspath(path.root)}/cni-test-${count.index}-seed.iso"
+            file = libvirt_volume.seed[count.index].path
           }
         }
         target = { dev = "sda", bus = "sata" }
@@ -115,10 +151,34 @@ resource "libvirt_domain" "node" {
       source = {
         network = { network = "default" }
       }
+      wait_for_ip = {
+        source  = "lease"
+        network = "0.0.0.0/0"
+        timeout = 100
+      }
     }]
   }
 
   destroy = {
     graceful = false
   }
+}
+
+data "libvirt_domain_interface_addresses" "node" {
+  count = var.node_count
+
+  domain = libvirt_domain.node[count.index].uuid
+  source = "lease"
+}
+
+output "node_ips" {
+  value = [
+    for node in data.libvirt_domain_interface_addresses.node :
+    one(flatten([
+      for interface in node.interfaces : [
+        for address in interface.addrs :
+        address.addr if address.type == "ipv4"
+      ]
+    ]))
+  ]
 }
