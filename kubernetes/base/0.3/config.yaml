@@ -13,6 +13,9 @@ data:
     !
     router bgp 65000
      bgp router-id $router_id
+     bgp graceful-restart
+     bgp graceful-restart restart-time 30
+     bgp graceful-restart stalepath-time 120
      neighbor PR2 peer-group
      neighbor PR2 remote-as internal
     $peer_records
