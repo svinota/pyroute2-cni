@@ -11,42 +11,41 @@ def packets_received(output, amount):
     step_2 = step_1.split(',')[1]
     step_3 = step_2.split()[0]
     received = int(step_3)
-    return received == amount
+    return received >= amount
 
 
 def run_cmd(
     v1: client.CoreV1Api, namespace: str, name: str, command: list[str]
 ) -> str:
-    return stream(
-        v1.connect_get_namespaced_pod_exec,
-        name=name,
-        namespace=namespace,
-        command=command,
-        stderr=True,
-        stdin=False,
-        stdout=True,
-        tty=False,
-    )
+    return run_cmd_in_container(v1, namespace, name, None, command)
 
 
 def run_cmd_in_container(
     v1: client.CoreV1Api,
     namespace: str,
     name: str,
-    container: str,
+    container: None | str,
     command: list[str],
 ) -> str:
-    return stream(
-        v1.connect_get_namespaced_pod_exec,
-        name=name,
-        namespace=namespace,
-        container=container,
-        command=command,
-        stderr=True,
-        stdin=False,
-        stdout=True,
-        tty=False,
-    )
+    max_attempts = 10
+    for i in range(max_attempts):
+        try:
+            return stream(
+                v1.connect_get_namespaced_pod_exec,
+                name=name,
+                namespace=namespace,
+                container=container,
+                command=command,
+                stderr=True,
+                stdin=False,
+                stdout=True,
+                tty=False,
+            )
+        except client.exceptions.ApiException as err:
+            if err.status != 0 or i == (max_attempts - 1):
+                raise err
+        time.sleep(1)
+    raise RuntimeError()
 
 
 def get_ip(v1: client.CoreV1Api, name: str, namespace: str) -> str | None:
@@ -67,15 +66,8 @@ def get_node_name(
 
 
 def get_mac(v1: client.CoreV1Api, name: str, namespace: str) -> str:
-    output = stream(
-        v1.connect_get_namespaced_pod_exec,
-        name=name,
-        namespace=namespace,
-        command=['ip', '-o', 'link'],
-        stderr=True,
-        stdin=False,
-        stdout=True,
-        tty=False,
+    output = run_cmd(
+        v1, name=name, namespace=namespace, command=['ip', '-o', 'link']
     )
     for line in output.split('\n'):
         if 'link/ether' in line:

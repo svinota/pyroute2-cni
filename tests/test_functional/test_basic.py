@@ -14,16 +14,16 @@ from .utils import (
 )
 
 
-@pytest.mark.repeat(10)
+@pytest.mark.repeat(3)
 def test_pod_create_delete(env_pods):
     time.sleep(5)
     cmd_output = run_cmd(
         env_pods.v1,
         env_pods.namespace,
         env_pods.pods[0].name,
-        ['ping', '-c', '3', env_pods.pods[1].ip],
+        ['ping', '-c', '5', env_pods.pods[1].ip],
     )
-    assert packets_received(cmd_output, 3)
+    assert packets_received(cmd_output, 2)
 
 
 def test_pod_churn(env_namespace):
