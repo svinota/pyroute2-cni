@@ -80,11 +80,18 @@ Utilities:
 
 * bash
 * tee
-* ssh-keygen
 * curl
 * jq
 * opentofu
-* ansible
+
+Additional dependencies:
+
+* Ubuntu provisioning
+  * ssh-keygen
+  * ansible
+* Talos provisioning
+  * kubectl
+  * talosctl (optional)
 
 Services and resources:
 
@@ -98,7 +105,8 @@ Install the VM
 
 This step bootstraps the example environment used throughout the rest of the
 guide. When it succeeds, you should have a ready-to-use test cluster, SSH
-credentials, and a kubeconfig under `vm-test`.
+credentials for Ubuntu or Talos client credentials, and a kubeconfig under
+`vm-test`.
 
 .. code-block::
 
@@ -111,11 +119,28 @@ credentials, and a kubeconfig under `vm-test`.
     # setup env
     . env.sh
 
+Ubuntu 26 remains the default. To create a Talos v1.14.0 cluster with
+Kubernetes v1.37.0 instead:
+
+.. code-block:: bash
+
+    make vm noxconfig='{"platform":"talos"}'
+    . env.sh
+
+To run the installation and functional tests on Talos:
+
+.. code-block:: bash
+
+    make test noxconfig='{"platform":"talos"}'
+
+Run ``make clean`` before changing platforms. Platform switching is not
+an in-place operating-system conversion.
+
 The script takes several minutes to run: it downloads the VM base image,
 starts the VM, and runs scripts there to set up the system and install
 Kubernetes. The output of the script is itself usable as a shell script: it
-exports two variables, `NODE_IP` and `KUBECONFIG`. You can simply source it
-with `. env.sh`, and then use `kubectl` against the test cluster.
+exports `NODE_IP` and `KUBECONFIG`, plus `TALOSCONFIG` for Talos. You can
+simply source it with `. env.sh`, and then use `kubectl` against the test cluster.
 
 After this step, you should have a two-node Ubuntu 26.04 Kubernetes cluster
 installed, but without any CNI. Installation logs, kubeconfig, and SSH keys
@@ -123,20 +148,25 @@ are located in the `vm-test` directory. Also, the script creates a `tmp`
 directory where it downloads the VM base image; if you do not remove it, it
 will be used as the image cache.
 
-OpenTofu creates the VMs, then the script generates
+For Ubuntu, OpenTofu creates the VMs, then the script generates
 ``vm-test/inventory.json`` and runs Ansible to prepare and bootstrap
 the Kubernetes control planes. Ansible execution is logged to
 ``vm-test/ansible.log``.
 
-The SSH key, kubeconfig, and environment exports retain their existing
-locations. Separate ``token`` and ``cert`` files are no longer written;
-join credentials are passed through in-memory Ansible variables.
+For Talos, OpenTofu installs the OS, applies both control-plane
+configurations, bootstraps the cluster, and retrieves its credentials.
+Ansible and SSH keys are not used. ``vm-test/kubeconfig`` retains its
+existing location, and ``vm-test/talosconfig`` is exported through
+``TALOSCONFIG`` in ``env.sh``.
 
-Terraform state is also stored under ``vm-test``. Use ``make clean``
+Both platforms initially have no CNI. Provisioning waits for node
+registration, not Kubernetes node readiness.
+
+Secrets and Terraform state are stored under ``vm-test``. Use ``make clean``
 before deleting that directory so the VMs and storage pool are removed
 before their state is discarded.
 
-You can use the SSH keys to access the VM shell:
+You can use the SSH keys to access the VM shell when running Ubuntu:
 
 .. code-block::
 

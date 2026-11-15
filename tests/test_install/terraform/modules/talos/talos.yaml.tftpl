@@ -1,0 +1,53 @@
+apiVersion: v1alpha1
+kind: UnattendedInstallConfig
+installer:
+  image: factory.talos.dev/metal-installer/376567988ad370138ad8b2698212367b8edcb69b5fd68c80be1f2ec7d603b4ba:${talos_version}
+provisioning:
+  diskSelector:
+    match: disk.dev_path == "/dev/vda"
+  wipe: false
+---
+apiVersion: v1alpha1
+kind: HostnameConfig
+hostname: ${hostname}
+auto: "off"
+---
+apiVersion: v1alpha1
+kind: KubeNodeConfig
+nodeIP:
+  validSubnets:
+    - ${node_subnet}
+taints:
+  $patch: delete
+---
+apiVersion: v1alpha1
+kind: KubeNetworkConfig
+podSubnets:
+  - 10.244.0.0/16
+serviceSubnets:
+  - 10.96.0.0/12
+---
+apiVersion: v1alpha1
+kind: KubeFlannelCNIConfig
+$patch: delete
+---
+apiVersion: v1alpha1
+kind: KubeProxyConfig
+enabled: true
+---
+apiVersion: v1alpha1
+kind: KernelModuleConfig
+name: vrf
+---
+apiVersion: v1alpha1
+kind: KernelModuleConfig
+name: br_netfilter
+---
+apiVersion: v1alpha1
+kind: SysctlConfig
+params:
+  net.ipv4.ip_forward: "1"
+  net.bridge.bridge-nf-call-iptables: "1"
+  net.bridge.bridge-nf-call-ip6tables: "1"
+  fs.inotify.max_user_instances: "1024"
+  fs.inotify.max_user_watches: "524288"

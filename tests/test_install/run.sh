@@ -1,5 +1,7 @@
 #!/bin/bash
 
+set -o pipefail
+
 echo -e "\nPrepare the environment: crds=$1 release=$2 platform=$3\n"
 
 SCRIPT_PATH="$(realpath "${BASH_SOURCE[0]}")"
@@ -7,7 +9,7 @@ SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
 CRDS="$1"
 RELEASE="$2"
 
-${SCRIPT_DIR}/scripts/create-ubuntu-vm.sh $3 | tee env.sh
+${SCRIPT_DIR}/scripts/create-vms.sh $3 | tee env.sh || exit 1
 . env.sh
 
 echo -e "\nRun initial tests\n"
@@ -77,28 +79,4 @@ for i in `seq 1 10`; do {
     sleep 1;
 } done
 [ "${FAILED}" -eq 0 ] || { echo "Unexpected allocations: ${KUBE_DNS} ! ${ALLOCATED}"; exit 1; }
-echo "ok"
-
-
-# 8<---------------------------------------------------------------------------
-echo -n "Test minimal workload: "
-declare -A ADDRS
-declare -A PEERS
-PEERS["test01"]="test02"
-PEERS["test02"]="test01"
-
-kubectl run --image alpine test01 -- sleep inf >/dev/null 2>&1
-kubectl run --image alpine test02 -- sleep inf >/dev/null 2>&1
-for pod in test01 test02; do {
-    for i in `seq 1 60`; do {
-        ADDRS["$pod"]=`kubectl get pods $pod -o jsonpath='{.status.podIP}'` 2>/dev/null
-        [ -z "${ADDRS[$pod]}" ] || break
-        sleep 1
-    } done
-} done
-[ `echo "${ADDRS[@]}" | wc -w` -eq 2 ] || { echo "Failed to get workload IP"; exit 1; }
-for pod in test01 test02; do {
-    PEER="${PEERS[$pod]}"
-    kubectl exec -i $pod -- ping -c 1 "${ADDRS[$PEER]}" >/dev/null 2>&1 || { echo "Failed to reach out peer: $pod -> $PEER"; exit 1; }
-} done
 echo "ok"

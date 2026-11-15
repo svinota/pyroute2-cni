@@ -193,8 +193,10 @@ def vm(session, config):
     '''Install lab VMs.'''
     session.run(
         'bash',
+        '-o',
+        'pipefail',
         '-c',
-        f'./tests/test_install/scripts/create-ubuntu-vm.sh '
+        f'./tests/test_install/scripts/create-vms.sh '
         f'{config["platform"]} | tee env.sh',
         external=True,
     )
