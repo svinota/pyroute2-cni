@@ -30,20 +30,6 @@ def test_vtep_reconcile_after_cni_restart(env_pods):
     if src_node == dst_node:
         pytest.skip('pods are not on different nodes')
 
-    wait_for(
-        lambda: packets_received(
-            run_cmd(
-                v1,
-                namespace,
-                src_pod.name,
-                ['ping', '-c', '3', '-W', '1', dst_pod.ip],
-            ),
-            3,
-        ),
-        timeout=180.0,
-        interval=3.0,
-    )
-
     cni_pod = _ready_cni_pod_on_node(v1, src_node)
     assert cni_pod is not None, f'no Ready CNI pod on node={src_node}'
     expected_local, uplink = _vtep_local_and_uplink(v1, cni_pod)

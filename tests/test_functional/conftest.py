@@ -7,8 +7,10 @@ from .utils import (
     get_ip,
     get_mac,
     namespace_gone,
+    packets_received,
     pod_gone,
     pod_running,
+    run_cmd,
     unique_name,
     vrb_gone,
     vrd_gone,
@@ -94,6 +96,21 @@ def env_pods(env_namespace):
         object.__setattr__(pod_2, 'ip', ip_2)
         object.__setattr__(pod_1, 'mac', mac_1)
         object.__setattr__(pod_2, 'mac', mac_2)
+
+        wait_for(
+            lambda: packets_received(
+                run_cmd(
+                    v1,
+                    namespace,
+                    pod_1.name,
+                    ['ping', '-c', '1', '-W', '1', pod_2.ip],
+                ),
+                1,
+            ),
+            timeout=180.0,
+            interval=1.0,
+        )
+
         yield PodsEnv(v1, namespace, [pod_1, pod_2])
     finally:
         v1.delete_namespaced_pod(name=pod_1.name, namespace=namespace)

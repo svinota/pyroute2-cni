@@ -1,5 +1,3 @@
-import time
-
 import pytest
 
 from .data import PodInfo
@@ -16,14 +14,16 @@ from .utils import (
 
 @pytest.mark.repeat(3)
 def test_pod_create_delete(env_pods):
-    time.sleep(5)
+    v1, namespace = env_pods.v1, env_pods.namespace
+    src_pod, dst_pod = env_pods.pods
+
     cmd_output = run_cmd(
-        env_pods.v1,
-        env_pods.namespace,
-        env_pods.pods[0].name,
-        ['ping', '-c', '5', env_pods.pods[1].ip],
+        v1,
+        namespace,
+        src_pod.name,
+        ['ping', '-c', '5', '-W', '1', dst_pod.ip],
     )
-    assert packets_received(cmd_output, 2)
+    assert packets_received(cmd_output, 5), cmd_output
 
 
 def test_pod_churn(env_namespace):
