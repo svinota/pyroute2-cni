@@ -43,6 +43,10 @@ Index
      - Title
      - Status
      - Implementation
+   * - :ref:`20261115-01 <decision-20261115-01>`
+     - Enable BGP graceful restart
+     - accepted
+     - implemented
    * - :ref:`20261110-02 <decision-20261110-02>`
      - CM is the only writer of CNIStatus objects
      - accepted
@@ -105,6 +109,75 @@ Copy this block for new entries.
 
 Entries
 -------
+
+.. _decision-20261115-01:
+
+20261115-01: Enable BGP graceful-restart
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+:Status: accepted
+:Implementation: implemented
+
+Context
+^^^^^^^
+
+Talos uplink interface restarts can interrupt BGP sessions even when the
+node's workload networking configuration remains intact. Immediately
+withdrawing learned routes during these transient interruptions adds
+control-plane churn and can delay recovery after the uplink returns.
+
+Decision
+^^^^^^^^
+
+Enable BGP graceful-restart in the shared FRR configuration template for
+the main BGP instance carrying the cluster's IPv4 and EVPN sessions:
+
+.. code-block:: text
+
+   bgp graceful-restart
+   bgp graceful-restart restart-time 30
+   bgp graceful-restart stalepath-time 120
+
+Use a 30-second restart time and a 120-second stale-path time to allow
+short interruptions while bounding stale-route retention. Route retention
+depends on negotiated graceful-restart capabilities and peer behavior;
+these settings are not a guarantee of uninterrupted forwarding.
+
+Alternatives considered
+^^^^^^^^^^^^^^^^^^^^^^^
+
+* Immediate route withdrawal on session loss: removes failed paths promptly,
+  but causes avoidable route churn during transient uplink restarts.
+* Longer BGP hold timers alone: delay failure detection rather than provide
+  graceful-restart route retention and recovery.
+
+Consequences
+^^^^^^^^^^^^
+
+* Compatible peers can retain routes during eligible session interruptions,
+  reducing withdrawals and subsequent route relearning.
+* Traffic can still be lost while the uplink or forwarding path is down.
+* Retained stale routes can blackhole traffic after a genuine node or
+  forwarding failure until they are removed or replaced.
+* Peer capability negotiation and recovery behavior must be verified in
+  deployments, including any external route reflectors.
+* This does not establish pod network readiness or replace end-to-end
+  connectivity checks.
+
+Evidence and references
+^^^^^^^^^^^^^^^^^^^^^^^
+
+* Config: ``kubernetes/base/0.3/config.yaml``, ``frr.conf.tpl``.
+* Commit: ``74bd3845297cbeb19786616b6e656d23062fe62d``
+  (``frr: use graceful-restart``), introduced for Talos uplink restarts.
+
+Review trigger
+^^^^^^^^^^^^^^
+
+Revisit the timers or enablement if transient restarts exceed the recovery
+window, stale routes prolong outages, or the FRR version or peer topology
+changes. Validate both transient uplink recovery and permanent node failure.
+
 
 .. _decision-20261110-02:
 
