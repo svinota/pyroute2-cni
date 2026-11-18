@@ -1,6 +1,32 @@
 Changelog
 =========
 
+0.3.0 (2026-11-18)
+------------------
+
+Improve control-plane resilience, separate CM and CNI responsibilities,
+and harden CNI configuration deployment.
+
+Changed
+~~~~~~~
+
+- Security: separate CM and CNI service accounts and RBAC
+- Security: restrict node-local CNI access to non-IPAM CRDs
+- BGP: enable BGP graceful-restart to tolerate transient Talos uplink restarts
+
+Fixed
+~~~~~
+
+- Network: fix VTEP local address if it differs from intended
+- Security: validate CNIConfig filenames and resolved paths
+
+Upgrade notes
+~~~~~~~~~~~~~
+
+- VRFDomain finalizer management has been removed. Existing
+  ``cni.pyroute2.org/vrfdomains`` finalizers may require administrative
+  cleanup after verifying that associated resources have been cleaned up.
+
 0.2.0 (2026-11-02)
 ------------------
 
