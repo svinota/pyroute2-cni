@@ -27,7 +27,7 @@ spec:
           effect: NoSchedule
       containers:
       - name: pyroute2-cm
-        image: ghcr.io/svinota/pyroute2-cni:0.0.759
+        image: ghcr.io/svinota/pyroute2-cni:0.3.4
         command:
         - /usr/local/bin/pyroute2-cm
         env:

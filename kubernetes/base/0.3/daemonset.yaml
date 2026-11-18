@@ -48,7 +48,7 @@ spec:
       containers:
 
       - name: pyroute2-frr
-        image: ghcr.io/svinota/pyroute2-frr:0.0.16
+        image: ghcr.io/svinota/pyroute2-frr:0.3.1
         securityContext:
           privileged: true
           appArmorProfile:
@@ -76,7 +76,7 @@ spec:
           mountPath: /etc/frr
 
       - name: pyroute2-cni
-        image: ghcr.io/svinota/pyroute2-cni:0.0.759
+        image: ghcr.io/svinota/pyroute2-cni:0.3.4
         command:
         - /usr/local/bin/pyroute2-cni
         resources:
