@@ -127,14 +127,14 @@ Kubernetes v1.37.0 instead:
     make vm noxconfig='{"platform":"talos"}'
     . env.sh
 
-To run the installation and functional tests on Talos:
+As an alternative to creating a persistent lab with ``make vm``, you can
+run installation and functional tests with ``make test``. This provisions
+a fresh cluster and destroys it after successful completion; it is not a
+subsequent step in this lab. A failed run can leave the environment intact
+for debugging.
 
-.. code-block:: bash
-
-    make test noxconfig='{"platform":"talos"}'
-
-Run ``make clean`` before changing platforms. Platform switching is not
-an in-place operating-system conversion.
+Run ``make clean`` before running ``make vm`` or ``make test`` if an
+environment already exists, even when using the same platform.
 
 The script takes several minutes to run: it downloads the VM base image,
 starts the VM, and runs scripts there to set up the system and install
@@ -421,7 +421,7 @@ builds a BGP mesh within the cluster.
 
 .. code-block::
 
-    $ kubectl create -f ./examples/vrfnodeconfig.yaml
+    $ kubectl apply -f ./examples/vrfnodeconfig.yaml
     vrfnodeconfig.cni.pyroute2.org/cni-test-0 unchanged
     vrfnodeconfig.cni.pyroute2.org/cni-test-1 configured
 
