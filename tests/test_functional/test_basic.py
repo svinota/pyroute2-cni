@@ -18,10 +18,7 @@ def test_pod_create_delete(env_pods):
     src_pod, dst_pod = env_pods.pods
 
     cmd_output = run_cmd(
-        v1,
-        namespace,
-        src_pod.name,
-        ['ping', '-c', '5', '-W', '1', dst_pod.ip],
+        v1, namespace, src_pod.name, ['ping', '-c', '5', '-W', '1', dst_pod.ip]
     )
     assert packets_received(cmd_output, 5), cmd_output
 

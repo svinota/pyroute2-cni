@@ -6,7 +6,7 @@ resources:
 
 images:
   - name: ghcr.io/svinota/pyroute2-cni
-    newTag: 0.3.4
+    newTag: 0.3.5
   - name: ghcr.io/svinota/pyroute2-frr
     newTag: 0.3.1
 

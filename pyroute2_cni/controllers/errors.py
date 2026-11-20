@@ -1,6 +1,7 @@
 from http.client import RemoteDisconnected
 
 from kubernetes.client.exceptions import ApiException
+from pyroute2.netlink.exceptions import NetlinkDumpInterrupted
 from urllib3.exceptions import (
     MaxRetryError,
     NewConnectionError,
@@ -22,6 +23,7 @@ def is_transient_error(err: BaseException) -> bool:
             ReadTimeoutError,
             MaxRetryError,
             NewConnectionError,
+            NetlinkDumpInterrupted,
         ),
     ):
         return True
