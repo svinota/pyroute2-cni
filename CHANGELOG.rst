@@ -1,6 +1,17 @@
 Changelog
 =========
 
+0.3.1 (2026-11-20)
+------------------
+
+A fixup release for IPAM and NFT management.
+
+Fixed
+~~~~~
+
+- Network: IP allocation when completed pods are present
+- Network: NFT rules reconciliation when NetlinkDumpInterrupted
+
 0.3.0 (2026-11-18)
 ------------------
 
