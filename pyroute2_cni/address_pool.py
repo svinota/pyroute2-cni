@@ -493,19 +493,14 @@ class AddressPool:
                 raise IPBlockStaleResource(f'IPBlock {name} is stale') from err
             raise
 
-    def _find_free_ip(
-        self, cidr: IPv4Network, allocations: dict[str, str]
-    ) -> IPv4Address:
-        for ip in cidr.hosts():
-            if ip.compressed not in allocations:
-                return ip
-        raise KeyError('no free addresses found')
-
-    def _has_free_ip(
-        self, cidr: IPv4Network, allocations: dict[str, str]
+    def _has_free_ip_excluding(
+        self,
+        cidr: IPv4Network,
+        allocations: dict[str, str],
+        excluded: set[str],
     ) -> bool:
         try:
-            self._find_free_ip(cidr, allocations)
+            self._find_free_ip_excluding(cidr, allocations, excluded)
         except KeyError:
             return False
         except Exception:
@@ -527,12 +522,18 @@ class AddressPool:
         return block
 
     def _select_or_create_block(
-        self, network: IPv4Network, ipblocklen: int, vrf_table: int
+        self,
+        network: IPv4Network,
+        ipblocklen: int,
+        vrf_table: int,
+        excluded: set[str],
     ) -> IPBlock:
         existing_blocks = self._own_block_items(network, vrf_table)
         logging.info(f'select block vrf={vrf_table} network={network}')
         for item in existing_blocks:
-            if self._has_free_ip(item.cidr, item.allocations):
+            if self._has_free_ip_excluding(
+                item.cidr, item.allocations, excluded
+            ):
                 logging.info(f'selected existing block name={item.name}')
                 return item
 
@@ -545,13 +546,14 @@ class AddressPool:
         network: IPv4Network,
         ipblocklen: int,
         vrf_table: int,
+        excluded: set[str],
         max_attempts: int = 5,
     ) -> IPBlock:
         for attempt in range(max_attempts):
             try:
                 logging.info(f'acquire block attempt={attempt}')
                 return self._select_or_create_block(
-                    network, ipblocklen, vrf_table
+                    network, ipblocklen, vrf_table, excluded
                 )
             except IPBlockConflict:
                 logging.info(
@@ -586,10 +588,12 @@ class AddressPool:
         logging.info(f'Starting allocation pod_uid={pod_uid}')
         async with self._alloc_lock:
             gateway: IPv4Address
-            block = await self._acquire_block(network, ipblocklen, vrf_table)
+            used_ips = self._node_used_ips(network, vrf_table)
+            block = await self._acquire_block(
+                network, ipblocklen, vrf_table, used_ips
+            )
             allocations = dict(block.allocations)
             reverse_lookup = dict([(x[1], x[0]) for x in allocations.items()])
-            used_ips = self._node_used_ips(network, vrf_table)
             if 'gateway' in reverse_lookup:
                 gateway = IPv4Address(reverse_lookup['gateway'])
             else:
